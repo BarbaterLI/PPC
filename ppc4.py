@@ -40,21 +40,7 @@ try:
 except ImportError:
     aiofiles = None
 
-# GUI支持（可选）
-try:
-    from PyQt6.QtWidgets import *
-    from PyQt6.QtCore import *
-    from PyQt6.QtGui import *
-    from PyQt6.QtCore import pyqtSignal
-    QObject = QObject
-    GUI_AVAILABLE = True
-except ImportError:
-    GUI_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("PyQt6未安装，GUI功能不可用")
-    class QObject:
-        pass
-    pyqtSignal = None
+
 
 # ==============================================================================
 # § 1. 智能章节分割系统
@@ -504,24 +490,15 @@ def memory_efficient(func):
                 func._object_pool.clear()
     return wrapper
 
-# ==============================================================================
-# § 4. GUI & 系统监控依赖 (条件导入)
-# ==============================================================================
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-    from PySide6.QtCharts import QChart, QChartView, QBarSeries, QBarSet, QBarCategoryAxis, QValueAxis, QPieSeries
-    GUI_AVAILABLE = True
-except ImportError:
-    GUI_AVAILABLE = False
-    class QtWidgets:
-        QWidget = object; QMainWindow = object
-    class QtCore:
-        QObject = object; Signal = object
+# =============================================================================
+# § 4. 系统监控依赖 (条件导入)
+# =============================================================================
 
 try:
     import psutil
 except ImportError:
     psutil = None
+    print("警告: psutil未安装，系统监控功能受限")
 
 # ==============================================================================
 # § 5. 日志与全局配置 (增强版)
@@ -554,22 +531,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# GUI信号类（用于PyQt线程通信）
-if GUI_AVAILABLE:
-    class WorkerSignals(QObject):
-        """工作线程信号"""
-        progress = pyqtSignal(dict)
-        log = pyqtSignal(str)
-        finished = pyqtSignal()
-        error = pyqtSignal(str)
-else:
-    class WorkerSignals:
-        """工作线程信号（虚拟类）"""
-        def __init__(self):
-            self.progress = type('obj', (object,), {'emit': lambda x: None})()
-            self.log = type('obj', (object,), {'emit': lambda x: None})()
-            self.finished = type('obj', (object,), {'emit': lambda x: None})()
-            self.error = type('obj', (object,), {'emit': lambda x: None})()
+class WorkerSignals:
+    """工作线程信号（虚拟类，因为GUI已移除）"""
+    def __init__(self):
+        self.progress = type('obj', (object,), {'emit': lambda x: None})()
+        self.log = type('obj', (object,), {'emit': lambda x: None})()
+        self.finished = type('obj', (object,), {'emit': lambda x: None})()
+        self.error = type('obj', (object,), {'emit': lambda x: None})()
 
 APP_NAME = "PPC4"
 CONFIG_FILENAME = "ppc4_config.ini"
@@ -1648,1037 +1616,377 @@ class OptimizedConnectivityMonitor:
         }
 
 # --------------------------------------
-# 7. GUI界面实现
-# --------------------------------------
-class PPC4MainWindow(QMainWindow if GUI_AVAILABLE else object):
-    """PPC4主窗口"""
-    
-    def __init__(self, config: OptimizedAppConfig):
-        if GUI_AVAILABLE:
-            super().__init__()
-            self.config = config
-            self.orchestrator = None
-            self.current_task = None
-            self.signals = WorkerSignals()
-            
-            # 初始化组件
-            self._init_ui()
-            self._connect_signals()
-            self._start_monitors()
-        else:
-            self.config = config
-            logger.error("GUI功能不可用，请安装PyQt6")
-    
-    def _init_ui(self):
-        """初始化UI"""
-        self.setWindowTitle("PPC4 - 智能章节分割TTS工具")
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # 创建中央部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 主布局
-        main_layout = QVBoxLayout(central_widget)
-        
-        # 创建标签页
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
-        
-        # TTS标签页
-        self._create_tts_tab()
-        
-        # 分割标签页
-        self._create_split_tab()
-        
-        # 配置标签页
-        self._create_config_tab()
-        
-        # 监控标签页
-        self._create_monitor_tab()
-        
-        # 日志标签页
-        self._create_log_tab()
-    
-    def _create_tts_tab(self):
-        """创建TTS标签页"""
-        tts_tab = QWidget()
-        layout = QVBoxLayout(tts_tab)
-        
-        # 输入目录
-        input_group = QGroupBox("输入目录")
-        input_layout = QHBoxLayout()
-        
-        self.tts_input_path = QLineEdit()
-        self.tts_input_path.setPlaceholderText("选择包含txt文件的目录...")
-        input_layout.addWidget(self.tts_input_path)
-        
-        input_browse_btn = QPushButton("浏览")
-        input_browse_btn.clicked.connect(self._browse_tts_input)
-        input_layout.addWidget(input_browse_btn)
-        
-        input_group.setLayout(input_layout)
-        layout.addWidget(input_group)
-        
-        # 输出目录
-        output_group = QGroupBox("输出目录")
-        output_layout = QHBoxLayout()
-        
-        self.tts_output_path = QLineEdit()
-        self.tts_output_path.setPlaceholderText("选择输出mp3文件的目录...")
-        output_layout.addWidget(self.tts_output_path)
-        
-        output_browse_btn = QPushButton("浏览")
-        output_browse_btn.clicked.connect(self._browse_tts_output)
-        output_layout.addWidget(output_browse_btn)
-        
-        output_group.setLayout(output_layout)
-        layout.addWidget(output_group)
-        
-        # 语音选择
-        voice_group = QGroupBox("语音设置")
-        voice_layout = QHBoxLayout()
-        
-        self.voice_combo = QComboBox()
-        self.voice_combo.addItems(["zh-CN-XiaoxiaoNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunjianNeural"])
-        voice_layout.addWidget(QLabel("语音:"))
-        voice_layout.addWidget(self.voice_combo)
-        
-        voice_layout.addStretch()
-        voice_group.setLayout(voice_layout)
-        layout.addWidget(voice_group)
-        
-        # 控制按钮
-        control_group = QGroupBox("控制")
-        control_layout = QHBoxLayout()
-        
-        self.start_tts_btn = QPushButton("开始TTS")
-        self.start_tts_btn.clicked.connect(self._start_tts)
-        control_layout.addWidget(self.start_tts_btn)
-        
-        self.pause_tts_btn = QPushButton("暂停")
-        self.pause_tts_btn.clicked.connect(self._pause_tts)
-        self.pause_tts_btn.setEnabled(False)
-        control_layout.addWidget(self.pause_tts_btn)
-        
-        self.stop_tts_btn = QPushButton("停止")
-        self.stop_tts_btn.clicked.connect(self._stop_tts)
-        self.stop_tts_btn.setEnabled(False)
-        control_layout.addWidget(self.stop_tts_btn)
-        
-        control_layout.addStretch()
-        control_group.setLayout(control_layout)
-        layout.addWidget(control_group)
-        
-        # 进度显示
-        progress_group = QGroupBox("进度")
-        progress_layout = QVBoxLayout()
-        
-        self.progress_bar = QProgressBar()
-        progress_layout.addWidget(self.progress_bar)
-        
-        self.progress_label = QLabel("就绪")
-        progress_layout.addWidget(self.progress_label)
-        
-        # 统计信息
-        stats_layout = QHBoxLayout()
-        self.stats_label = QLabel("总文件: 0 | 成功: 0 | 失败: 0 | 速度: 0 KB/s")
-        stats_layout.addWidget(self.stats_label)
-        
-        progress_layout.addLayout(stats_layout)
-        progress_group.setLayout(progress_layout)
-        layout.addWidget(progress_group)
-        
-        layout.addStretch()
-        self.tabs.addTab(tts_tab, "TTS转换")
-    
-    def _create_split_tab(self):
-        """创建分割标签页"""
-        split_tab = QWidget()
-        layout = QVBoxLayout(split_tab)
-        
-        # 输入文件
-        input_group = QGroupBox("输入文件")
-        input_layout = QHBoxLayout()
-        
-        self.split_input_file = QLineEdit()
-        self.split_input_file.setPlaceholderText("选择要分割的txt文件...")
-        input_layout.addWidget(self.split_input_file)
-        
-        input_browse_btn = QPushButton("浏览")
-        input_browse_btn.clicked.connect(self._browse_split_input)
-        input_layout.addWidget(input_browse_btn)
-        
-        input_group.setLayout(input_layout)
-        layout.addWidget(input_group)
-        
-        # 输出目录
-        output_group = QGroupBox("输出目录")
-        output_layout = QHBoxLayout()
-        
-        self.split_output_dir = QLineEdit()
-        self.split_output_dir.setPlaceholderText("选择输出目录...")
-        output_layout.addWidget(self.split_output_dir)
-        
-        output_browse_btn = QPushButton("浏览")
-        output_browse_btn.clicked.connect(self._browse_split_output)
-        output_layout.addWidget(output_browse_btn)
-        
-        output_group.setLayout(output_layout)
-        layout.addWidget(output_group)
-        
-        # 分割规则
-        rules_group = QGroupBox("分割规则")
-        rules_layout = QVBoxLayout()
-        
-        # 预设规则
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("预设规则:"))
-        
-        self.preset_rules_combo = QComboBox()
-        self.preset_rules_combo.addItems(["默认规则", "中文小说", "英文小说", "自定义"])
-        self.preset_rules_combo.currentTextChanged.connect(self._on_preset_rule_changed)
-        preset_layout.addWidget(self.preset_rules_combo)
-        
-        preset_layout.addStretch()
-        rules_layout.addLayout(preset_layout)
-        
-        # 自定义规则
-        custom_layout = QVBoxLayout()
-        custom_layout.addWidget(QLabel("自定义规则 (每行一个正则表达式):"))
-        
-        self.custom_rules_text = QTextEdit()
-        self.custom_rules_text.setMaximumHeight(100)
-        self.custom_rules_text.setPlainText("^第[一二两三四五六七八九十百千万\\d]+章\\s*.*$")
-        custom_layout.addWidget(self.custom_rules_text)
-        
-        rules_layout.addLayout(custom_layout)
-        
-        # 高级选项
-        advanced_layout = QHBoxLayout()
-        
-        self.indent_detection_cb = QCheckBox("检测缩进")
-        self.indent_detection_cb.setChecked(True)
-        advanced_layout.addWidget(self.indent_detection_cb)
-        
-        self.space_detection_cb = QCheckBox("检测空格")
-        self.space_detection_cb.setChecked(True)
-        advanced_layout.addWidget(self.space_detection_cb)
-        
-        self.empty_line_cb = QCheckBox("空行分割")
-        self.empty_line_cb.setChecked(False)
-        advanced_layout.addWidget(self.empty_line_cb)
-        
-        advanced_layout.addStretch()
-        rules_layout.addLayout(advanced_layout)
-        
-        rules_group.setLayout(rules_layout)
-        layout.addWidget(rules_group)
-        
-        # 预览
-        preview_group = QGroupBox("预览")
-        preview_layout = QVBoxLayout()
-        
-        self.preview_text = QTextEdit()
-        self.preview_text.setMaximumHeight(150)
-        preview_layout.addWidget(self.preview_text)
-        
-        preview_btn = QPushButton("预览分割结果")
-        preview_btn.clicked.connect(self._preview_split)
-        preview_layout.addWidget(preview_btn)
-        
-        preview_group.setLayout(preview_layout)
-        layout.addWidget(preview_group)
-        
-        # 控制按钮
-        control_layout = QHBoxLayout()
-        
-        self.start_split_btn = QPushButton("开始分割")
-        self.start_split_btn.clicked.connect(self._start_split)
-        control_layout.addWidget(self.start_split_btn)
-        
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
-        
-        layout.addStretch()
-        self.tabs.addTab(split_tab, "章节分割")
-    
-    def _create_config_tab(self):
-        """创建配置标签页"""
-        config_tab = QWidget()
-        layout = QVBoxLayout(config_tab)
-        
-        # 配置共享
-        share_group = QGroupBox("配置共享")
-        share_layout = QVBoxLayout()
-        
-        # 导出配置
-        export_layout = QHBoxLayout()
-        export_layout.addWidget(QLabel("导出配置到JSON:"))
-        
-        self.export_path = QLineEdit()
-        self.export_path.setPlaceholderText("选择导出路径...")
-        export_layout.addWidget(self.export_path)
-        
-        export_browse_btn = QPushButton("浏览")
-        export_browse_btn.clicked.connect(self._browse_export_path)
-        export_layout.addWidget(export_browse_btn)
-        
-        export_btn = QPushButton("导出")
-        export_btn.clicked.connect(self._export_config)
-        export_layout.addWidget(export_btn)
-        
-        share_layout.addLayout(export_layout)
-        
-        # 导入配置
-        import_layout = QHBoxLayout()
-        import_layout.addWidget(QLabel("从JSON导入配置:"))
-        
-        self.import_path = QLineEdit()
-        self.import_path.setPlaceholderText("选择配置文件...")
-        import_layout.addWidget(self.import_path)
-        
-        import_browse_btn = QPushButton("浏览")
-        import_browse_btn.clicked.connect(self._browse_import_path)
-        import_layout.addWidget(import_browse_btn)
-        
-        import_btn = QPushButton("导入")
-        import_btn.clicked.connect(self._import_config)
-        import_layout.addWidget(import_btn)
-        
-        share_layout.addLayout(import_layout)
-        
-        share_group.setLayout(share_layout)
-        layout.addWidget(share_group)
-        
-        # 性能设置
-        perf_group = QGroupBox("性能设置")
-        perf_layout = QFormLayout()
-        
-        self.concurrency_spin = QSpinBox()
-        self.concurrency_spin.setRange(1, 32)
-        self.concurrency_spin.setValue(self.config.get("tts").get("concurrency", 12))
-        perf_layout.addRow("并发数:", self.concurrency_spin)
-        
-        self.memory_limit_spin = QSpinBox()
-        self.memory_limit_spin.setRange(256, 4096)
-        self.memory_limit_spin.setValue(self.config.get("tts").get("memory_limit_mb", 768))
-        perf_layout.addRow("内存限制(MB):", self.memory_limit_spin)
-        
-        self.chunk_size_spin = QSpinBox()
-        self.chunk_size_spin.setRange(512, 8192)
-        self.chunk_size_spin.setValue(self.config.get("file_processor").get("chunk_size", 1024))
-        perf_layout.addRow("分块大小(KB):", self.chunk_size_spin)
-        
-        perf_group.setLayout(perf_layout)
-        layout.addWidget(perf_group)
-        
-        # 保存按钮
-        save_btn = QPushButton("保存配置")
-        save_btn.clicked.connect(self._save_config)
-        layout.addWidget(save_btn)
-        
-        layout.addStretch()
-        self.tabs.addTab(config_tab, "配置管理")
-    
-    def _create_monitor_tab(self):
-        """创建监控标签页"""
-        monitor_tab = QWidget()
-        layout = QVBoxLayout(monitor_tab)
-        
-        # 系统资源
-        resource_group = QGroupBox("系统资源")
-        resource_layout = QFormLayout()
-        
-        self.cpu_label = QLabel("CPU: 0%")
-        resource_layout.addRow(self.cpu_label)
-        
-        self.memory_label = QLabel("内存: 0 MB / 0 MB")
-        resource_layout.addRow(self.memory_label)
-        
-        self.disk_label = QLabel("磁盘: 0 MB/s")
-        resource_layout.addRow(self.disk_label)
-        
-        resource_group.setLayout(resource_layout)
-        layout.addWidget(resource_group)
-        
-        # 网络状态
-        network_group = QGroupBox("网络状态")
-        network_layout = QFormLayout()
-        
-        self.network_status_label = QLabel("状态: 正常")
-        network_layout.addRow(self.network_status_label)
-        
-        self.network_latency_label = QLabel("延迟: 0 ms")
-        network_layout.addRow(self.network_latency_label)
-        
-        network_group.setLayout(network_layout)
-        layout.addWidget(network_group)
-        
-        # TTS统计
-        tts_stats_group = QGroupBox("TTS统计")
-        tts_stats_layout = QFormLayout()
-        
-        self.tts_total_label = QLabel("总文件: 0")
-        tts_stats_layout.addRow(self.tts_total_label)
-        
-        self.tts_success_rate_label = QLabel("成功率: 0%")
-        tts_stats_layout.addRow(self.tts_success_rate_label)
-        
-        self.tts_avg_speed_label = QLabel("平均速度: 0 KB/s")
-        tts_stats_layout.addRow(self.tts_avg_speed_label)
-        
-        tts_stats_group.setLayout(tts_stats_layout)
-        layout.addWidget(tts_stats_group)
-        
-        layout.addStretch()
-        self.tabs.addTab(monitor_tab, "系统监控")
-    
-    def _create_log_tab(self):
-        """创建日志标签页"""
-        log_tab = QWidget()
-        layout = QVBoxLayout(log_tab)
-        
-        # 日志显示
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.log_text)
-        
-        # 日志控制
-        control_layout = QHBoxLayout()
-        
-        clear_btn = QPushButton("清空日志")
-        clear_btn.clicked.connect(self.log_text.clear)
-        control_layout.addWidget(clear_btn)
-        
-        self.auto_scroll_cb = QCheckBox("自动滚动")
-        self.auto_scroll_cb.setChecked(True)
-        control_layout.addWidget(self.auto_scroll_cb)
-        
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
-        
-        self.tabs.addTab(log_tab, "日志")
-    
-    def _connect_signals(self):
-        """连接信号"""
-        self.signals.progress.connect(self._update_progress)
-        self.signals.log.connect(self._append_log)
-        self.signals.finished.connect(self._on_task_finished)
-        self.signals.error.connect(self._on_error)
-    
-    def _start_monitors(self):
-        """启动监控"""
-        # 系统资源监控
-        self.resource_timer = QTimer()
-        self.resource_timer.timeout.connect(self._update_resource_stats)
-        self.resource_timer.start(1000)  # 1秒更新一次
-        
-        # 网络监控
-        self.network_timer = QTimer()
-        self.network_timer.timeout.connect(self._update_network_status)
-        self.network_timer.start(30000)  # 30秒检查一次
-    
-    # 事件处理方法
-    def _browse_tts_input(self):
-        """浏览TTS输入目录"""
-        path = QFileDialog.getExistingDirectory(self, "选择输入目录")
-        if path:
-            self.tts_input_path.setText(path)
-    
-    def _browse_tts_output(self):
-        """浏览TTS输出目录"""
-        path = QFileDialog.getExistingDirectory(self, "选择输出目录")
-        if path:
-            self.tts_output_path.setText(path)
-    
-    def _browse_split_input(self):
-        """浏览分割输入文件"""
-        path, _ = QFileDialog.getOpenFileName(self, "选择文本文件", "", "Text Files (*.txt)")
-        if path:
-            self.split_input_file.setText(path)
-    
-    def _browse_split_output(self):
-        """浏览分割输出目录"""
-        path = QFileDialog.getExistingDirectory(self, "选择输出目录")
-        if path:
-            self.split_output_dir.setText(path)
-    
-    def _browse_export_path(self):
-        """浏览导出路径"""
-        path, _ = QFileDialog.getSaveFileName(self, "导出配置", "", "JSON Files (*.json)")
-        if path:
-            self.export_path.setText(path)
-    
-    def _browse_import_path(self):
-        """浏览导入路径"""
-        path, _ = QFileDialog.getOpenFileName(self, "选择配置文件", "", "JSON Files (*.json)")
-        if path:
-            self.import_path.setText(path)
-    
-    def _on_preset_rule_changed(self, text):
-        """预设规则改变"""
-        if text == "默认规则":
-            self.custom_rules_text.setPlainText("^第[一二两三四五六七八九十百千万\\d]+章\\s*.*$")
-        elif text == "中文小说":
-            self.custom_rules_text.setPlainText("^第[一二两三四五六七八九十百千万\\d]+章\\s*.*$\n^引子\\s*.*$\n^序章\\s*.*$\n^尾声\\s*.*$")
-        elif text == "英文小说":
-            self.custom_rules_text.setPlainText("^Chapter\\s+\\d+\\s*.*$\n^Prologue\\s*.*$\n^Epilogue\\s*.*$\n^Part\\s+\\d+\\s*.*$")
-    
-    def _preview_split(self):
-        """预览分割结果"""
-        input_file = self.split_input_file.text()
-        if not input_file or not Path(input_file).exists():
-            QMessageBox.warning(self, "警告", "请选择有效的输入文件")
-            return
-        
-        try:
-            with open(input_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # 获取规则
-            rules_text = self.custom_rules_text.toPlainText().strip()
-            rules = [rule.strip() for rule in rules_text.split('\n') if rule.strip()]
-            
-            # 创建检测器
-            detector = SmartChapterDetector(self.config)
-            detector.set_custom_patterns(rules)
-            
-            # 预览前几个章节
-            lines = content.splitlines()
-            preview_lines = lines[:100]  # 前100行
-            
-            chapters = list(detector.detect_chapters(preview_lines))
-            
-            preview_text = f"找到 {len(chapters)} 个章节:\n\n"
-            for i, (title, _) in enumerate(chapters[:5]):  # 显示前5个
-                preview_text += f"章节 {i+1}: {title}\n"
-            
-            if len(chapters) > 5:
-                preview_text += f"\n... 还有 {len(chapters) - 5} 个章节"
-            
-            self.preview_text.setPlainText(preview_text)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"预览失败: {e}")
-    
-    async def _start_tts(self):
-        """开始TTS转换"""
-        input_dir = self.tts_input_path.text()
-        output_dir = self.tts_output_path.text()
-        voice = self.voice_combo.currentText()
-        
-        if not input_dir or not output_dir:
-            QMessageBox.warning(self, "警告", "请选择输入和输出目录")
-            return
-        
-        input_path = Path(input_dir)
-        output_path = Path(output_dir)
-        
-        if not input_path.exists():
-            QMessageBox.warning(self, "警告", "输入目录不存在")
-            return
-        
-        # 创建输出目录
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # 禁用开始按钮，启用暂停和停止按钮
-        self.start_tts_btn.setEnabled(False)
-        self.pause_tts_btn.setEnabled(True)
-        self.stop_tts_btn.setEnabled(True)
-        
-        # 创建协调器
-        self.orchestrator = OptimizedTTSOrchestrator(self.config, self.signals)
-        
-        # 启动任务
-        try:
-            self.current_task = asyncio.create_task(self.orchestrator.run_batch(input_path, output_path, voice))
-            result = await self.current_task
-            
-            self._append_log(f"TTS任务完成: {result}")
-            
-        except Exception as e:
-            self._on_error(f"TTS任务失败: {e}")
-        
-        finally:
-            self._on_task_finished()
-    
-    def _pause_tts(self):
-        """暂停TTS"""
-        if self.orchestrator:
-            self.orchestrator.pause()
-            self.pause_tts_btn.setText("继续")
-            self.pause_tts_btn.clicked.disconnect()
-            self.pause_tts_btn.clicked.connect(self._resume_tts)
-    
-    def _resume_tts(self):
-        """恢复TTS"""
-        if self.orchestrator:
-            self.orchestrator.resume()
-            self.pause_tts_btn.setText("暂停")
-            self.pause_tts_btn.clicked.disconnect()
-            self.pause_tts_btn.clicked.connect(self._pause_tts)
-    
-    def _stop_tts(self):
-        """停止TTS"""
-        if self.orchestrator:
-            self.orchestrator.stop()
-            if self.current_task:
-                self.current_task.cancel()
-    
-    def _start_split(self):
-        """开始分割"""
-        input_file = self.split_input_file.text()
-        output_dir = self.split_output_dir.text()
-        
-        if not input_file or not output_dir:
-            QMessageBox.warning(self, "警告", "请选择输入文件和输出目录")
-            return
-        
-        input_path = Path(input_file)
-        output_path = Path(output_dir)
-        
-        if not input_path.exists():
-            QMessageBox.warning(self, "警告", "输入文件不存在")
-            return
-        
-        # 获取分割规则
-        rules_text = self.custom_rules_text.toPlainText().strip()
-        rules = [rule.strip() for rule in rules_text.split('\n') if rule.strip()]
-        
-        # 创建检测器
-        detector = SmartChapterDetector(self.config)
-        detector.set_custom_patterns(rules)
-        
-        # 设置选项
-        options = {
-            "detect_indent": self.indent_detection_cb.isChecked(),
-            "detect_space": self.space_detection_cb.isChecked(),
-            "split_by_empty": self.empty_line_cb.isChecked()
-        }
-        
-        try:
-            # 执行分割
-            processor = OptimizedFileProcessor(self.config)
-            result = processor.split_novel(input_path, output_path, detector, options)
-            
-            QMessageBox.information(self, "完成", f"分割完成！生成 {result['chapters']} 个文件")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"分割失败: {e}")
-    
-    def _export_config(self):
-        """导出配置"""
-        export_path = self.export_path.text()
-        if not export_path:
-            QMessageBox.warning(self, "警告", "请选择导出路径")
-            return
-        
-        try:
-            manager = ConfigShareManager(self.config)
-            config_data = {
-                "chapter_patterns": {
-                    "default": ["^第[一二两三四五六七八九十百千万\\d]+章", "^引子", "^序章"],
-                    "custom": self.custom_rules_text.toPlainText().split('\n')
-                },
-                "voice_settings": {
-                    "voice": self.voice_combo.currentText(),
-                    "speed": 1.0,
-                    "pitch": 0,
-                    "volume": 100
-                },
-                "performance": {
-                    "concurrency": self.concurrency_spin.value(),
-                    "memory_limit_mb": self.memory_limit_spin.value(),
-                    "chunk_size": self.chunk_size_spin.value()
-                },
-                "split_options": {
-                    "detect_indent": self.indent_detection_cb.isChecked(),
-                    "detect_space": self.space_detection_cb.isChecked(),
-                    "split_by_empty": self.empty_line_cb.isChecked()
-                }
-            }
-            
-            success = asyncio.run(manager.save_shared_config(config_data, Path(export_path)))
-            
-            if success:
-                QMessageBox.information(self, "成功", "配置导出成功")
-            else:
-                QMessageBox.critical(self, "错误", "配置导出失败")
-                
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出失败: {e}")
-    
-    def _import_config(self):
-        """导入配置"""
-        import_path = self.import_path.text()
-        if not import_path:
-            QMessageBox.warning(self, "警告", "请选择配置文件")
-            return
-        
-        try:
-            manager = ConfigShareManager(self.config)
-            config_data = asyncio.run(manager.load_shared_config(Path(import_path)))
-            
-            if config_data:
-                # 应用配置
-                if "voice_settings" in config_data:
-                    voice = config_data["voice_settings"].get("voice", "zh-CN-XiaoxiaoNeural")
-                    self.voice_combo.setCurrentText(voice)
-                
-                if "performance" in config_data:
-                    perf = config_data["performance"]
-                    self.concurrency_spin.setValue(perf.get("concurrency", 12))
-                    self.memory_limit_spin.setValue(perf.get("memory_limit_mb", 768))
-                    self.chunk_size_spin.setValue(perf.get("chunk_size", 1024))
-                
-                if "split_options" in config_data:
-                    options = config_data["split_options"]
-                    self.indent_detection_cb.setChecked(options.get("detect_indent", True))
-                    self.space_detection_cb.setChecked(options.get("detect_space", True))
-                    self.empty_line_cb.setChecked(options.get("split_by_empty", False))
-                
-                if "chapter_patterns" in config_data:
-                    patterns = config_data["chapter_patterns"]
-                    if "custom" in patterns:
-                        self.custom_rules_text.setPlainText('\n'.join(patterns["custom"]))
-                
-                QMessageBox.information(self, "成功", "配置导入成功")
-            else:
-                QMessageBox.critical(self, "错误", "配置导入失败")
-                
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"导入失败: {e}")
-    
-    def _save_config(self):
-        """保存配置"""
-        try:
-            # 更新配置
-            self.config.set("tts.concurrency", self.concurrency_spin.value())
-            self.config.set("tts.memory_limit_mb", self.memory_limit_spin.value())
-            self.config.set("file_processor.chunk_size", self.chunk_size_spin.value())
-            
-            # 保存到文件
-            self.config.save()
-            
-            QMessageBox.information(self, "成功", "配置保存成功")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存配置失败: {e}")
-    
-    def _update_progress(self, progress: dict):
-        """更新进度"""
-        total = progress.get("total", 0)
-        processed = progress.get("processed", 0)
-        success = progress.get("success", 0)
-        failed = progress.get("failed", 0)
-        
-        if total > 0:
-            percentage = int((processed / total) * 100)
-            self.progress_bar.setValue(percentage)
-            self.progress_label.setText(f"进度: {processed}/{total} ({percentage}%)")
-        
-        # 更新统计
-        speed = progress.get("speed", 0)
-        self.stats_label.setText(f"总文件: {total} | 成功: {success} | 失败: {failed} | 速度: {speed:.1f} KB/s")
-    
-    def _append_log(self, message: str):
-        """添加日志"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}"
-        
-        self.log_text.append(log_entry)
-        
-        if self.auto_scroll_cb.isChecked():
-            self.log_text.verticalScrollBar().setValue(
-                self.log_text.verticalScrollBar().maximum()
-            )
-    
-    def _on_task_finished(self):
-        """任务完成"""
-        self.start_tts_btn.setEnabled(True)
-        self.pause_tts_btn.setEnabled(False)
-        self.stop_tts_btn.setEnabled(False)
-        
-        self.progress_label.setText("就绪")
-        self._append_log("任务完成")
-    
-    def _on_error(self, error: str):
-        """错误处理"""
-        QMessageBox.critical(self, "错误", error)
-        self._append_log(f"错误: {error}")
-    
-    def _update_resource_stats(self):
-        """更新资源统计"""
-        try:
-            # CPU使用率
-            cpu_percent = psutil.cpu_percent(interval=None)
-            self.cpu_label.setText(f"CPU: {cpu_percent:.1f}%")
-            
-            # 内存使用
-            memory = psutil.virtual_memory()
-            used_mb = memory.used // (1024 * 1024)
-            total_mb = memory.total // (1024 * 1024)
-            self.memory_label.setText(f"内存: {used_mb} MB / {total_mb} MB ({memory.percent:.1f}%)")
-            
-            # 磁盘IO
-            disk_io = psutil.disk_io_counters()
-            if disk_io:
-                read_mb = disk_io.read_bytes // (1024 * 1024)
-                write_mb = disk_io.write_bytes // (1024 * 1024)
-                self.disk_label.setText(f"磁盘: 读取 {read_mb} MB / 写入 {write_mb} MB")
-            
-        except Exception as e:
-            logger.error(f"更新资源统计失败: {e}")
-    
-    def _update_network_status(self):
-        """更新网络状态"""
-        try:
-            if self.orchestrator and self.orchestrator.network_monitor:
-                status = self.orchestrator.network_monitor.get_status()
-                
-                if status["connected"]:
-                    self.network_status_label.setText("状态: 正常")
-                    self.network_latency_label.setText(f"延迟: {status['latency']:.0f} ms")
-                else:
-                    self.network_status_label.setText("状态: 异常")
-                    self.network_latency_label.setText("延迟: --")
-        
-        except Exception as e:
-            logger.error(f"更新网络状态失败: {e}")
-    
-    def closeEvent(self, event):
-        """关闭事件"""
-        if self.orchestrator and self.orchestrator.is_running:
-            reply = QMessageBox.question(
-                self, "确认", "TTS任务正在运行，确定要关闭吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            
-            if reply == QMessageBox.Yes:
-                self.orchestrator.stop()
-                if self.current_task:
-                    self.current_task.cancel()
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept()
-
-# --------------------------------------
-# 8. CLI接口实现
+# 7. CLI命令行界面实现
 # --------------------------------------
 class PPC4CLI:
     """PPC4命令行接口"""
     
     def __init__(self):
-        self.config = OptimizedAppConfig()
-        self.setup_logging()
+        config_dir = Path.home() / '.ppc4'
+        config_dir.mkdir(exist_ok=True)
+        self.config = OptimizedAppConfig(config_dir)
+        self.processor = OptimizedFileProcessor(self.config)
+        self.orchestrator = OptimizedTTSOrchestrator(self.config)
+        self.args = None
     
-    def setup_logging(self):
-        """设置日志"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler("ppc4.log", encoding='utf-8')
-            ]
+    def create_parser(self):
+        """创建命令行参数解析器"""
+        parser = argparse.ArgumentParser(
+            prog='ppc4',
+            description='PPC4 - 高性能文本转语音处理工具',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+用法示例:
+  %(prog)s --input input.txt --output output_dir
+  %(prog)s --input input.txt --output output_dir --voice zh-CN-XiaoxiaoNeural --rate +10%%
+  %(prog)s --input input.txt --output output_dir --tempo 1.2 --pitch +10Hz
+  %(prog)s --input input.txt --output output_dir --concurrency 4 --max-chunk-size 1000
+  %(prog)s --config config.ini --share-config share.json
+            """
         )
+        
+        # 输入输出参数
+        io_group = parser.add_argument_group('输入输出参数')
+        io_group.add_argument('--input', '-i', type=str, help='输入文本文件路径')
+        io_group.add_argument('--output', '-o', type=str, help='输出音频目录路径')
+        io_group.add_argument('--config', '-c', type=str, help='配置文件路径')
+        io_group.add_argument('--share-config', type=str, help='共享配置文件路径')
+        
+        # TTS相关参数
+        tts_group = parser.add_argument_group('TTS参数')
+        tts_group.add_argument('--voice', type=str, help='TTS声音名称 (如: zh-CN-XiaoxiaoNeural)')
+        tts_group.add_argument('--rate', '--speed', type=str, help='语速调整 (如: +20%%, -10%%)')
+        tts_group.add_argument('--volume', type=str, help='音量调整 (如: +5dB, -3dB)')
+        tts_group.add_argument('--pitch', type=str, help='音调调整 (如: +10Hz, -5st)')
+        tts_group.add_argument('--tempo', type=float, help='播放速度倍数 (如: 1.2, 0.8)')
+        
+        # 处理参数
+        proc_group = parser.add_argument_group('处理参数')
+        proc_group.add_argument('--concurrency', type=int, help='并发处理数量')
+        proc_group.add_argument('--max-chunk-size', type=int, help='最大块大小')
+        proc_group.add_argument('--min-chunk-size', type=int, help='最小块大小')
+        proc_group.add_argument('--chunk-strategy', type=str, choices=['fixed', 'smart'], help='分块策略')
+        proc_group.add_argument('--chapter-detection', type=str, choices=['auto', 'none', 'traditional', 'numbered'], help='章节检测模式')
+        proc_group.add_argument('--encoding', type=str, help='输入文件编码 (默认: utf-8)')
+        
+        # 临时参数
+        temp_group = parser.add_argument_group('临时参数 (运行时覆盖配置文件设置)')
+        temp_group.add_argument('--temp-voice', type=str, help='临时声音设置')
+        temp_group.add_argument('--temp-rate', type=str, help='临时语速设置')
+        temp_group.add_argument('--temp-volume', type=str, help='临时音量设置')
+        temp_group.add_argument('--temp-pitch', type=str, help='临时音调设置')
+        temp_group.add_argument('--temp-concurrency', type=int, help='临时并发数')
+        temp_group.add_argument('--temp-max-chunk-size', type=int, help='临时最大块大小')
+        temp_group.add_argument('--temp-min-chunk-size', type=int, help='临时最小块大小')
+        temp_group.add_argument('--temp-output-format', type=str, help='临时输出格式')
+        temp_group.add_argument('--temp-timeout', type=int, help='临时超时时间(秒)')
+        temp_group.add_argument('--temp-retry-count', type=int, help='临时重试次数')
+        
+        # 功能开关
+        feature_group = parser.add_argument_group('功能开关')
+        feature_group.add_argument('--dry-run', action='store_true', help='仅显示将要执行的操作，不实际处理')
+        feature_group.add_argument('--no-chapter-split', action='store_true', help='禁用章节自动分割')
+        feature_group.add_argument('--force-overwrite', action='store_true', help='强制覆盖现有文件')
+        feature_group.add_argument('--skip-errors', action='store_true', help='跳过错误继续处理')
+        feature_group.add_argument('--verbose', '-v', action='count', default=0, help='详细输出 (可多次使用增加详细程度)')
+        feature_group.add_argument('--quiet', '-q', action='store_true', help='静默模式')
+        
+        # 工具功能
+        tool_group = parser.add_argument_group('工具功能')
+        tool_group.add_argument('--list-voices', action='store_true', help='列出可用的声音')
+        tool_group.add_argument('--test-connection', action='store_true', help='测试网络连接')
+        tool_group.add_argument('--show-config', action='store_true', help='显示当前配置')
+        tool_group.add_argument('--export-config', type=str, help='导出当前配置到文件')
+        tool_group.add_argument('--create-share-config', type=str, help='创建共享配置文件')
+        tool_group.add_argument('--apply-share-config', type=str, help='应用共享配置文件')
+        
+        return parser
     
     async def run(self):
-        """运行CLI"""
-        parser = argparse.ArgumentParser(description="PPC4 - 智能章节分割TTS工具")
+        """运行命令行界面"""
+        parser = self.create_parser()
+        self.args = parser.parse_args()
         
-        subparsers = parser.add_subparsers(dest='command', help='可用命令')
+        # 根据详细级别设置日志
+        if self.args.quiet:
+            logging.getLogger().setLevel(logging.ERROR)
+        elif self.args.verbose >= 2:
+            logging.getLogger().setLevel(logging.DEBUG)
+        elif self.args.verbose >= 1:
+            logging.getLogger().setLevel(logging.INFO)
+        else:
+            logging.getLogger().setLevel(logging.WARNING)
         
-        # TTS命令
-        tts_parser = subparsers.add_parser('tts', help='批量TTS转换')
-        tts_parser.add_argument('--input', '-i', required=True, help='输入目录')
-        tts_parser.add_argument('--output', '-o', required=True, help='输出目录')
-        tts_parser.add_argument('--voice', '-v', default='zh-CN-XiaoxiaoNeural', help='语音')
-        tts_parser.add_argument('--concurrency', '-c', type=int, default=12, help='并发数')
-        
-        # 分割命令
-        split_parser = subparsers.add_parser('split', help='章节分割')
-        split_parser.add_argument('--input', '-i', required=True, help='输入文件')
-        split_parser.add_argument('--output', '-o', required=True, help='输出目录')
-        split_parser.add_argument('--patterns', '-p', nargs='+', help='分割模式')
-        split_parser.add_argument('--preset', choices=['default', 'chinese', 'english', 'custom'], default='default', help='预设规则')
-        
-        # 配置命令
-        config_parser = subparsers.add_parser('config', help='配置管理')
-        config_parser.add_argument('--export', help='导出配置')
-        config_parser.add_argument('--import', dest='import_config', help='导入配置')
-        config_parser.add_argument('--list', action='store_true', help='列出配置')
-        
-        # 语音列表命令
-        subparsers.add_parser('voices', help='列出可用语音')
-        
-        # 测试命令
-        subparsers.add_parser('test', help='运行测试')
-        
-        args = parser.parse_args()
-        
-        if not args.command:
-            parser.print_help()
+        # 工具功能优先执行
+        if self.args.list_voices:
+            await self.list_voices()
             return
+        
+        if self.args.test_connection:
+            await self.test_connection()
+            return
+            
+        if self.args.show_config:
+            self.show_config()
+            return
+            
+        if self.args.export_config:
+            self.export_config(self.args.export_config)
+            return
+            
+        if self.args.create_share_config:
+            self.create_share_config(self.args.create_share_config)
+            return
+            
+        if self.args.apply_share_config:
+            self.apply_share_config(self.args.apply_share_config)
+            return
+        
+        # 检查必要参数
+        if not self.args.input or not self.args.output:
+            if not self.args.dry_run:
+                parser.error("--input 和 --output 参数是必需的")
+        
+        # 加载配置文件
+        if self.args.config:
+            self.config.load_from_file(Path(self.args.config))
+        
+        # 应用临时参数覆盖
+        self.apply_temp_params()
+        
+        # 显示配置摘要
+        if self.args.verbose > 0:
+            self.show_config_summary()
+        
+        # 执行处理任务
+        if not self.args.dry_run:
+            await self.process_file()
+        else:
+            print("DRY RUN: 将要执行以下操作:")
+            print(f"  输入文件: {self.args.input}")
+            print(f"  输出目录: {self.args.output}")
+            print(f"  当前配置: 并发={self.config.get('tts', 'concurrency')}, 声音={self.config.get('tts', 'voice')}")
+    
+    def apply_temp_params(self):
+        """应用临时参数覆盖配置"""
+        temp_overrides = {}
+        
+        # TTS参数临时覆盖 - 直接修改配置数据
+        if self.args.temp_voice:
+            self.config.data['tts']['voice'] = self.args.temp_voice
+            temp_overrides['voice'] = self.args.temp_voice
+        if self.args.temp_rate:
+            self.config.data['tts']['rate'] = self.args.temp_rate
+            temp_overrides['rate'] = self.args.temp_rate
+        if self.args.temp_volume:
+            self.config.data['tts']['volume'] = self.args.temp_volume
+            temp_overrides['volume'] = self.args.temp_volume
+        if self.args.temp_pitch:
+            self.config.data['tts']['pitch'] = self.args.temp_pitch
+            temp_overrides['pitch'] = self.args.temp_pitch
+        if self.args.temp_output_format:
+            self.config.data['tts']['output_format'] = self.args.temp_output_format
+            temp_overrides['output_format'] = self.args.temp_output_format
+        if self.args.temp_timeout is not None:
+            self.config.data['tts']['timeout_baseline_sec'] = float(self.args.temp_timeout)
+            temp_overrides['timeout_baseline_sec'] = self.args.temp_timeout
+        if self.args.temp_retry_count is not None:
+            self.config.data['tts']['retries'] = int(self.args.temp_retry_count)
+            temp_overrides['retries'] = self.args.temp_retry_count
+        
+        # 性能参数临时覆盖
+        if self.args.temp_concurrency is not None:
+            self.config.data['tts']['concurrency'] = int(self.args.temp_concurrency)
+            temp_overrides['concurrency'] = self.args.temp_concurrency
+        if self.args.temp_max_chunk_size is not None:
+            self.config.data['performance']['max_chunk_size'] = int(self.args.temp_max_chunk_size)
+            temp_overrides['max_chunk_size'] = self.args.temp_max_chunk_size
+        if self.args.temp_min_chunk_size is not None:
+            self.config.data['performance']['min_chunk_size'] = int(self.args.temp_min_chunk_size)
+            temp_overrides['min_chunk_size'] = self.args.temp_min_chunk_size
+        
+        # 直接参数覆盖
+        if self.args.voice:
+            self.config.data['tts']['voice'] = self.args.voice
+        if self.args.rate:
+            self.config.data['tts']['rate'] = self.args.rate
+        if self.args.volume:
+            self.config.data['tts']['volume'] = self.args.volume
+        if self.args.pitch:
+            self.config.data['tts']['pitch'] = self.args.pitch
+        if self.args.tempo:
+            self.config.data['tts']['tempo'] = self.args.tempo
+        if self.args.concurrency is not None:
+            self.config.data['tts']['concurrency'] = int(self.args.concurrency)
+        if self.args.max_chunk_size is not None:
+            # 配置中没有max_chunk_size字段，需要添加到处理器配置中
+            # 在实际处理中使用
+            pass
+        if self.args.min_chunk_size is not None:
+            # 配置中没有min_chunk_size字段，需要添加到处理器配置中
+            # 在实际处理中使用
+            pass
+        if self.args.chunk_strategy:
+            # 配置中没有chunk_strategy字段，需要添加到处理器配置中
+            # 在实际处理中使用
+            pass
+        if self.args.encoding:
+            # 配置中没有encoding字段，需要添加到处理器配置中
+            # 在实际处理中使用
+            pass
+        
+        if temp_overrides:
+            logger.info(f"应用临时参数覆盖: {temp_overrides}")
+    
+    async def list_voices(self):
+        """列出可用的声音"""
+        print("正在获取可用的声音列表...")
+        try:
+            voices = await edge_tts.list_voices()
+            for voice in voices:
+                print(f"{voice['Name']} | {voice['ShortName']} | {voice['Locale']} | {voice['Gender']}")
+                if self.args.verbose > 0:
+                    print(f"  - StyleList: {voice.get('StyleList', [])}")
+                    print(f"  - Preview URL: {voice.get('PreviewURL', 'N/A')}")
+        except Exception as e:
+            print(f"获取声音列表失败: {e}")
+    
+    async def test_connection(self):
+        """测试网络连接"""
+        monitor = OptimizedConnectivityMonitor(self.config)
+        connected = await monitor.is_connected()
+        status = monitor.get_status()
+        print(f"网络连接状态: {'已连接' if connected else '未连接'}")
+        print(f"延迟: {status['latency']:.2f}ms")
+        print(f"上次检查: {datetime.fromtimestamp(status['last_check'])}")
+    
+    def show_config(self):
+        """显示当前配置"""
+        print("当前配置:")
+        for section_name, section in self.config.config.items():
+            print(f"\n[{section_name}]")
+            for key, value in section.items():
+                print(f"{key} = {value}")
+    
+    def export_config(self, filepath):
+        """导出当前配置到文件"""
+        try:
+            # 使用现有的save方法，但需要保存到指定路径
+            config = configparser.ConfigParser()
+            
+            # 将数据转换回ConfigParser格式
+            for section_name, section_data in self.config.data.items():
+                config[section_name] = {}
+                for key, value in section_data.items():
+                    if isinstance(value, list):
+                        config[section_name][key] = ','.join(map(str, value))
+                    elif isinstance(value, bool):
+                        config[section_name][key] = str(value).lower()
+                    else:
+                        config[section_name][key] = str(value)
+            
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(f"; PPC4 配置文件\n; 更新时间: {datetime.now().isoformat()}\n\n")
+                config.write(f)
+            print(f"配置已导出到: {filepath}")
+        except Exception as e:
+            print(f"导出配置失败: {e}")
+    
+    def create_share_config(self, filepath):
+        """创建共享配置"""
+        try:
+            manager = ConfigShareManager(Path.home() / '.ppc4')
+            config_dict = {k: dict(v) for k, v in self.config.config.items()}
+            success = manager.create_share_config(
+                config_dict,
+                description="Shared configuration via CLI",
+                author=os.getenv('USER', 'Unknown')
+            )
+            if success:
+                print(f"共享配置已创建: {filepath}")
+                shutil.copy(manager.share_file, filepath)
+            else:
+                print("创建共享配置失败")
+        except Exception as e:
+            print(f"创建共享配置失败: {e}")
+    
+    def apply_share_config(self, filepath):
+        """应用共享配置"""
+        try:
+            manager = ConfigShareManager(Path.home() / '.ppc4')
+            share_config = manager.load_share_config(Path(filepath))
+            if share_config:
+                merged_config = manager.merge_share_config(
+                    {k: dict(v) for k, v in self.config.config.items()},
+                    share_config,
+                    "merge"
+                )
+                
+                # 更新当前配置
+                for section_name, section_data in merged_config.items():
+                    for key, value in section_data.items():
+                        self.config.set(section_name, key, value)
+                        
+                print(f"共享配置已应用: {filepath}")
+            else:
+                print("无法加载共享配置文件")
+        except Exception as e:
+            print(f"应用共享配置失败: {e}")
+    
+    def show_config_summary(self):
+        """显示配置摘要"""
+        print("配置摘要:")
+        tts_config = self.config.get('tts')
+        performance_config = self.config.get('performance')
+        print(f"  声音: {tts_config.get('voice', 'N/A')}")
+        print(f"  语速: {tts_config.get('rate', 'N/A')}")
+        print(f"  音量: {tts_config.get('volume', 'N/A')}")
+        print(f"  音调: {tts_config.get('pitch', 'N/A')}")
+        print(f"  并发数: {tts_config.get('concurrency', 'N/A')}")
+        print(f"  最大块大小: {performance_config.get('max_chunk_size', 'N/A')}")
+        print(f"  最小块大小: {performance_config.get('min_chunk_size', 'N/A')}")
+    
+    async def process_file(self):
+        """处理文件"""
+        input_path = Path(self.args.input)
+        output_dir = Path(self.args.output)
+        
+        if not input_path.exists():
+            print(f"输入文件不存在: {input_path}")
+            return
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 应用章节检测设置
+        if self.args.chapter_detection:
+            self.config.set('split', 'mode', self.args.chapter_detection)
+        
+        # 应用是否跳过章节分割的设置
+        if self.args.no_chapter_split:
+            self.config.set('split', 'enabled', False)
+        
+        # 应用是否强制覆盖的设置
+        if self.args.force_overwrite:
+            self.config.set('general', 'overwrite', True)
+            
+        # 应用是否跳过错误的设置
+        if self.args.skip_errors:
+            self.config.set('general', 'skip_errors', True)
+        
+        # 开始处理
+        print(f"开始处理文件: {input_path}")
+        print(f"输出目录: {output_dir}")
         
         try:
-            if args.command == 'tts':
-                await self._handle_tts(args)
-            elif args.command == 'split':
-                await self._handle_split(args)
-            elif args.command == 'config':
-                await self._handle_config(args)
-            elif args.command == 'voices':
-                await self._handle_voices()
-            elif args.command == 'test':
-                await self._handle_test()
-        
-        except KeyboardInterrupt:
-            logger.info("用户中断操作")
+            # 使用优化的文件处理器
+            await self.processor.process_file(input_path, output_dir)
+            print("处理完成!")
         except Exception as e:
-            logger.error(f"CLI错误: {e}")
-            sys.exit(1)
-    
-    async def _handle_tts(self, args):
-        """处理TTS命令"""
-        logger.info(f"开始TTS转换: {args.input} -> {args.output}")
-        
-        input_path = Path(args.input)
-        output_path = Path(args.output)
-        
-        if not input_path.exists():
-            logger.error(f"输入目录不存在: {input_path}")
-            return
-        
-        # 更新配置
-        self.config.set("tts.concurrency", args.concurrency)
-        
-        # 创建协调器
-        orchestrator = OptimizedTTSOrchestrator(self.config)
-        
-        # 运行TTS
-        result = await orchestrator.run_batch(input_path, output_path, args.voice)
-        
-        logger.info(f"TTS转换完成: {result}")
-    
-    async def _handle_split(self, args):
-        """处理分割命令"""
-        logger.info(f"开始章节分割: {args.input} -> {args.output}")
-        
-        input_path = Path(args.input)
-        output_path = Path(args.output)
-        
-        if not input_path.exists():
-            logger.error(f"输入文件不存在: {input_path}")
-            return
-        
-        # 创建检测器
-        detector = SmartChapterDetector(self.config)
-        
-        # 设置规则
-        if args.patterns:
-            detector.set_custom_patterns(args.patterns)
-        elif args.preset == 'chinese':
-            detector.set_preset(ChapterPreset.CHINESE_NOVEL)
-        elif args.preset == 'english':
-            detector.set_preset(ChapterPreset.ENGLISH_NOVEL)
-        else:
-            detector.set_preset(ChapterPreset.DEFAULT)
-        
-        # 执行分割
-        processor = OptimizedFileProcessor(self.config)
-        result = processor.split_novel(input_path, output_path, detector)
-        
-        logger.info(f"章节分割完成: {result}")
-    
-    async def _handle_config(self, args):
-        """处理配置命令"""
-        manager = ConfigShareManager(self.config)
-        
-        if args.export:
-            # 导出配置
-            config_data = {
-                "chapter_patterns": {
-                    "default": ["^第[一二两三四五六七八九十百千万\\d]+章", "^引子", "^序章"],
-                    "custom": []
-                },
-                "voice_settings": {
-                    "speed": 1.0,
-                    "pitch": 0,
-                    "volume": 100
-                },
-                "performance": {
-                    "concurrency": self.config.get("tts").get("concurrency", 12),
-                    "memory_limit_mb": self.config.get("tts").get("memory_limit_mb", 768),
-                    "chunk_size": self.config.get("file_processor").get("chunk_size", 1024)
-                }
-            }
-            
-            success = await manager.save_shared_config(config_data, Path(args.export))
-            if success:
-                logger.info(f"配置已导出到: {args.export}")
-            else:
-                logger.error("配置导出失败")
-        
-        elif args.import_config:
-            # 导入配置
-            config_data = await manager.load_shared_config(Path(args.import_config))
-            if config_data:
-                logger.info(f"配置已从 {args.import_config} 导入")
-                # 这里可以添加应用配置的逻辑
-            else:
-                logger.error("配置导入失败")
-        
-        elif args.list:
-            # 列出配置
-            logger.info("当前配置:")
-            logger.info(f"  并发数: {self.config.get('tts').get('concurrency', 12)}")
-            logger.info(f"  内存限制: {self.config.get('tts').get('memory_limit_mb', 768)} MB")
-            logger.info(f"  分块大小: {self.config.get('file_processor').get('chunk_size', 1024)} KB")
-    
-    async def _handle_voices(self):
-        """处理语音列表命令"""
-        logger.info("可用语音列表:")
-        voices = [
-            "zh-CN-XiaoxiaoNeural",
-            "zh-CN-XiaoyiNeural", 
-            "zh-CN-YunjianNeural",
-            "zh-CN-YunxiNeural",
-            "zh-CN-YunxiaNeural",
-            "zh-CN-liaoning-XiaobeiNeural",
-            "zh-CN-shaanxi-XiaoniNeural"
-        ]
-        
-        for voice in voices:
-            logger.info(f"  {voice}")
-    
-    async def _handle_test(self):
-        """处理测试命令"""
-        logger.info("运行PPC4测试...")
-        
-        # 测试智能章节检测
-        detector = SmartChapterDetector(self.config)
-        test_text = ["第1章 开始", "这是内容", "", "第2章 继续", "更多内容"]
-        
-        chapters = list(detector.detect_chapters(test_text))
-        logger.info(f"章节检测测试: 找到 {len(chapters)} 个章节")
-        
-        # 测试配置共享
-        manager = ConfigShareManager(self.config)
-        test_config = {"test": "value"}
-        
-        success = await manager.save_shared_config(test_config)
-        logger.info(f"配置共享测试: {'通过' if success else '失败'}")
-        
-        logger.info("PPC4测试完成")
+            print(f"处理过程中出现错误: {e}")
+            if not self.args.skip_errors:
+                raise
 
-# --------------------------------------
-# 9. 应用启动器
-# --------------------------------------
+
 class PPC4Application:
     """PPC4应用程序"""
     
@@ -2704,14 +2012,8 @@ class PPC4Application:
     
     def _run_gui(self):
         """运行GUI模式"""
-        if not GUI_AVAILABLE:
-            logger.error("PyQt6未安装，无法启动GUI模式")
-            logger.info("请使用CLI模式或安装PyQt6: pip install PyQt6")
-            return
-            
-        logger.info("启动PPC4 GUI模式...")
-        
-        app = QApplication(sys.argv)
+        logger.info("GUI模式已移除，仅支持CLI模式")
+        return
         
         # 设置应用样式
         app.setStyle('Fusion')
@@ -2733,9 +2035,10 @@ class PPC4Application:
 if __name__ == "__main__":
     # 检查命令行参数
     if len(sys.argv) > 1 and sys.argv[1] in ['--gui', '-g']:
-        # GUI模式
+        print("GUI模式已移除，仅支持CLI模式")
+        # 为了兼容性，仍然使用CLI模式
         app = PPC4Application()
-        app.run(gui_mode=True)
+        app.run(gui_mode=False)
     else:
         # CLI模式
         app = PPC4Application()
