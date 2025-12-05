@@ -35,17 +35,26 @@ from collections import deque, defaultdict
 
 # TTS核心
 import edge_tts
+try:
+    import aiofiles
+except ImportError:
+    aiofiles = None
 
 # GUI支持（可选）
 try:
     from PyQt6.QtWidgets import *
     from PyQt6.QtCore import *
     from PyQt6.QtGui import *
+    from PyQt6.QtCore import pyqtSignal
+    QObject = QObject
     GUI_AVAILABLE = True
 except ImportError:
     GUI_AVAILABLE = False
     logger = logging.getLogger(__name__)
     logger.warning("PyQt6未安装，GUI功能不可用")
+    class QObject:
+        pass
+    pyqtSignal = None
 
 # ==============================================================================
 # § 1. 智能章节分割系统
@@ -57,6 +66,12 @@ class ChapterPattern(Enum):
     NUMBERED = "numbered"        # 数字：1. 第一章
     ROMAN = "roman"             # 罗马数字：I. 第一章
     CUSTOM = "custom"           # 自定义正则
+
+class ChapterPreset(Enum):
+    """章节预设枚举"""
+    DEFAULT = "default"          # 默认规则
+    CHINESE_NOVEL = "chinese"    # 中文小说
+    ENGLISH_NOVEL = "english"    # 英文小说
 
 @dataclass
 class ChapterRule:
@@ -538,6 +553,23 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# GUI信号类（用于PyQt线程通信）
+if GUI_AVAILABLE:
+    class WorkerSignals(QObject):
+        """工作线程信号"""
+        progress = pyqtSignal(dict)
+        log = pyqtSignal(str)
+        finished = pyqtSignal()
+        error = pyqtSignal(str)
+else:
+    class WorkerSignals:
+        """工作线程信号（虚拟类）"""
+        def __init__(self):
+            self.progress = type('obj', (object,), {'emit': lambda x: None})()
+            self.log = type('obj', (object,), {'emit': lambda x: None})()
+            self.finished = type('obj', (object,), {'emit': lambda x: None})()
+            self.error = type('obj', (object,), {'emit': lambda x: None})()
 
 APP_NAME = "PPC4"
 CONFIG_FILENAME = "ppc4_config.ini"
@@ -1248,6 +1280,12 @@ class OptimizedTTSOrchestrator:
     async def _convert_text_to_speech(self, task: OptimizedTTSTask) -> bool:
         """文本转语音"""
         max_retries = self.config.get("tts").get("retries", 3)
+        
+        # 检查aiofiles是否可用
+        if aiofiles is None:
+            task.error = "aiofiles模块未安装"
+            logger.error(f"错误: aiofiles模块未安装，无法进行异步文件操作")
+            return False
         
         for attempt in range(max_retries):
             if self.should_stop:
