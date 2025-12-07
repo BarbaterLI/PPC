@@ -26,8 +26,7 @@ To install PPC10, simply clone the repository and install the dependencies:
 要安装 PPC10，只需克隆存储库并安装依赖项：
 
 ```bash
-git clone <repository-url>
-cd ppc10
+git clone https://github.com/BarbaterLI/PPC.git
 pip install -r requirements.txt
 ```
 
