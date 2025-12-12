@@ -51,9 +51,9 @@ ppc10/
 ```
 
 ## Contributing / 贡献
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+本项目目前不接受非本人提交的 Pull Request 或 Issue。如有疑问，请自行查阅源码或文档。
 
-欢迎贡献！请随时提交拉取请求。对于重大更改，请先开一个 issue 来讨论您想要更改的内容。
+This project currently does not accept Pull Requests or Issues from contributors other than the author. If you have questions, please refer to the source code or documentation.
 
 ## License / 许可证
 MIT
