@@ -1,0 +1,154 @@
+_saved_at: '2026-04-08T12:54:22.055899'
+arch:
+  big_endian_mode: false
+  cache_line_size: 128
+  enable_simd: true
+  huge_pages: false
+  numa_aware: false
+  prefetch_distance: 4
+batch:
+  max_files_per_batch: 500
+  max_size_mb: 95
+  preserve_order: true
+connection_pool:
+  adaptive_scaling: true
+  connection_validate_interval: 30
+  health_check_on_acquire: false
+  max_idle_time: 300
+  min_idle_connections: 5
+  warmup_connections: 10
+core:
+  log_level: info
+  mode: parametric
+  progress_interval: 10
+  temp_dir: ~/.cache/ppc7
+distributed:
+  enabled: false
+  health_check_interval: 30
+  health_check_timeout: 5
+  load_balance_strategy: round_robin
+  local_execution: true
+  master_max_concurrency: 8
+  max_retries: 3
+  mode: master
+  node_host: 0.0.0.0
+  node_max_concurrency: 4
+  node_port: 8000
+  nodes: []
+  task_timeout: 300
+features:
+  auto_retry: true
+  keep_awake: false
+  merge_short_chapters: true
+  smart_detection: true
+memory_pool:
+  compaction_threshold: 0.7
+  enable_compaction: true
+  generation_count: 3
+  old_gen_size: 256
+  prefetch_enabled: true
+  young_gen_size: 64
+network:
+  probe_hosts:
+  - azure.microsoft.com
+  - cloudflare.com
+  probe_interval: 45
+  timeout: 5
+performance:
+  connection_pool_size: 16
+  enable_connection_pool: true
+  enable_memory_monitor: true
+  max_file_cache_size: 100
+  memory_limit_mb: 768
+  stream_flush_threshold: 1048576
+reliability:
+  network_circuit:
+    failure_threshold: 3
+    half_open_max_calls: 3
+    success_threshold: 2
+    timeout_seconds: 30.0
+    window_seconds: 60.0
+  network_retry:
+    base_delay: 0.5
+    exponential_base: 2.0
+    jitter: 0.1
+    max_delay: 30.0
+    max_retries: 5
+  tts_circuit:
+    failure_threshold: 5
+    half_open_max_calls: 3
+    success_threshold: 3
+    timeout_seconds: 60.0
+    window_seconds: 60.0
+  tts_retry:
+    base_delay: 2.0
+    exponential_base: 2.0
+    jitter: 0.1
+    max_delay: 30.0
+    max_retries: 3
+split:
+  add_title_separator: false
+  custom_rules: []
+  encoding_detect_buffer: 1024
+  encoding_fallback:
+  - utf-8
+  - gbk
+  - gb2312
+  max_filename_length: 100
+  min_chapter_length: 100
+  preset: chinese_novel
+tts:
+  buffer_size: 32
+  concurrency: 10
+  ema_alpha: 0.3
+  enable_segmentation: true
+  fast_fail_threshold: 3
+  max_segment_length: 5000
+  min_segment_length: 100
+  preset: balanced
+  punctuations:
+  - 。
+  - ！
+  - ？
+  - ；
+  - ，
+  - 、
+  - ……
+  - ——
+  - .
+  - '!'
+  - '?'
+  - ;
+  - ','
+  - '
+
+    '
+  quarantine_delay: 300.0
+  rate: +0%
+  rate_limit: 100
+  rate_recovery_delay: 30.0
+  retries: 3
+  segment_filename_format: '{stem}_seg_{index:03d}{suffix}'
+  segment_silence_ms: 100
+  text_normalization:
+    enable_empty_line_normalization: true
+    enable_linebreak_normalization: true
+    enable_punctuation_normalization: true
+    enable_text_normalization: true
+    enable_trim_whitespace: true
+    enable_whitespace_normalization: true
+    max_consecutive_empty_lines: 2
+  timeout: 120
+  timeout_max: 720
+  timeout_min: 50
+  timeout_mode: auto
+  timeout_percentile: 0.95
+  voice: zh-CN-YunxiNeural
+ui:
+  log_file: null
+  mode: simple
+  no_color: false
+  show_progress: true
+  show_timestamps: false
+  verbose: true
+version: 8.0.0
