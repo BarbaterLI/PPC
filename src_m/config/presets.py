@@ -3,11 +3,11 @@
 
 from typing import Dict, Any, Callable
 from src_m.config.schema import (
-    PPC9Config, CoreConfig, TTSConfig, SplitConfig,
+    PPC10Config, CoreConfig, TTSConfig, SplitConfig,
     BatchConfig, PerformanceConfig, NetworkConfig, FeaturesConfig,
     ReliabilityConfig, RetryStrategyConfig, CircuitBreakerConfig,
     UIConfig, UIMode, TextNormalizationConfig, ConnectionPoolConfig,
-    MemoryPoolConfig, PPC7ArchConfig
+    MemoryPoolConfig, PPC10ArchConfig
 )
 
 PUNCTUATIONS = ['，', '。', '、', '；', '：', '？', '…', '—', '.', '!', '?', ';', ',', '\n']
@@ -103,15 +103,15 @@ def _default_memory_pool_config() -> MemoryPoolConfig:
     return MemoryPoolConfig()
 
 
-def _default_arch_config() -> PPC7ArchConfig:
+def _default_arch_config() -> PPC10ArchConfig:
     """创建默认架构配置"""
-    return PPC7ArchConfig()
+    return PPC10ArchConfig()
 
 
 def _build_base_config() -> Dict[str, Any]:
     """构建基础配置字典"""
     return dict(
-        version="9.0.0",
+        version="10.0.0",
         connection_pool=_default_connection_pool_config(),
         memory_pool=_default_memory_pool_config(),
         arch=_default_arch_config()
@@ -170,13 +170,13 @@ def _default_core_config(**overrides) -> CoreConfig:
         mode="parametric",
         log_level="info",
         progress_interval=10,
-        temp_dir="~/.cache/ppc9"
+        temp_dir="~/.cache/ppc10"
     )
     defaults.update(overrides)
     return CoreConfig(**defaults)
 
 
-def create_speed_preset() -> PPC9Config:
+def create_speed_preset() -> PPC10Config:
     """极速模式 - 追求最快速度"""
     config = _build_base_config()
     config.update(dict(
@@ -206,10 +206,10 @@ def create_speed_preset() -> PPC9Config:
         ),
         ui=_default_ui_config(verbose=False, show_progress=True)
     ))
-    return PPC9Config(**config)
+    return PPC10Config(**config)
 
 
-def create_balanced_preset() -> PPC9Config:
+def create_balanced_preset() -> PPC10Config:
     """平衡模式 - 速度与质量平衡"""
     config = _build_base_config()
     config.update(dict(
@@ -223,10 +223,10 @@ def create_balanced_preset() -> PPC9Config:
         reliability=_default_reliability_config(),
         ui=_default_ui_config(verbose=True, show_progress=True)
     ))
-    return PPC9Config(**config)
+    return PPC10Config(**config)
 
 
-def create_quality_preset() -> PPC9Config:
+def create_quality_preset() -> PPC10Config:
     """质量模式 - 追求最佳质量"""
     config = _build_base_config()
     config.update(dict(
@@ -270,17 +270,17 @@ def create_quality_preset() -> PPC9Config:
         ),
         ui=_default_ui_config(mode=UIMode.CLASSIC, verbose=True, show_progress=True, show_timestamps=True)
     ))
-    return PPC9Config(**config)
+    return PPC10Config(**config)
 
 
-PRESETS: Dict[str, Callable[[], PPC9Config]] = {
+PRESETS: Dict[str, Callable[[], PPC10Config]] = {
     "speed": create_speed_preset,
     "balanced": create_balanced_preset,
     "quality": create_quality_preset,
 }
 
 
-def get_preset(name: str) -> PPC9Config:
+def get_preset(name: str) -> PPC10Config:
     """获取预设配置"""
     factory = PRESETS.get(name)
     if factory:
@@ -293,8 +293,8 @@ def get_preset_names() -> list:
     return list(PRESETS.keys())
 
 
-COMMENTED_YAML_TEMPLATE = """# PPC9 配置文件 - 终极文本转语音工具
-# 版本: 9.0.0
+COMMENTED_YAML_TEMPLATE = """# PPC10 配置文件 - 终极文本转语音工具
+# 版本: 10.0.0
 # 冰璃岩开发组 (BLY Team)
 # 说明: 所有配置项均带有注释，修改后保存即可生效
 # ============================================
@@ -308,7 +308,7 @@ core:
   # 进度条更新频率（每N个项目更新一次）
   progress_interval: 10
   # 临时文件目录
-  temp_dir: ~/.cache/ppc9
+  temp_dir: ~/.cache/ppc10
 
 # ============================================
 # TTS 语音合成配置
@@ -413,6 +413,12 @@ split:
   # true: 添加分隔符（如"第一章\\n========"）
   # false: 不添加分隔符，仅保留标题
   add_title_separator: true
+  # 启用卷章体层级分割
+  hierarchical_split: false
+  # 卷目录名前缀格式
+  volume_dir_prefix: '{volume}'
+  # 章节文件名格式
+  chapter_file_prefix: '{index:03d}'
   # 自定义分割规则（JSON数组）
   custom_rules: []
 
@@ -494,7 +500,7 @@ reliability:
   tts_retry:
     max_retries: 3
     base_delay: 2.0
-    max_delay: 30.0
+    max_delay: 60.0
     exponential_base: 2.0
     jitter: 0.1
   network_retry:
@@ -590,7 +596,81 @@ extensions:
   extension_dirs:
   - extensions
   strict_validation: true
+  # 已安装扩展注册表（自动维护，勿手动修改）
+  installed_extensions: {}
+
+# ============================================
+# 输出格式配置
+# ============================================
+output:
+  # 默认音频格式: mp3 | wav | ogg | aac
+  default_format: mp3
+  # 音频质量: low | medium | high | lossless
+  audio_quality: high
+  # 后处理管道（如 reverb, compression, equalizer）
+  post_processing: []
+  # 是否嵌入章节元数据
+  metadata_embed: true
+  # 章节间静音时长（毫秒）
+  silence_between_chapters_ms: 500
+  # 输出文件名格式
+  output_naming: '{stem}'
+
+# ============================================
+# Webhook 回调配置
+# ============================================
+webhook:
+  # 是否启用 Webhook
+  enabled: false
+  # Webhook URL
+  url: ''
+  # 触发事件: started | completed | failed | progress
+  events:
+  - completed
+  # 请求超时时间（秒）
+  timeout: 30
+  # 重试次数
+  retry_count: 3
+  # 重试延迟（秒）
+  retry_delay: 1.0
+  # 签名密钥（用于 HMAC 签名验证，null表示不签名）
+  secret: null
+  # 自定义 HTTP 请求头
+  headers: {}
+
+# ============================================
+# 限流器配置
+# ============================================
+rate_limit:
+  # 是否启用限流
+  enabled: true
+  # 最大每秒请求数
+  max_requests_per_second: 100
+  # 突发容量
+  burst_size: 150
+  # 限流策略: token_bucket | sliding_window
+  strategy: token_bucket
+  # 触发限流后的冷却时间（秒）
+  cooldown_on_limit: 0.1
+
+# ============================================
+# 管道工作流配置
+# ============================================
+pipeline:
+  # 启用管道工作流引擎
+  enabled: true
+  # 管道定义文件目录列表
+  pipeline_dirs:
+  - pipelines
+  # 最大并行步骤数
+  max_parallel_steps: 4
+  # 默认步骤超时（秒）
+  default_timeout: 300
+  # 默认重试次数
+  default_retry: 0
+  # 已保存的管道定义（自动维护）
+  saved_pipelines: {}
 
 # 配置版本（自动生成，勿修改）
-version: 9.0.0
+version: 10.0.0
 """

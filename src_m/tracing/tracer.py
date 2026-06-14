@@ -250,7 +250,7 @@ class Span:
 class Tracer:
     """Tracer for managing Span creation, context propagation, and sampling"""
 
-    def __init__(self, name: str = "ppc9", sample_rate: float = 1.0):
+    def __init__(self, name: str = "ppc10", sample_rate: float = 1.0):
         """Initialize tracer
 
         Args:
@@ -902,7 +902,7 @@ def get_aggregator() -> TraceAggregator:
 
 
 def setup_tracing(
-    name: str = "ppc9",
+    name: str = "ppc10",
     sample_rate: float = 1.0,
     max_traces: int = 10000,
 ) -> Tracer:

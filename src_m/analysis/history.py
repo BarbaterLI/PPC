@@ -1,4 +1,4 @@
-"""Analysis history management for PPC9.
+"""Analysis history management for PPC10.
 
 Persists and retrieves HealthReport records to/from JSON files,
 maintaining an index for efficient lookup and cleanup.
@@ -18,13 +18,13 @@ from .models import HealthReport
 class AnalysisHistoryManager:
     """Manages persisting and retrieving HealthReport records.
 
-    Stores individual report files in ``~/.ppc9/analysis_history/`` as JSON,
+    Stores individual report files in ``~/.ppc10/analysis_history/`` as JSON,
     with a companion index file for fast metadata lookups.
     """
 
     def __init__(self, storage_dir: Optional[Path] = None) -> None:
         self._storage_dir = (
-            Path.home() / ".ppc9" / "analysis_history"
+            Path.home() / ".ppc10" / "analysis_history"
             if storage_dir is None
             else storage_dir
         )
@@ -118,12 +118,12 @@ class AnalysisHistoryManager:
         Returns a dictionary with the following keys when both reports
         exist, or ``None`` when one of them cannot be loaded:
 
-        * ``score_diff`` – current score minus historical score.
-        * ``new_issues`` – issues present in the current report but not
+        * ``score_diff`` —current score minus historical score.
+        * ``new_issues`` —issues present in the current report but not
           in the historical one.
-        * ``fixed_issues`` – issues present in the historical report but
+        * ``fixed_issues`` —issues present in the historical report but
           not in the current one.
-        * ``persistent_issues`` – issues that appear in both reports.
+        * ``persistent_issues`` —issues that appear in both reports.
         """
         historical = self.get_report(report_id)
         current = self.get_latest_report()

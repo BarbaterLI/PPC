@@ -1,6 +1,6 @@
 """扩展包格式定义、验证与管理。
 
-本模块实现扩展包 (.ppc9ext.zip) 的清单解析、包验证、安装/卸载/模板创建等功能。
+本模块实现扩展包 (.ppc10ext.zip) 的清单解析、包验证、安装/卸载/模板创建等功能。
 """
 
 import logging
@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 from packaging import version as pkg_version
 
-import ppc9
+import ppc10
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,9 @@ class ExtensionManifest:
     extension_type: str = "tool_integration"
     entry: str = "extension.py"
     dependencies: List[str] = field(default_factory=list)
-    min_ppc9_version: str = "9.0.0"
+    min_ppc10_version: str = "10.0.0"
     tags: List[str] = field(default_factory=list)
+    pipelines: List[str] = field(default_factory=list)
 
 
 def read_manifest(zip_path: Path) -> ExtensionManifest:
@@ -73,8 +74,9 @@ def read_manifest(zip_path: Path) -> ExtensionManifest:
                 extension_type=raw.get("extension_type", "tool_integration"),
                 entry=raw.get("entry", "extension.py"),
                 dependencies=raw.get("dependencies", []),
-                min_ppc9_version=raw.get("min_ppc9_version", "9.0.0"),
+                min_ppc10_version=raw.get("min_ppc10_version", "10.0.0"),
                 tags=raw.get("tags", []),
+                pipelines=raw.get("pipelines", []),
             )
     except zipfile.BadZipFile:
         raise ValueError(f"文件不是有效的 zip 包: {zip_path}")
@@ -87,7 +89,7 @@ def validate_package(zip_path: Path) -> Tuple[bool, List[str]]:
       1. zip 包中包含 manifest.yml
       2. manifest 具有必填字段 (name, version, entry)
       3. entry 指定的文件存在于 zip 中
-      4. min_ppc9_version 与当前 PPC9 版本兼容
+      4. min_ppc10_version 与当前 PPC10 版本兼容
 
     Returns:
         (is_valid, errors) 元组
@@ -142,13 +144,13 @@ def validate_package(zip_path: Path) -> Tuple[bool, List[str]]:
         if not entry_found:
             errors.append(f"入口文件 '{entry_file}' 在扩展包中不存在")
 
-        min_ver = manifest_data.get("min_ppc9_version", "9.0.0")
+        min_ver = manifest_data.get("min_ppc10_version", "10.0.0")
         try:
-            current = pkg_version.parse(ppc9.__version__)
+            current = pkg_version.parse(ppc10.__version__)
             required = pkg_version.parse(min_ver)
             if current < required:
                 errors.append(
-                    f"当前 PPC9 版本 {ppc9.__version__} 低于扩展要求的最低版本 {min_ver}"
+                    f"当前 PPC10 版本 {ppc10.__version__} 低于扩展要求的最低版本 {min_ver}"
                 )
         except pkg_version.InvalidVersion as exc:
             errors.append(f"版本号格式无效: {exc}")
@@ -220,7 +222,7 @@ class ExtensionPackageManager:
                         continue
                     parts = Path(info.filename).parts
                     if len(parts) > 1 and not Path(info.filename).name == "manifest.yml" and not Path(info.filename).name == manifest.entry:
-                        rel = Path(*parts[1:]) if parts[0] == parts[0] else Path(info.filename)
+                        rel = Path(*parts[1:])
                     else:
                         rel = Path(info.filename)
 
@@ -245,6 +247,8 @@ class ExtensionPackageManager:
             )
 
             self._register_in_config(manifest, zip_path)
+
+            self._install_pipelines(manifest, target_dir)
 
             logger.info(f"扩展 '{manifest.name}' v{manifest.version} 安装成功")
             return {
@@ -379,7 +383,7 @@ class ExtensionPackageManager:
         return info
 
     def create_template(self, name: str, output_dir: Optional[Path] = None) -> Path:
-        """创建扩展包模板并打包为 .ppc9ext.zip。
+        """创建扩展包模板并打包为 .ppc10ext.zip。
 
         Returns:
             创建的 zip 文件路径
@@ -399,8 +403,9 @@ class ExtensionPackageManager:
                 "extension_type": "tool_integration",
                 "entry": "extension.py",
                 "dependencies": [],
-                "min_ppc9_version": "9.0.0",
+                "min_ppc10_version": "10.0.0",
                 "tags": [],
+                "pipelines": ["pipelines/example_pipeline.yaml"],
             },
             allow_unicode=True,
             default_flow_style=False,
@@ -438,16 +443,37 @@ class ExtensionPackageManager:
             f"extension = {class_name}Extension()\n"
         )
 
-        zip_path = output_dir / f"{name}.ppc9ext.zip"
+        zip_path = output_dir / f"{name}.ppc10ext.zip"
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             (tmp_path / "manifest.yml").write_text(manifest_content, encoding="utf-8")
             (tmp_path / "extension.py").write_text(extension_content, encoding="utf-8")
 
+            pipelines_dir = tmp_path / "pipelines"
+            pipelines_dir.mkdir(parents=True, exist_ok=True)
+            example_pipeline_content = yaml.dump(
+                {
+                    "name": f"{name}_example",
+                    "description": f"{name} 扩展示例管道",
+                    "steps": [
+                        {
+                            "name": "example_step",
+                            "type": "fanqie_download",
+                            "params": {"book_id": "12345"},
+                        },
+                    ],
+                    "variables": {},
+                },
+                allow_unicode=True,
+                default_flow_style=False,
+            )
+            (pipelines_dir / "example_pipeline.yaml").write_text(example_pipeline_content, encoding="utf-8")
+
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(tmp_path / "manifest.yml", "manifest.yml")
                 zf.write(tmp_path / "extension.py", "extension.py")
+                zf.write(pipelines_dir / "example_pipeline.yaml", "pipelines/example_pipeline.yaml")
 
         logger.info(f"扩展模板已创建: {zip_path}")
         return zip_path
@@ -482,6 +508,73 @@ class ExtensionPackageManager:
                 continue
 
         return dependents
+
+    def _install_pipelines(self, manifest: ExtensionManifest, target_dir: Path) -> None:
+        """安装扩展包中包含的管道 YAML 文件到配置的管道目录，并注册到 saved_pipelines。"""
+        if not manifest.pipelines:
+            return
+
+        try:
+            from src_m.config.manager import ConfigManager
+            from src_m.config.schema import PipelineDefinitionConfig, PipelineStepConfig
+
+            cfg_mgr = ConfigManager()
+            cfg = cfg_mgr.get_config()
+            pipeline_dirs = cfg.pipeline.pipeline_dirs
+
+            dest_dir = None
+            for dir_path in pipeline_dirs:
+                p = Path(dir_path)
+                if not p.is_absolute():
+                    p = Path(cfg_mgr.config_dir) / p
+                p.mkdir(parents=True, exist_ok=True)
+                dest_dir = p
+                break
+
+            if dest_dir is None:
+                dest_dir = Path(cfg_mgr.config_dir) / "pipelines"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+
+            for pipeline_file in manifest.pipelines:
+                src = target_dir / pipeline_file
+                if not src.exists():
+                    logger.warning(f"管道文件 '{pipeline_file}' 在扩展目录中不存在，跳过")
+                    continue
+
+                dest = dest_dir / src.name
+                shutil.copy2(src, dest)
+                logger.info(f"管道文件已安装: {src.name} -> {dest}")
+
+                try:
+                    pipeline_data = yaml.safe_load(dest.read_text(encoding="utf-8"))
+                    if isinstance(pipeline_data, dict) and "name" in pipeline_data:
+                        pipe_name = pipeline_data["name"]
+                        steps = []
+                        for step_data in pipeline_data.get("steps", []):
+                            if isinstance(step_data, dict):
+                                steps.append(PipelineStepConfig(
+                                    name=step_data.get("name", ""),
+                                    step_type=step_data.get("type", step_data.get("step_type", "")),
+                                    depends_on=step_data.get("depends_on", []),
+                                    params=step_data.get("params", {}),
+                                    retry_count=step_data.get("retry", step_data.get("retry_count", 0)),
+                                    timeout_seconds=step_data.get("timeout", step_data.get("timeout_seconds")),
+                                    on_failure=step_data.get("on_failure", "stop"),
+                                ))
+
+                        pipe_id = f"ext_{manifest.name}_{src.stem}"
+                        cfg.pipeline.saved_pipelines[pipe_id] = PipelineDefinitionConfig(
+                            name=pipe_name,
+                            description=pipeline_data.get("description", ""),
+                            steps=steps,
+                            variables=pipeline_data.get("variables", {}),
+                        )
+                except Exception as exc:
+                    logger.warning(f"解析管道文件 '{pipeline_file}' 失败: {exc}")
+
+            cfg_mgr.save()
+        except Exception as exc:
+            logger.warning(f"安装管道文件失败: {exc}")
 
     def _register_in_config(self, manifest: ExtensionManifest, zip_path: Path) -> None:
         """将扩展注册到配置中。"""

@@ -1,4 +1,4 @@
-"""PPC9 Core Abstraction Layer.
+"""PPC10 Core Abstraction Layer.
 
 Provides unified engine and executor base classes, core data models,
 and a comprehensive exception hierarchy.
@@ -27,7 +27,7 @@ from .result import (
     is_err,
 )
 from .exceptions import (
-    PPC9Error,
+    PPC10Error,
     EngineError,
     ExecutorError,
     InitializationError,
@@ -39,20 +39,17 @@ from .exceptions import (
     FileIOError,
     TTSError,
     ChapterError,
+    TTSClientError,
+    TransientError,
+    PermanentError,
+    QuotaError,
+    AudioProcessingError,
+    AudioValidationError,
+    TextProcessingError,
+    SegmentationError,
+    NormalizationError,
+    ChapterRuleError,
 )
-try:
-    from .models import (
-        BatchResult,
-        TaskResult,
-        ResultStatus,
-    )
-    _MODEL_EXPORTS = [
-        "ResultStatus",
-        "TaskResult",
-        "BatchResult",
-    ]
-except ImportError:
-    _MODEL_EXPORTS = []
 
 
 def __getattr__(name: str):
@@ -74,7 +71,7 @@ __all__ = [
     "Err",
     "is_ok",
     "is_err",
-    "PPC9Error",
+    "PPC10Error",
     "EngineError",
     "ExecutorError",
     "InitializationError",
@@ -86,7 +83,16 @@ __all__ = [
     "FileIOError",
     "TTSError",
     "ChapterError",
+    "TTSClientError",
+    "TransientError",
+    "PermanentError",
+    "QuotaError",
+    "AudioProcessingError",
+    "AudioValidationError",
+    "TextProcessingError",
+    "SegmentationError",
+    "NormalizationError",
+    "ChapterRuleError",
 ]
-__all__.extend(_MODEL_EXPORTS)
 
-__version__ = "9.0.0"
+__version__ = "10.0.0"

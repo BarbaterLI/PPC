@@ -1,12 +1,12 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
-Write-Host "=== PPC9 WebUI 开发模式启动 ===" -ForegroundColor Cyan
+Write-Host "=== PPC10 WebUI 开发模式启动 ===" -ForegroundColor Cyan
 
 $backendJob = Start-Job -ScriptBlock {
     param($root)
     Set-Location $root
-    python -m src_m.web.run
+    python ppc10.py --webui --debug
 } -ArgumentList $ProjectRoot
 
 $frontendJob = Start-Job -ScriptBlock {
@@ -36,9 +36,9 @@ try {
     }
 }
 finally {
-    Stop-Job -Job $backendJob -ErrorAction SilentlyContinue
-    Stop-Job -Job $frontendJob -ErrorAction SilentlyContinue
-    Remove-Job -Job $backendJob -Force -ErrorAction SilentlyContinue
-    Remove-Job -Job $frontendJob -Force -ErrorAction SilentlyContinue
+    Stop-Job -Job $backendJob -ErrorActionSilentlyContinue
+    Stop-Job -Job $frontendJob -ErrorActionSilentlyContinue
+    Remove-Job -Job $backendJob -Force -ErrorActionSilentlyContinue
+    Remove-Job -Job $frontendJob -Force -ErrorActionSilentlyContinue
     Write-Host "所有服务已停止" -ForegroundColor Yellow
 }

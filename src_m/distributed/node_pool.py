@@ -240,19 +240,14 @@ class NodePool:
 
         return random.choice(available)
 
-    def _get_round_robin_node(self, available: List[NodeInfo]) -> NodeInfo:
+    def _get_round_robin_node(self, available: List[NodeInfo]) -> Optional[NodeInfo]:
         """使用轮询方式从可用节点中选择"""
-        all_nodes = list(self._nodes.values())
-        idx = self._rr_index % len(all_nodes)
+        if not available:
+            return None
+
+        idx = self._rr_index % len(available)
         self._rr_index += 1
-
-        for _ in range(len(all_nodes)):
-            node = all_nodes[idx % len(all_nodes)]
-            idx += 1
-            if node in available:
-                return node
-
-        return available[0]
+        return available[idx]
 
     async def update_node_stats(self, node_id: str, stats: Dict[str, Any]):
         """更新节点统计信息"""

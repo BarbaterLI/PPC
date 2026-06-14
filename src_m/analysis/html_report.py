@@ -1,4 +1,4 @@
-"""HTML report generator for PPC9 analysis results.
+"""HTML report generator for PPC10 analysis results.
 
 Produces a single self-contained HTML file with an interactive dark-theme
 dashboard showing health scores, issues grouped by category, optional diff
@@ -48,7 +48,7 @@ CATEGORY_LABELS: Dict[AnalysisCategory, str] = {
     AnalysisCategory.UNKNOWN: "未知",
 }
 
-BRAND = "PPC9 Analysis Report"
+BRAND = "PPC10 Analysis Report"
 
 # ---------------------------------------------------------------------------
 # CSS template (inline, single-file)
@@ -283,7 +283,7 @@ def _build_diff_section(diff: DiffResult) -> str:
   <div class="diff-header">
     {_ICONS["diff"]}
     <span class="diff-score {diff_class}">{prefix}{score_diff}</span>
-    <span style="color:#8b949e;font-size:14px">较上次分析</span>
+    <span style="color:#8b949e;font-size:14px">较上次分数</span>
   </div>
   {f'<div class="diff-summary">{_esc(diff.summary)}</div>' if diff.summary else ''}
   <div class="diff-grid">
@@ -407,7 +407,7 @@ def _build_summary_section(report: HealthReport) -> str:
     if report.component:
         parts.append(f"组件: {_esc(report.component)}")
     parts.append(f"评分: {report.score}/100")
-    parts.append(f"问题: {len(report.issues)} 项")
+    parts.append(f"问题: {len(report.issues)} 个")
     parts.append(f"时间: {_format_dt(report.timestamp)}")
     summary_text = f" — {_esc(report.summary)}" if report.summary else ""
     return f"""\
@@ -479,8 +479,8 @@ class HTMLReportGenerator:
 <body>
 <div class="container">
   <header>
-    <h1><span>PPC9</span> 分析报告</h1>
-    <div class="subtitle">生成于 {_format_dt(report.timestamp)}{component_info}</div>
+    <h1><span>PPC10</span> 分析报告</h1>
+    <div class="subtitle">生成于{_format_dt(report.timestamp)}{component_info}</div>
   </header>
   {score_section}
   {summary_section}
@@ -489,7 +489,7 @@ class HTMLReportGenerator:
   {metrics_section}
   <div class="section-title">{_ICONS["issues"]} 问题明细</div>
   {issues_section}
-  <footer>PPC9 Analysis Engine &mdash; 自包含 HTML 报告</footer>
+  <footer>PPC10 Analysis Engine &mdash; 自包含 HTML 报告</footer>
 </div>
 </body>
 </html>"""

@@ -5,10 +5,12 @@
 
 from src_m.audio.processor import (
     AudioProcessor,
-    merge_audio_files,
+    AudioFingerprint,
+    SilenceRegion,
 )
 
 __all__ = [
     "AudioProcessor",
-    "merge_audio_files",
+    "AudioFingerprint",
+    "SilenceRegion",
 ]

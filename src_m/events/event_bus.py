@@ -300,6 +300,124 @@ class ExtensionEvent(Event):
         return data
 
 
+@dataclass
+class PipelineStartedEvent(Event):
+    """Pipeline started event"""
+    pipeline_name: str = ""
+    total_steps: int = 0
+    variables: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "total_steps": self.total_steps,
+            "variables": self.variables,
+        })
+        return data
+
+
+@dataclass
+class PipelineStepStartedEvent(Event):
+    """Pipeline step started event"""
+    pipeline_name: str = ""
+    step_name: str = ""
+    step_type: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "step_name": self.step_name,
+            "step_type": self.step_type,
+        })
+        return data
+
+
+@dataclass
+class PipelineStepCompletedEvent(Event):
+    """Pipeline step completed event"""
+    pipeline_name: str = ""
+    step_name: str = ""
+    duration_seconds: float = 0.0
+    output_data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "step_name": self.step_name,
+            "duration_seconds": self.duration_seconds,
+            "output_data": self.output_data,
+        })
+        return data
+
+
+@dataclass
+class PipelineStepFailedEvent(Event):
+    """Pipeline step failed event"""
+    pipeline_name: str = ""
+    step_name: str = ""
+    error: str = ""
+    attempt: int = 0
+    will_retry: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "step_name": self.step_name,
+            "error": self.error,
+            "attempt": self.attempt,
+            "will_retry": self.will_retry,
+        })
+        return data
+
+
+@dataclass
+class PipelineCompletedEvent(Event):
+    """Pipeline completed event"""
+    pipeline_name: str = ""
+    total_steps: int = 0
+    completed_steps: int = 0
+    failed_steps: int = 0
+    duration_seconds: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "total_steps": self.total_steps,
+            "completed_steps": self.completed_steps,
+            "failed_steps": self.failed_steps,
+            "duration_seconds": self.duration_seconds,
+        })
+        return data
+
+
+@dataclass
+class PipelineFailedEvent(Event):
+    """Pipeline failed event"""
+    pipeline_name: str = ""
+    failed_step: str = ""
+    error: str = ""
+    completed_steps: int = 0
+    total_steps: int = 0
+    duration_seconds: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "pipeline_name": self.pipeline_name,
+            "failed_step": self.failed_step,
+            "error": self.error,
+            "completed_steps": self.completed_steps,
+            "total_steps": self.total_steps,
+            "duration_seconds": self.duration_seconds,
+        })
+        return data
+
+
 EventHandler = Union[
     Callable[[E], None],
     Callable[[E], Coroutine[Any, Any, None]],
@@ -384,6 +502,10 @@ class EventBus:
     def shutdown(self):
         if self._async_loop and not self._async_loop.is_closed():
             self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+        if self._async_loop_thread and self._async_loop_thread.is_alive():
+            self._async_loop_thread.join(timeout=5)
+        if self._async_loop and not self._async_loop.is_closed():
+            self._async_loop.close()
 
     def subscribe(
         self,

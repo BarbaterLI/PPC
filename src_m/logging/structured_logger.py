@@ -329,7 +329,7 @@ def get_logger(name: str, config: Optional[LogConfig] = None) -> StructuredLogge
 
 def setup_logging(config: Optional[LogConfig] = None) -> StructuredLogger:
     """Setup logging system"""
-    return get_logger("ppc9", config)
+    return get_logger("ppc10", config)
 
 
 def set_log_level(level: LogLevel) -> None:

@@ -22,18 +22,18 @@ import yaml
 
 from pydantic import ValidationError
 from src_m.config.schema import (
-    PPC9Config, CoreConfig, TTSConfig, SplitConfig, BatchConfig,
+    PPC10Config, CoreConfig, TTSConfig, SplitConfig, BatchConfig,
     PerformanceConfig, NetworkConfig, FeaturesConfig, UIConfig,
     ReliabilityConfig, ConnectionPoolConfig, MemoryPoolConfig,
-    PPC7ArchConfig, DistributedConfig, ExtensionConfig
+    PPC10ArchConfig, DistributedConfig, ExtensionConfig
 )
 from src_m.config.presets import get_preset, get_preset_names
 from src_m.config.migration import ConfigMigrator
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_HMAC_KEY_ENV = "PPC9_CONFIG_SIGN_KEY"
-_CONFIG_SIGNATURE_MARKER = "# __ppc9_signature__: "
+_CONFIG_HMAC_KEY_ENV = "PPC10_CONFIG_SIGN_KEY"
+_CONFIG_SIGNATURE_MARKER = "# __ppc10_signature__: "
 
 
 def _get_sign_key() -> bytes:
@@ -70,9 +70,10 @@ class ConfigLoadOrder:
 
 
 class ConfigManager:
-    CONFIG_VERSION = "9.0.0"
+    CONFIG_VERSION = "10.0.0"
     CONFIG_FILENAME = "config.yml"
-    APP_NAME = "PPC9"
+    APP_NAME = "PPC10"
+    logger = logging.getLogger(__name__)
 
     def __init__(self, config_dir: Optional[Path] = None):
         self._is_frozen_mode: bool = self._is_frozen()
@@ -82,7 +83,7 @@ class ConfigManager:
         self.config_path = self.config_dir / self.CONFIG_FILENAME
         self.ppc5_config_path = self.config_dir / "ppc5_config.ini"
 
-        self._config: Optional[PPC9Config] = None
+        self._config: Optional[PPC10Config] = None
         self._config_dict: Dict[str, Any] = {}
         self._temp_overrides: Dict[str, Any] = {}
         self._cache_time = 0
@@ -163,7 +164,7 @@ class ConfigManager:
                 "reliability": ReliabilityConfig,
                 "connection_pool": ConnectionPoolConfig,
                 "memory_pool": MemoryPoolConfig,
-                "arch": PPC7ArchConfig,
+                "arch": PPC10ArchConfig,
                 "distributed": DistributedConfig,
                 "extensions": ExtensionConfig,
             }
@@ -182,7 +183,7 @@ class ConfigManager:
                         f"配置值验证失败: {key} - {'; '.join(errors)}"
                     )
 
-            self._config = PPC9Config(**config_dict)
+            self._config = PPC10Config(**config_dict)
             self._config_dict = config_dict
             self._dirty = True
 
@@ -269,7 +270,7 @@ class ConfigManager:
             "cache_valid": time.time() - self._cache_time < self._cache_ttl,
         }
 
-    def get_config(self) -> PPC9Config:
+    def get_config(self) -> PPC10Config:
         with self._lock:
             self._check_cache()
             return self._config

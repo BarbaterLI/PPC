@@ -573,7 +573,7 @@ class MetricsVisualizer:
             normalized = (val - min_val) / val_range
             y = int((chart_height - 1) * (1 - normalized))
             y = max(0, min(chart_height - 1, y))
-            grid[y][i] = "●"
+            grid[y][i] = "█"
 
         for i, row in enumerate(grid):
             y_label = max_val - (i * val_range / (chart_height - 1))
@@ -593,7 +593,7 @@ class MetricsVisualizer:
 
         return "\n".join(lines)
 
-    def export_prometheus(self, prefix: str = "ppc9") -> str:
+    def export_prometheus(self, prefix: str = "ppc10") -> str:
         lines = []
         for name in self._store.get_metric_names():
             stats = self._store.get_stats(name)
@@ -925,7 +925,7 @@ class Profiler:
 
         return dashboard
 
-    def export_prometheus(self, prefix: str = "ppc9") -> str:
+    def export_prometheus(self, prefix: str = "ppc10") -> str:
         self._init_visualizer()
         if self._visualizer:
             return self._visualizer.export_prometheus(prefix)
@@ -1175,7 +1175,7 @@ def timeit(
                 log_func = getattr(logger, level, logger.info)
                 log_func(message)
             else:
-                print(message)
+                logger.info(message)
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):

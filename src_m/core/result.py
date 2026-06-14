@@ -106,36 +106,9 @@ class Result(Generic[T]):
         return cls(state=ResultState.FAILURE, error=error, error_code=error_code, metrics=metrics)
 
     @classmethod
-    def err(cls, error: Any = None) -> "Result[T]":
-        return cls(state=ResultState.FAILURE, error=str(error) if error is not None else "")
-
-    @classmethod
-    def partial_success(cls, value: Optional[T] = None, errors: Optional[List[str]] = None,
-                        metrics: Optional[ExecutionMetrics] = None) -> "Result[T]":
-        return cls(state=ResultState.PARTIAL, value=value, errors=errors or [], metrics=metrics)
-
-    @classmethod
-    def success(cls, data: Optional[T] = None, metrics: Optional[ExecutionMetrics] = None) -> "Result[T]":
-        return cls(state=ResultState.SUCCESS, value=data, metrics=metrics)
-
-    @classmethod
-    def failure(cls, error: str = "", error_code: Optional[str] = None,
-                metrics: Optional[ExecutionMetrics] = None) -> "Result[T]":
-        return cls(state=ResultState.FAILURE, error=error, error_code=error_code, metrics=metrics)
-
-    @classmethod
-    def error(cls, error: str = "", error_code: Optional[str] = None,
-              metrics: Optional[ExecutionMetrics] = None) -> "Result[T]":
-        return cls(state=ResultState.FAILURE, error=error, error_code=error_code, metrics=metrics)
-
-    @classmethod
     def partial(cls, data: Optional[T] = None, errors: Optional[List[str]] = None,
                 metrics: Optional[ExecutionMetrics] = None) -> "Result[T]":
         return cls(state=ResultState.PARTIAL, value=data, errors=errors or [], metrics=metrics)
-
-    @classmethod
-    def from_exception(cls, exc: Exception, error_code: Optional[str] = None) -> "Result[T]":
-        return cls(state=ResultState.FAILURE, error=str(exc), error_code=error_code)
 
     def unwrap(self) -> T:
         if self.state == ResultState.FAILURE:
@@ -161,11 +134,6 @@ class Result(Generic[T]):
         if self.state != ResultState.FAILURE:
             return Result.ok(self.value, self.metrics)  # type: ignore
         return Result.fail(func(self.error), self.error_code, self.metrics)
-
-    def bind(self, func: Callable[[T], "Result"]) -> "Result":
-        if self.state != ResultState.FAILURE:
-            return func(self.value)  # type: ignore
-        return Result.fail(self.error or "", self.error_code, self.metrics)
 
     def and_then(self, func: Callable[[T], "Result"]) -> "Result":
         if self.state != ResultState.FAILURE:

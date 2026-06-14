@@ -1,6 +1,6 @@
-"""TTS Executor - Core TTS executor class.
+"""TTS 执行器
 
-Contains the main TTSExecutor class and basic execution logic.
+核心 TTS 任务执行器，包含任务定义、并发控制和执行逻辑。
 """
 
 import asyncio
@@ -8,290 +8,271 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
-from ..config import PPC9Config
+from ..config import PPC10Config
 from ..reliability import (
     ExecutionResult,
     ExecutionMetrics,
-    create_tts_circuit_breaker,
+    RetryPolicy,
 )
-from .base import BaseExecutor, ExecutorConfig
-from ..engines.tts_engine import TTSEngine
-from ..core.errors import ErrorCodes
-from ..utils.core import detect_encoding
+from ..utils.files import detect_encoding
+from .base import BaseExecutor
+from .checkpoint import CheckpointManager
+from .quarantine import QuarantineQueue
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TTSTask:
+    """TTS 任务"""
     id: str
     input_file: Path
     output_file: Path
-    voice: str
+    voice: str = ""
     text_len: int = 0
     status: str = "pending"
     priority: int = 0
-    created_at: float = field(default_factory=time.time)
     attempts: int = 0
     error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
     no_audio_retries: int = 0
 
 
 class RampUpController:
-    def __init__(self, target_concurrency: int, duration: float):
+    """并发渐进预热控制器
+
+    从 1 并发逐步增加到目标并发数，规避风控。
+    """
+
+    def __init__(self, target_concurrency: int, duration: float = 30.0):
         self._target = target_concurrency
         self._duration = duration
         self._start_time: Optional[float] = None
-        self._current_limit = 1
-        self._semaphore: Optional[asyncio.Semaphore] = None
-        self._adjust_task: Optional[asyncio.Task] = None
-        self._stopped = False
+        self._current = 1
+
+    def start(self):
+        self._start_time = time.time()
+        self._current = 1
+
+    def get_current_concurrency(self) -> int:
+        if self._start_time is None:
+            return 1
+        elapsed = time.time() - self._start_time
+        if elapsed >= self._duration:
+            return self._target
+        ratio = elapsed / self._duration
+        self._current = max(1, int(self._target * ratio))
+        return self._current
 
     @property
-    def current_limit(self) -> int:
-        return self._current_limit
+    def is_complete(self) -> bool:
+        if self._start_time is None:
+            return False
+        return (time.time() - self._start_time) >= self._duration
 
-    def start(self, semaphore: asyncio.Semaphore) -> None:
-        self._semaphore = semaphore
-        self._start_time = time.time()
-        self._current_limit = 1
-        self._adjust_task = asyncio.create_task(self._adjust_loop())
-        logger.info(
-            "并发预热已启动: 1 -> %d 并发, 持续时间 %.0fs",
-            self._target, self._duration
-        )
+    @property
+    def target(self) -> int:
+        return self._target
 
-    async def stop(self) -> None:
-        self._stopped = True
-        if self._adjust_task and not self._adjust_task.done():
-            self._adjust_task.cancel()
-            try:
-                await self._adjust_task
-            except asyncio.CancelledError:
-                pass
-
-    async def _adjust_loop(self) -> None:
-        try:
-            interval = self._duration / max(self._target - 1, 1)
-            while not self._stopped and self._current_limit < self._target:
-                await asyncio.sleep(interval)
-                if self._stopped:
-                    break
-                self._current_limit += 1
-                if self._semaphore:
-                    self._semaphore.release()
-                elapsed = time.time() - self._start_time
-                logger.info(
-                    "并发预热: %d/%d (已用时 %.0fs/%.0fs)",
-                    self._current_limit, self._target, elapsed, self._duration
-                )
-        except asyncio.CancelledError:
-            pass
+    @property
+    def duration(self) -> float:
+        return self._duration
 
 
-class TTSExecutor(BaseExecutor):
+class TTSExecutor(BaseExecutor[Path, Any]):
+    """TTS 执行器
+
+    管理文本到语音的批量转换任务，支持:
+    - 并发任务调度
+    - 断点续传
+    - 失败隔离
+    - 并发渐进预热
+    """
+
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
-        retry_policy=None,
-        circuit_breaker=None,
-        tts_engine=None,
-        quarantine_queue=None,
-        checkpoint_manager=None,
+        config: Optional[PPC10Config] = None,
+        retry_policy: Optional[RetryPolicy] = None,
     ):
-        cfg = config or PPC9Config()
-
-        if retry_policy is None:
-            from ..reliability import RetryPolicy, RetryConfig
-            tts_retry = cfg.reliability.tts_retry
-            retry_policy = RetryPolicy(RetryConfig(
-                max_retries=tts_retry.max_retries,
-                base_delay=tts_retry.base_delay,
-                max_delay=tts_retry.max_delay,
-                exponential_base=tts_retry.exponential_base,
-                jitter=tts_retry.jitter
-            ))
-
-        super().__init__(
-            config,
-            retry_policy,
-            circuit_breaker or create_tts_circuit_breaker(
-                failure_threshold=cfg.reliability.tts_circuit.failure_threshold,
-                success_threshold=cfg.reliability.tts_circuit.success_threshold,
-                timeout_seconds=cfg.reliability.tts_circuit.timeout_seconds,
-                half_open_max_calls=cfg.reliability.tts_circuit.half_open_max_calls,
-                window_seconds=cfg.reliability.tts_circuit.window_seconds
-            )
-        )
-
-        self._tts_engine = tts_engine
+        super().__init__(config, retry_policy)
         self._tasks: Dict[str, TTSTask] = {}
-        self.total_retries: int = 0
-        self._task_queue: asyncio.PriorityQueue = None
-        self._semaphore: asyncio.Semaphore = None
+        self._task_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._workers = []
+        self._semaphore: Optional[asyncio.Semaphore] = None
         self._is_running = False
-        self._workers: list = []
-        self._progress_handler: Optional[Any] = None
-        self._quarantine_queue = quarantine_queue
-        self._checkpoint_manager = checkpoint_manager
-        self._checkpoint_interval: int = 10
-        self._tasks_since_checkpoint = 0
         self._input_dir: Optional[Path] = None
         self._output_dir: Optional[Path] = None
-        self._voice: str = ""
+        self._voice: Optional[str] = None
+        self.total_retries = 0
+
+        self._checkpoint_manager: Optional[CheckpointManager] = None
+        self._checkpoint_interval = 5
+        self._tasks_since_checkpoint = 0
+
+        self._quarantine_queue: Optional[QuarantineQueue] = None
+
         self._ramp_up_controller: Optional[RampUpController] = None
-
-    async def __aenter__(self):
-        await self.initialize()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.cleanup()
-        return False
-
-    def set_progress_callback(self, handler: Any):
-        self._progress_handler = handler
-
-    def enable_checkpoint(self, checkpoint_path: Path):
-        from .checkpoint import CheckpointManager
-        self._checkpoint_manager = CheckpointManager(checkpoint_path)
-        logger.info("断点续传已启用: %s", checkpoint_path)
+        self._disable_timeout: bool = False
 
     async def initialize(self):
-        tts_config = self.config.tts
-        self._task_queue = asyncio.PriorityQueue()
-
-        if tts_config.ramp_up_enabled and tts_config.concurrency > 1:
-            self._semaphore = asyncio.Semaphore(1)
-            self._ramp_up_controller = RampUpController(
-                target_concurrency=tts_config.concurrency,
-                duration=tts_config.ramp_up_duration
-            )
-            self._ramp_up_controller.start(self._semaphore)
-        else:
-            self._semaphore = asyncio.Semaphore(tts_config.concurrency)
-            self._ramp_up_controller = None
-
-        self._is_running = False
+        self._cancel_requested = False
         self._initialized = True
+        self._is_running = False
+        self._tasks = {}
+        self._task_queue = asyncio.PriorityQueue()
+        self._workers = []
+        self.total_retries = 0
+        self._tasks_since_checkpoint = 0
 
-        if self._tts_engine is None:
-            self._tts_engine = TTSEngine(self.config)
-            await self._tts_engine.initialize()
+        concurrency = self.config.tts.concurrency
+        self._semaphore = asyncio.Semaphore(concurrency)
 
-        if self._quarantine_queue is None:
-            from .quarantine import QuarantineQueue
-            self._quarantine_queue = QuarantineQueue(
-                delay=tts_config.quarantine_delay,
-                max_failure_count=3,
-                capacity_ratio=0.1
+        if self.config.tts.ramp_up_enabled:
+            self._ramp_up_controller = RampUpController(
+                target_concurrency=concurrency,
+                duration=self.config.tts.ramp_up_duration,
             )
 
-        if self._ramp_up_controller:
-            logger.info(
-                "TTS 执行器初始化完成，并发数：%d (预热模式: 1 -> %d, 持续 %.0fs)",
-                tts_config.concurrency, tts_config.concurrency, tts_config.ramp_up_duration
-            )
-        else:
-            logger.info("TTS 执行器初始化完成，并发数：%d", tts_config.concurrency)
+        quarantine_delay = getattr(self.config.tts, "quarantine_delay", 300.0)
+        self._quarantine_queue = QuarantineQueue(delay=quarantine_delay)
+
+        logger.info(
+            "TTS执行器初始化完成: voice=%s, concurrency=%d",
+            self.config.tts.voice,
+            concurrency,
+        )
 
     async def cleanup(self):
-        if self._ramp_up_controller:
-            await self._ramp_up_controller.stop()
-            self._ramp_up_controller = None
-
         self._is_running = False
-
-        for worker in self._workers:
-            if not worker.done():
-                worker.cancel()
-
-        if self._workers:
-            await asyncio.gather(*self._workers, return_exceptions=True)
-
-        if self._task_queue:
-            while not self._task_queue.empty():
-                try:
-                    self._task_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
-        if self._quarantine_queue:
-            self._quarantine_queue.clear()
-
-        if self._tts_engine:
-            await self._tts_engine.cleanup()
-            self._tts_engine = None
-
-        self._tasks.clear()
         self._initialized = False
-        logger.info("TTS 执行器已清理")
+        self._tasks.clear()
+        self._workers = []
 
     async def execute(
         self,
         input_path: Path,
-        output_path: Path
-    ) -> ExecutionResult[Path]:
+        output_path: Path,
+        disable_timeout: bool = False,
+        progress_handler: Optional[Any] = None,
+    ) -> ExecutionResult:
+        """执行单个 TTS 任务：读取文本文件并调用引擎合成语音"""
         self._check_initialized()
+        self._disable_timeout = disable_timeout
         start_time = time.time()
-
         try:
             if not input_path.exists():
-                return ExecutionResult.failure(
-                    error=f"输入文件不存在：{input_path}",
-                    error_code=ErrorCodes.FILE_NOT_FOUND.value
+                return ExecutionResult.fail(
+                    error=f"输入文件不存在: {input_path}",
+                    error_code="FILE_NOT_FOUND",
                 )
 
-            encoding = detect_encoding(
-                input_path,
-                encodings=["utf-8", "gbk", "gb2312", "big5", "latin-1"],
-                detect_buffer=8192
+            encoding = detect_encoding(input_path)
+            text = await asyncio.to_thread(
+                input_path.read_text, encoding=encoding or "utf-8"
             )
-            text = input_path.read_text(encoding=encoding or "utf-8").strip()
-            if not text:
-                return ExecutionResult.failure(
+
+            if not text or not text.strip():
+                return ExecutionResult.fail(
                     error="文本内容为空",
-                    error_code=ErrorCodes.EMPTY_CONTENT.value
+                    error_code="EMPTY_CONTENT",
                 )
 
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            from ..engines.tts_engine import TTSEngine
 
-            enable_segmentation = self.config.tts.enable_segmentation
-            max_segment_length = self.config.tts.max_segment_length
+            engine = TTSEngine(self.config)
+            result = await engine.synthesize_segmented(
+                text, output_path, disable_timeout=disable_timeout,
+                progress_handler=progress_handler,
+            )
 
-            if enable_segmentation and len(text) > max_segment_length:
-                result = await self._tts_engine.synthesize_segmented(text, output_path)
-            else:
-                result = await self._tts_engine.synthesize(text, output_path)
+            if not result.success:
+                return result
 
             metrics = ExecutionMetrics(
                 duration=time.time() - start_time,
                 bytes_processed=output_path.stat().st_size if output_path.exists() else 0,
             )
-            if result.success:
-                return ExecutionResult.success(result.data, metrics)
-            else:
-                return ExecutionResult.failure(
-                    error=result.error or "未知错误",
-                    error_code=result.error_code or ErrorCodes.TTS_ENGINE_ERROR.value
-                )
+            return ExecutionResult.ok(output_path, metrics)
 
         except Exception as e:
-            logger.error("TTS 执行失败：%s", e)
-            return ExecutionResult.error(
+            logger.error("TTS执行失败: %s", e)
+            return ExecutionResult.fail(
                 error=str(e),
-                error_code=ErrorCodes.TTS_ENGINE_ERROR.value
+                error_code="TTS_EXECUTION_FAILED",
             )
+        finally:
+            self._disable_timeout = False
+
+    async def execute_one(
+        self,
+        input_path: Path,
+        output_path: Path,
+        progress_handler: Optional[Any] = None,
+    ) -> bool:
+        """--one 模式：单文件无限重试，单次无超时。
+
+        - 失败后固定退避 N 秒（默认复用 no_audio.delay_seconds）后继续
+        - Ctrl+C 立即抛出 KeyboardInterrupt
+        """
+        self._check_initialized()
+        delay = self.config.reliability.tts_no_audio.delay_seconds
+        attempt = 0
+        try:
+            while True:
+                attempt += 1
+                task_id = "one"
+                if progress_handler:
+                    progress_handler.register_task(task_id, input_path.name)
+                    progress_handler.on_task_start(task_id)
+
+                result = await self.execute(
+                    input_path, output_path, disable_timeout=True,
+                    progress_handler=progress_handler,
+                )
+                if result.success:
+                    if progress_handler:
+                        progress_handler.on_task_complete(task_id, True)
+                    return True
+
+                err = (result.error or "未知错误")[:120]
+                logger.warning("[--one] 第 %d 次失败, %.1fs 后重试: %s", attempt, delay, err)
+                if progress_handler:
+                    progress_handler.on_retry(task_id, attempt, err, delay)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+        finally:
+            self._disable_timeout = False
+
+    def enable_checkpoint(self, checkpoint_path: Path):
+        """启用断点续传"""
+        self._checkpoint_manager = CheckpointManager(checkpoint_path)
 
     def get_stats(self) -> Dict[str, Any]:
+        """获取执行器统计信息"""
+        total = len(self._tasks)
+        completed = sum(1 for t in self._tasks.values() if t.status == "completed")
+        failed = sum(1 for t in self._tasks.values() if t.status == "failed")
+        pending = total - completed - failed
+
         stats = {
-            "quarantine": self._quarantine_queue.get_stats() if self._quarantine_queue else {},
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+            "total_retries": self.total_retries,
+            "is_running": self._is_running,
         }
 
-        if self.circuit_breaker:
-            circuit_stats = self.circuit_breaker.get_stats()
-            stats["circuit_breaker"] = circuit_stats.to_dict() if hasattr(circuit_stats, 'to_dict') else circuit_stats
+        if self._quarantine_queue:
+            stats["quarantine"] = self._quarantine_queue.get_stats()
 
         return stats
+
+
+__all__ = [
+    "TTSExecutor",
+    "TTSTask",
+    "RampUpController",
+]

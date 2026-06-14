@@ -1,4 +1,4 @@
-"""Analysis module for PPC9.
+"""Analysis module for PPC10.
 
 Provides deep analysis, health scoring, and automated repair capabilities.
 """

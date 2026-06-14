@@ -868,7 +868,7 @@ class MultiLevelCache:
 
         l1_max_size = config.get("l1_max_size_mb", 100)
         l1_ttl = config.get("l1_default_ttl", 3600)
-        l2_dir = config.get("l2_cache_dir", ".cache/ppc9")
+        l2_dir = config.get("l2_cache_dir", ".cache/ppc10")
         l2_max_size = config.get("l2_max_size_mb", 500)
 
         self.l1 = MemoryCache(max_size_mb=l1_max_size, default_ttl=l1_ttl)
@@ -1104,7 +1104,7 @@ def create_default_cache(
     config = {
         "l1_max_size_mb": l1_size_mb,
         "l1_default_ttl": 3600,
-        "l2_cache_dir": cache_dir or ".cache/ppc9",
+        "l2_cache_dir": cache_dir or ".cache/ppc10",
         "l2_max_size_mb": l2_size_mb,
         "cleanup_interval": 300,
     }

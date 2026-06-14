@@ -4,18 +4,19 @@ Contains the main SplitterExecutor class and basic execution logic.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from ..config import PPC9Config
+from ..config import PPC10Config
 from ..reliability import (
     ExecutionResult,
     ExecutionMetrics,
 )
 from .base import BaseExecutor
 from ..utils.core import sanitize_filename, detect_encoding
-from ..core.errors import ErrorCodes
+from ..core.exceptions import ErrorCodes
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class VolumeInfo:
     title: str
     start_line: int
     end_line: int
-    chapters: List['ChapterInfo'] = None
+    chapters: Optional[List['ChapterInfo']] = None
 
 
 class SplitterExecutor(BaseExecutor):
@@ -45,7 +46,7 @@ class SplitterExecutor(BaseExecutor):
 
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
+        config: Optional[PPC10Config] = None,
         custom_rules: Optional[List] = None
     ):
         super().__init__(config)
@@ -95,7 +96,7 @@ def _init_patterns() -> Dict[str, List]:
         "chinese_novel": [
             r'^(引子|序章|前言|后记|附录)(：|:)?(.*)$',
             r'^第[一二两三四五六七八九十百千万亿\d零]+[章回节](.*)$',
-            r'^第[一二两三四五六七八九十百千万亿\d零]+部[：:、](.*)$',
+            r'^第[一二两三四五六七八九十百千万亿\d零]+部[卷、](.*)$',
         ],
         "english_novel": [
             r'^Chapter\s+\d+(.*)$',
@@ -139,8 +140,8 @@ async def split_file(
 
     try:
         if not input_path.exists():
-            return ExecutionResult.failure(
-                error=f"输入文件不存在: {input_path}",
+            return ExecutionResult.fail(
+                error=f"输入文件不存在 {input_path}",
                 error_code=ErrorCodes.FILE_NOT_FOUND.value
             )
 
@@ -150,7 +151,7 @@ async def split_file(
         chapters = _split_content(executor, content)
 
         if not chapters:
-            return ExecutionResult.failure(
+            return ExecutionResult.fail(
                 error="未检测到章节",
                 error_code=ErrorCodes.NO_CHAPTERS.value
             )
@@ -169,11 +170,11 @@ async def split_file(
             request_count=len(output_files)
         )
 
-        return ExecutionResult.success(output_files, metrics)
+        return ExecutionResult.ok(output_files, metrics)
 
     except Exception as e:
         logger.error("分割执行失败: %s", e)
-        return ExecutionResult.error(
+        return ExecutionResult.fail(
             error=str(e),
             error_code=ErrorCodes.CHAPTER_SPLIT_FAILED.value
         )
@@ -204,9 +205,7 @@ def _generate_output_name(
 
 
 def _sanitize_filename(executor, filename: str) -> str:
-    """清理文件名"""
+    """清理文件"""
     return sanitize_filename(filename, max_length=executor.config.split.max_filename_length)
 
 
-# Import time for use in split_file
-import time

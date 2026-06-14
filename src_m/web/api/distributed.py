@@ -15,23 +15,64 @@ _scheduler_loop = None
 _scheduler_thread = None
 _scheduler_loop_ready = threading.Event()
 
+_executor = None
+_executor_lock = threading.Lock()
+
 _node_service = None
 _node_service_lock = threading.Lock()
 _node_service_loop = None
-
-_metrics_collector = None
 
 
 def _get_scheduler():
     return _scheduler
 
 
+def _get_executor():
+    """惰性创建 :class:`DistributedTTSExecutor`，供 convert 接口使用。
+
+    该执行器在第一次收到 ``/api/distributed/convert`` 时启动，并把
+    启动时所在线程的事件循环固定下来。所有后续 convert 都通过该事件
+    循环执行（master/worker 的转发都需要异步上下文）。
+    """
+    global _executor
+    return _executor
+
+
+def _ensure_executor():
+    """确保 executor 已初始化（创建 ``MasterUnit`` + ``NodePool``）。
+
+    使用 :func:`_submit_to_loop` 启动 executor 后返回实例。注意：
+    因为 web API 是同步 Flask，executor 的所有调用都通过
+    ``_submit_to_loop`` 投递到 :data:`_scheduler_loop` 上。
+    """
+    global _executor
+    if _executor is not None:
+        return _executor
+    if _scheduler_loop is None or _scheduler_loop.is_closed():
+        raise RuntimeError("Scheduler loop not running; cannot start executor")
+    with _executor_lock:
+        if _executor is not None:
+            return _executor
+        from src_m.config.manager import ConfigManager
+        from src_m.infrastructure.executor_adapter import DistributedTTSExecutor
+
+        mgr = ConfigManager()
+        config = mgr.get_config()
+
+        executor = DistributedTTSExecutor(config, local_fallback=True)
+        _submit_to_loop(executor.initialize(), _scheduler_loop, timeout=30)
+        _executor = executor
+        return _executor
+
+
 def _get_metrics_collector():
-    global _metrics_collector
-    if _metrics_collector is None:
-        from src_m.distributed.metrics import DistributedMetricsCollector
-        _metrics_collector = DistributedMetricsCollector()
-    return _metrics_collector
+    """返回 ``None``。
+
+    mvp-cleanup 后 ``src_m.distributed.metrics`` 模块已被删除,采集器
+    不再可用;保留此函数以便 ``/api/distributed/metrics`` 路由的形状
+    不变。
+    """
+    return None
 
 
 def _submit_to_loop(coro, loop, timeout=30):
@@ -205,6 +246,16 @@ def get_metrics():
             pool_stats = scheduler.get_stats().get("node_pool", {})
             active_count = pool_stats.get("active_nodes", 0)
 
+        if collector is None:
+            # 采集器已下线 —— 仅返回最小占位
+            return jsonify({
+                "cluster": {
+                    "active_nodes": active_count,
+                    "uptime_seconds": 0,
+                },
+                "nodes": {},
+            })
+
         cluster = collector.get_cluster_metrics(active_count)
         node_metrics = collector.get_all_node_metrics()
 
@@ -345,6 +396,44 @@ def start_node_service():
         _node_service = None
         _node_service_loop = None
         return jsonify({"error": str(e), "code": "NODE_SERVICE_START_ERROR"}), 500
+
+
+@distributed_bp.route("/convert", methods=["POST"])
+def submit_convert():
+    """把 convert 任务派发到 master 单元（``POST /api/distributed/convert``）。
+
+    与 worker 节点上的 ``/api/v1/convert`` 等价——区别是这条路由
+    走的是 :class:`DistributedTTSExecutor`，由本进程直接对 worker
+    集群做 HTTP 转发或本地兜底，调用方不直接接触 ``/api/v1/convert``
+    这条 worker 侧端点。
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({
+                "error": "request body must be a JSON object",
+                "code": "INVALID_PAYLOAD",
+            }), 400
+
+        try:
+            executor = _ensure_executor()
+        except RuntimeError as e:
+            return jsonify({
+                "error": str(e),
+                "code": "EXECUTOR_NOT_READY",
+            }), 503
+
+        # 任务较重，把实际执行放到 master 端的事件循环里。
+        result = _submit_to_loop(
+            executor.submit_convert_request(payload),
+            _scheduler_loop,
+            timeout=3600,
+        )
+        status_code = 200 if result.get("success") else 500
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Failed to submit convert task")
+        return jsonify({"error": str(e), "code": "CONVERT_SUBMIT_ERROR"}), 500
 
 
 @distributed_bp.route("/node-service/stop", methods=["POST"])

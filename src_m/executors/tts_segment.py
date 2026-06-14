@@ -15,7 +15,7 @@ from ..reliability import (
     TaskResult,
     BatchResult,
 )
-from ..core.errors import ErrorCodes
+from ..core.exceptions import ErrorCodes
 from .tts_executor import TTSTask
 
 logger = logging.getLogger(__name__)
@@ -62,15 +62,24 @@ async def add_batch_with_progress(
                 if checkpoint_task.status == "completed":
                     continue
 
+                # failed/running 都重置为 pending 以便重新处理
+                # failed: 保留 error 用于诊断；pending/running: 清空旧 error
+                if checkpoint_task.status in ("pending", "running", "failed"):
+                    resume_status = "pending"
+                    resume_error = checkpoint_task.error if checkpoint_task.status == "failed" else None
+                else:
+                    resume_status = checkpoint_task.status
+                    resume_error = checkpoint_task.error
+
                 task = TTSTask(
                     id=task_id,
                     input_file=Path(checkpoint_task.input_file),
                     output_file=Path(checkpoint_task.output_file),
                     voice=checkpoint_task.voice,
                     text_len=checkpoint_task.text_len,
-                    status="pending" if checkpoint_task.status in ("pending", "running") else checkpoint_task.status,
+                    status=resume_status,
                     attempts=checkpoint_task.attempts,
-                    error=checkpoint_task.error,
+                    error=resume_error,
                     created_at=checkpoint_task.created_at,
                     no_audio_retries=getattr(checkpoint_task, 'no_audio_retries', 0)
                 )
@@ -248,7 +257,8 @@ async def _execute_task_with_retry(executor, task: TTSTask, worker_id: str, prog
         progress_handler.on_task_start(task.id)
 
     max_retries = executor.config.reliability.tts_retry.max_retries
-    max_no_audio_retries = max_retries + 2
+    no_audio_cfg = executor.config.reliability.tts_no_audio
+    max_no_audio_retries = no_audio_cfg.max_retries
     retry_config = _RetryConfig(
         max_retries=max_retries,
         base_delay=executor.config.reliability.tts_retry.base_delay,
@@ -272,32 +282,39 @@ async def _execute_task_with_retry(executor, task: TTSTask, worker_id: str, prog
                 return
 
             if _is_no_audio_error(result):
-                task.no_audio_retries += 1
-                executor.total_retries += 1
-
-                if task.no_audio_retries <= max_no_audio_retries:
-                    logger.debug(
-                        "任务 %s 未收到音频 (静默重试 %d/%d)",
-                        task.input_file.name, task.no_audio_retries, max_no_audio_retries
-                    )
-                    task.status = "pending"
-                    await asyncio.sleep(min(task.no_audio_retries * 1.0, 5.0))
-                    await executor._task_queue.put(
-                        (task.priority + 1, time.time(), task.id, task)
-                    )
-                    if progress_handler:
-                        progress_handler.register_task(task.id, task.input_file.name)
-                    return
+                if not no_audio_cfg.enabled:
+                    pass  # fall through to normal retry path
                 else:
-                    logger.warning(
-                        "任务 %s 静默重试 %d 次后仍无音频，按失败处理",
-                        task.input_file.name, max_no_audio_retries
-                    )
-                    _handle_task_failure(
-                        executor, task, f"未收到音频响应 (已静默重试 {max_no_audio_retries} 次)",
-                        progress_handler, attempt, skip_quarantine=True
-                    )
-                    return
+                    task.no_audio_retries += 1
+                    if no_audio_cfg.count_in_total_retries:
+                        executor.total_retries += 1
+
+                    if task.no_audio_retries <= max_no_audio_retries:
+                        logger.debug(
+                            "任务 %s 未收到音频 (静默重试 %d/%d, %.1fs 后)",
+                            task.input_file.name, task.no_audio_retries,
+                            max_no_audio_retries, no_audio_cfg.delay_seconds
+                        )
+                        task.status = "pending"
+                        if no_audio_cfg.delay_seconds > 0:
+                            await asyncio.sleep(no_audio_cfg.delay_seconds)
+                        await executor._task_queue.put(
+                            (task.priority + 1, time.time(), task.id, task)
+                        )
+                        if progress_handler:
+                            progress_handler.register_task(task.id, task.input_file.name)
+                        return
+                    else:
+                        logger.warning(
+                            "任务 %s 静默重试 %d 次后仍无音频，按失败处理",
+                            task.input_file.name, max_no_audio_retries
+                        )
+                        _handle_task_failure(
+                            executor, task,
+                            f"未收到音频响应 (已静默重试 {max_no_audio_retries} 次)",
+                            progress_handler, attempt, skip_quarantine=True
+                        )
+                        return
 
             if attempt < max_retries:
                 error_msg = result.error or "未知错误"

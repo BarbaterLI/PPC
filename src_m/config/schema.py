@@ -3,7 +3,7 @@
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from enum import Enum
 
 
@@ -190,7 +190,7 @@ class CoreConfig(BaseModel):
     
     mode: str = Field(default="parametric", description="运行模式: parametric | interactive")
     log_level: LogLevel = Field(default=LogLevel.INFO, description="日志级别")
-    temp_dir: str = Field(default="~/.cache/ppc9", description="临时文件目录")
+    temp_dir: str = Field(default="~/.cache/ppc10", description="临时文件目录")
     progress_interval: int = Field(default=10, ge=1, le=100, description="进度回调触发频率(每N个)")
 
 
@@ -241,6 +241,14 @@ class TTSConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_cross_fields(self) -> 'TTSConfig':
+        import re
+        rate_stripped = self.rate.strip()
+        if re.match(r'^\d+%$', rate_stripped):
+            self.rate = f"+{rate_stripped}"
+        elif not re.match(r'^[+-]\d+%$', rate_stripped):
+            raise ValueError(
+                f"rate 格式无效: '{self.rate}'，应为 '+0%'、'+40%'、'-10%' 等格式（必须带正负号和百分号）"
+            )
         if self.timeout_min > self.timeout_max:
             raise ValueError(f"timeout_min ({self.timeout_min}) 不能大于 timeout_max ({self.timeout_max})")
         if self.min_segment_length > self.max_segment_length:
@@ -305,6 +313,18 @@ class FeaturesConfig(BaseModel):
     keep_awake: bool = Field(default=False, description="保持屏幕常亮")
 
 
+class NoAudioRetryConfig(BaseModel):
+    """Edge TTS NoAudioReceived 静默重试配置。
+
+    NoAudioReceived 是 Edge TTS 服务器侧的瞬时故障（偶发返回空音频流），
+    区别于业务重试：固定退避、无指数、无抖动、默认不计入总重试统计。
+    """
+    enabled: bool = Field(default=True, description="启用 NoAudioReceived 静默重试")
+    max_retries: int = Field(default=5, ge=0, le=50, description="单任务最大静默重试次数")
+    delay_seconds: float = Field(default=5.0, ge=0.0, le=60.0, description="每次静默重试前的固定等待（秒）")
+    count_in_total_retries: bool = Field(default=False, description="是否计入最终报告的'重试次数'")
+
+
 class RetryStrategyConfig(BaseModel):
     """重试策略配置"""
     max_retries: int = Field(default=3, ge=0, le=20, description="最大重试次数")
@@ -341,6 +361,10 @@ class ReliabilityConfig(BaseModel):
         default_factory=lambda: CircuitBreakerConfig(failure_threshold=3, timeout_seconds=30.0),
         description="网络熔断器配置"
     )
+    tts_no_audio: NoAudioRetryConfig = Field(
+        default_factory=NoAudioRetryConfig,
+        description="NoAudioReceived 静默重试配置"
+    )
 
 
 class ConnectionPoolConfig(BaseModel):
@@ -363,8 +387,8 @@ class MemoryPoolConfig(BaseModel):
     prefetch_enabled: bool = Field(default=True, description="启用预取")
 
 
-class PPC7ArchConfig(BaseModel):
-    """PPC9 架构配置"""
+class PPC10ArchConfig(BaseModel):
+    """PPC10 架构配置"""
     cache_line_size: int = Field(default=128, ge=64, le=256, description="缓存行大小")
     enable_simd: bool = Field(default=True, description="启用SIMD优化")
     prefetch_distance: int = Field(default=4, ge=1, le=16, description="预取距离")
@@ -510,11 +534,47 @@ class DistributedConfig(BaseModel):
     fault_tolerance: FaultToleranceConfig = Field(default_factory=FaultToleranceConfig, description="节点容错和迁移配置")
 
 
-class PPC9Config(BaseModel):
-    """PPC9 完整配置 - 冰璃岩项目开发组 (BLY Team)"""
+class PipelineStepConfig(BaseModel):
+    """管道步骤配置"""
+    name: str = Field(..., description="步骤名称")
+    step_type: str = Field(..., description="步骤类型")
+    depends_on: List[str] = Field(default_factory=list, description="依赖步骤列表")
+    params: Dict[str, Any] = Field(default_factory=dict, description="步骤参数")
+    retry_count: int = Field(default=0, ge=0, le=10, description="重试次数")
+    timeout_seconds: Optional[int] = Field(default=None, ge=10, le=3600, description="超时时间(秒)")
+    on_failure: str = Field(default="stop", description="失败策略: stop | skip")
+
+
+class PipelineDefinitionConfig(BaseModel):
+    """管道定义配置"""
+    name: str = Field(..., description="管道名称")
+    description: str = Field(default="", description="管道描述")
+    steps: List[PipelineStepConfig] = Field(default_factory=list, description="步骤列表")
+    variables: Dict[str, str] = Field(default_factory=dict, description="变量定义")
+    enabled: bool = Field(default=True, description="是否启用")
+
+
+class PipelineConfig(BaseModel):
+    """管道工作流配置"""
+    enabled: bool = Field(default=True, description="启用管道工作流引擎")
+    pipeline_dirs: List[str] = Field(
+        default_factory=lambda: ["pipelines"],
+        description="管道定义文件目录列表"
+    )
+    max_parallel_steps: int = Field(default=4, ge=1, le=16, description="最大并行步骤数")
+    default_timeout: int = Field(default=300, ge=10, le=3600, description="默认步骤超时(秒)")
+    default_retry: int = Field(default=0, ge=0, le=5, description="默认重试次数")
+    saved_pipelines: Dict[str, PipelineDefinitionConfig] = Field(
+        default_factory=dict,
+        description="已保存的管道定义"
+    )
+
+
+class PPC10Config(BaseModel):
+    """PPC10 完整配置 - 冰璃岩项目开发组 (BLY Team)"""
     model_config = ConfigDict(use_enum_values=False)
     
-    version: str = Field(default="9.0.0", description="配置版本")
+    version: str = Field(default="10.0.0", description="配置版本")
     core: CoreConfig = Field(default_factory=CoreConfig, description="核心配置")
     tts: TTSConfig = Field(default_factory=TTSConfig, description="TTS 配置")
     split: SplitConfig = Field(default_factory=SplitConfig, description="分割配置")
@@ -525,13 +585,14 @@ class PPC9Config(BaseModel):
     reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig, description="可靠性配置")
     connection_pool: ConnectionPoolConfig = Field(default_factory=ConnectionPoolConfig, description="连接池扩展配置")
     memory_pool: MemoryPoolConfig = Field(default_factory=MemoryPoolConfig, description="内存池扩展配置")
-    arch: PPC7ArchConfig = Field(default_factory=PPC7ArchConfig, description="PPC9 架构配置")
+    arch: PPC10ArchConfig = Field(default_factory=PPC10ArchConfig, description="PPC10 架构配置")
     ui: UIConfig = Field(default_factory=UIConfig, description="UI 配置")
     distributed: DistributedConfig = Field(default_factory=DistributedConfig, description="分布式配置")
     extensions: ExtensionConfig = Field(default_factory=ExtensionConfig, description="用户自定义扩展配置")
     output: OutputConfig = Field(default_factory=OutputConfig, description="输出格式配置")
     webhook: WebhookConfig = Field(default_factory=WebhookConfig, description="Webhook 回调配置")
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig, description="限流器配置")
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig, description="管道工作流配置")
 
 
 

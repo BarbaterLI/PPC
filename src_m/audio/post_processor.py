@@ -1,340 +1,364 @@
-"""音频后处理器
+"""Audio post-processing chain.
 
-支持音频后处理效果：混响、压缩、均衡器等。
+Phase 1 升级：链式后处理 (淡入淡出/降噪/重采样)。
 """
 
+from __future__ import annotations
+
 import logging
-import subprocess
+import struct
+import wave
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
 
-class EffectType(str, Enum):
-    """效果类型"""
-    REVERB = "reverb"
-    COMPRESSION = "compression"
-    EQUALIZER = "equalizer"
-    NORMALIZE = "normalize"
-    FADE = "fade"
-    CHORUS = "chorus"
-    DELAY = "delay"
+# ---------------------------------------------------------------------------
+# 数据类
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class EffectConfig:
-    """效果配置"""
-    effect_type: EffectType
-    params: Dict[str, Any] = None
+class AudioBuffer:
+    """内存中的 PCM 音频数据。"""
+
+    sample_rate: int
+    sample_width: int
+    channels: int
+    samples: bytes = b""
+
+    @property
+    def n_frames(self) -> int:
+        if not self.samples or self.sample_width <= 0 or self.channels <= 0:
+            return 0
+        return len(self.samples) // (self.sample_width * self.channels)
+
+    @property
+    def duration_seconds(self) -> float:
+        if self.sample_rate <= 0:
+            return 0.0
+        return self.n_frames / self.sample_rate
+
+    def copy(self) -> "AudioBuffer":
+        return AudioBuffer(
+            sample_rate=self.sample_rate,
+            sample_width=self.sample_width,
+            channels=self.channels,
+            samples=self.samples,
+        )
+
+
+class PostProcessStepStatus(str, Enum):
+    """后处理步骤执行状态。"""
+
+    SUCCESS = "success"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 @dataclass
-class ProcessResult:
-    """处理结果"""
-    success: bool
-    output_path: Optional[Path] = None
-    error: Optional[str] = None
-    duration: float = 0.0
+class PostProcessStepResult:
+    """单步执行结果。"""
+
+    name: str
+    status: PostProcessStepStatus
+    detail: str = ""
+    duration_ms: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-class BaseEffect(ABC):
-    """音频效果基类"""
+# ---------------------------------------------------------------------------
+# 步骤抽象
+# ---------------------------------------------------------------------------
+
+
+class PostProcessStep(ABC):
+    """后处理步骤抽象基类。"""
+
+    name: str = "step"
 
     @abstractmethod
-    def apply(self, input_path: Path, output_path: Path) -> ProcessResult:
-        """应用效果"""
-        pass
-
-    @abstractmethod
-    def get_command(self, input_path: Path, output_path: Path) -> List[str]:
-        """获取 ffmpeg 命令"""
-        pass
+    def apply(self, audio: AudioBuffer, **options: Any) -> AudioBuffer:
+        """对 *audio* 应用本步骤, 返回新 buffer (建议不可变修改)。"""
 
 
-class ReverbEffect(BaseEffect):
-    """混响效果
-
-    参数:
-        wet_delay: 延迟时间 (ms)
-        wet_level: 混响强度 (0-1)
-        room_size: 房间大小 (0-1)
-    """
-
-    def __init__(self, wet_delay: int = 20, wet_level: float = 0.3, room_size: float = 0.5):
-        self.wet_delay = wet_delay
-        self.wet_level = wet_level
-        self.room_size = room_size
-
-    def apply(self, input_path: Path, output_path: Path) -> ProcessResult:
-        cmd = self.get_command(input_path, output_path)
-        return self._run_command(cmd, output_path)
-
-    def get_command(self, input_path: Path, output_path: Path) -> List[str]:
-        return [
-            "ffmpeg", "-y", "-i", str(input_path),
-            "-af", f"aecho=0.8:0.88:{self.wet_delay}:{self.room_size}",
-            str(output_path)
-        ]
-
-    def _run_command(self, cmd: List[str], output_path: Path) -> ProcessResult:
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result.returncode == 0:
-                duration = self._get_duration(output_path)
-                return ProcessResult(success=True, output_path=output_path, duration=duration)
-            else:
-                return ProcessResult(success=False, error=result.stderr)
-        except subprocess.TimeoutExpired:
-            return ProcessResult(success=False, error="处理超时")
-        except Exception as e:
-            return ProcessResult(success=False, error=str(e))
-
-    def _get_duration(self, path: Path) -> float:
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-        except Exception:
-            pass
-        return 0.0
+# ---------------------------------------------------------------------------
+# 内置步骤
+# ---------------------------------------------------------------------------
 
 
-class CompressionEffect(BaseEffect):
-    """压缩效果
+class FadeInStep(PostProcessStep):
+    name = "fade_in"
 
-    参数:
-        threshold: 阈值 (dB)
-        ratio: 压缩比
-        attack: 启动时间 (ms)
-        release: 释放时间 (ms)
-    """
-
-    def __init__(self, threshold: float = -20, ratio: float = 4, attack: int = 5, release: int = 50):
-        self.threshold = threshold
-        self.ratio = ratio
-        self.attack = attack
-        self.release = release
-
-    def apply(self, input_path: Path, output_path: Path) -> ProcessResult:
-        cmd = self.get_command(input_path, output_path)
-        return self._run_command(cmd, output_path)
-
-    def get_command(self, input_path: Path, output_path: Path) -> List[str]:
-        return [
-            "ffmpeg", "-y", "-i", str(input_path),
-            "-af", f"acompressor=threshold={self.threshold}dB:ratio={self.ratio}:attack={self.attack}:release={self.release}",
-            str(output_path)
-        ]
-
-    def _run_command(self, cmd: List[str], output_path: Path) -> ProcessResult:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                duration = self._get_duration(output_path)
-                return ProcessResult(success=True, output_path=output_path, duration=duration)
-            else:
-                return ProcessResult(success=False, error=result.stderr)
-        except Exception as e:
-            return ProcessResult(success=False, error=str(e))
-
-    def _get_duration(self, path: Path) -> float:
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-        except Exception:
-            pass
-        return 0.0
+    def apply(self, audio: AudioBuffer, **options: Any) -> AudioBuffer:
+        duration_ms = float(options.get("duration_ms", 50))
+        if duration_ms <= 0 or audio.sample_width != 2 or audio.n_frames == 0:
+            return audio.copy()
+        n_channels = audio.channels
+        fade_frames = min(
+            int(audio.sample_rate * duration_ms / 1000.0), audio.n_frames
+        )
+        if fade_frames <= 0:
+            return audio.copy()
+        new_audio = audio.copy()
+        raw = new_audio.samples
+        n_samples = len(raw) // 2
+        samples = list(struct.unpack(f"<{n_samples}h", raw))
+        for i in range(fade_frames):
+            scale = i / fade_frames
+            for c in range(n_channels):
+                idx = i * n_channels + c
+                if idx < len(samples):
+                    samples[idx] = int(samples[idx] * scale)
+        new_audio.samples = struct.pack(f"<{len(samples)}h", *samples)
+        return new_audio
 
 
-class EqualizerEffect(BaseEffect):
-    """均衡器效果
+class FadeOutStep(PostProcessStep):
+    name = "fade_out"
 
-    参数:
-        bands: 频段配置 [(频率, 增益), ...]
-    """
+    def apply(self, audio: AudioBuffer, **options: Any) -> AudioBuffer:
+        duration_ms = float(options.get("duration_ms", 50))
+        if duration_ms <= 0 or audio.sample_width != 2 or audio.n_frames == 0:
+            return audio.copy()
+        n_channels = audio.channels
+        fade_frames = min(
+            int(audio.sample_rate * duration_ms / 1000.0), audio.n_frames
+        )
+        if fade_frames <= 0:
+            return audio.copy()
+        new_audio = audio.copy()
+        raw = new_audio.samples
+        n_samples = len(raw) // 2
+        samples = list(struct.unpack(f"<{n_samples}h", raw))
+        total = audio.n_frames
+        for i in range(fade_frames):
+            scale = (fade_frames - i) / fade_frames
+            pos = total - fade_frames + i
+            for c in range(n_channels):
+                idx = pos * n_channels + c
+                if 0 <= idx < len(samples):
+                    samples[idx] = int(samples[idx] * scale)
+        new_audio.samples = struct.pack(f"<{len(samples)}h", *samples)
+        return new_audio
 
-    def __init__(self, bands: List[tuple] = None):
-        self.bands = bands or [
-            (60, 0), (170, 0), (310, 0), (600, 0),
-            (1000, 0), (3000, 0), (6000, 0), (12000, 0), (14000, 0), (16000, 0)
-        ]
 
-    def apply(self, input_path: Path, output_path: Path) -> ProcessResult:
-        cmd = self.get_command(input_path, output_path)
-        return self._run_command(cmd, output_path)
+class DenoiseStep(PostProcessStep):
+    """简易降噪 (静音门): 低于阈值的样本置零。"""
 
-    def get_command(self, input_path: Path, output_path: Path) -> List[str]:
-        eq_filters = []
-        for freq, gain in self.bands:
-            if not isinstance(freq, (int, float)) or not isinstance(gain, (int, float)):
+    name = "denoise"
+
+    def apply(self, audio: AudioBuffer, **options: Any) -> AudioBuffer:
+        threshold = int(options.get("threshold", 200))
+        if audio.sample_width != 2 or audio.n_frames == 0:
+            return audio.copy()
+        new_audio = audio.copy()
+        n_samples = len(new_audio.samples) // 2
+        samples = list(struct.unpack(f"<{n_samples}h", new_audio.samples))
+        for i, s in enumerate(samples):
+            if abs(s) < threshold:
+                samples[i] = 0
+        new_audio.samples = struct.pack(f"<{len(samples)}h", *samples)
+        return new_audio
+
+
+class ResampleStep(PostProcessStep):
+    """简化重采样 (线性插值, 仅支持 16-bit WAV/PCM 风格 buffer)。"""
+
+    name = "resample"
+
+    def apply(self, audio: AudioBuffer, **options: Any) -> AudioBuffer:
+        target_rate = int(options.get("target_sample_rate", audio.sample_rate))
+        if target_rate <= 0 or target_rate == audio.sample_rate or audio.sample_width != 2:
+            return audio.copy()
+        n_channels = audio.channels
+        n_samples = len(audio.samples) // 2
+        samples = list(struct.unpack(f"<{n_samples}h", audio.samples))
+        # 仅处理第一个声道, 然后重新交错
+        per_channel = [samples[c::n_channels] for c in range(n_channels)]
+        new_per_channel: List[List[int]] = []
+        for ch in per_channel:
+            new_ch = self._linear_resample(ch, audio.sample_rate, target_rate)
+            new_per_channel.append(new_ch)
+        # 交错
+        new_len = min(len(ch) for ch in new_per_channel)
+        new_samples: List[int] = []
+        for i in range(new_len):
+            for ch in new_per_channel:
+                new_samples.append(ch[i])
+        new_audio = AudioBuffer(
+            sample_rate=target_rate,
+            sample_width=2,
+            channels=n_channels,
+            samples=struct.pack(f"<{len(new_samples)}h", *new_samples),
+        )
+        return new_audio
+
+    @staticmethod
+    def _linear_resample(samples: List[int], src_rate: int, dst_rate: int) -> List[int]:
+        if not samples or src_rate == dst_rate:
+            return list(samples)
+        ratio = src_rate / dst_rate
+        new_len = int(len(samples) / ratio)
+        result: List[int] = []
+        for i in range(new_len):
+            src_pos = i * ratio
+            src_idx = int(src_pos)
+            frac = src_pos - src_idx
+            a = samples[src_idx]
+            b = samples[min(src_idx + 1, len(samples) - 1)]
+            v = int(a + (b - a) * frac)
+            result.append(v)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# 链
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PostProcessChainResult:
+    """链式后处理执行结果。"""
+
+    audio: AudioBuffer
+    steps: List[PostProcessStepResult] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return all(s.status != PostProcessStepStatus.FAILED for s in self.steps)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "steps": [
+                {
+                    "name": s.name,
+                    "status": s.status.value,
+                    "detail": s.detail,
+                    "duration_ms": s.duration_ms,
+                }
+                for s in self.steps
+            ],
+        }
+
+
+class PostProcessor:
+    """后处理链执行器。"""
+
+    def __init__(self) -> None:
+        self._steps: List[PostProcessStep] = []
+        self._options: Dict[str, Dict[str, Any]] = {}
+
+    def add(self, step: PostProcessStep, **options: Any) -> "PostProcessor":
+        """追加一步。"""
+        self._steps.append(step)
+        if options:
+            self._options[step.name] = options
+        return self
+
+    def insert(self, index: int, step: PostProcessStep, **options: Any) -> None:
+        """在指定位置插入一步。"""
+        self._steps.insert(index, step)
+        if options:
+            self._options[step.name] = options
+
+    def remove(self, name: str) -> bool:
+        before = len(self._steps)
+        self._steps = [s for s in self._steps if s.name != name]
+        self._options.pop(name, None)
+        return len(self._steps) < before
+
+    def clear(self) -> None:
+        self._steps.clear()
+        self._options.clear()
+
+    @property
+    def step_names(self) -> List[str]:
+        return [s.name for s in self._steps]
+
+    def run(self, audio: AudioBuffer) -> PostProcessChainResult:
+        """按顺序执行所有步骤。"""
+        results: List[PostProcessStepResult] = []
+        current = audio.copy()
+        for step in self._steps:
+            opts = self._options.get(step.name, {})
+            start = 0.0
+            try:
+                from time import perf_counter
+                start = perf_counter()
+                new_audio = step.apply(current, **opts)
+                duration_ms = (perf_counter() - start) * 1000.0
+            except Exception as e:  # noqa: BLE001
+                duration_ms = 0.0
+                logger.debug(f"步骤 {step.name} 执行失败: {e}")
+                results.append(PostProcessStepResult(
+                    name=step.name,
+                    status=PostProcessStepStatus.FAILED,
+                    detail=str(e),
+                    duration_ms=duration_ms,
+                ))
                 continue
-            eq_filters.append(f"equalizer=f={float(freq)}:t=o:width_type=h:width=0.5:g={float(gain)}")
+            if new_audio is None:
+                new_audio = current
+            results.append(PostProcessStepResult(
+                name=step.name,
+                status=PostProcessStepStatus.SUCCESS,
+                duration_ms=duration_ms,
+            ))
+            current = new_audio
+        return PostProcessChainResult(audio=current, steps=results)
 
-        filter_str = ",".join(eq_filters)
-        return [
-            "ffmpeg", "-y", "-i", str(input_path),
-            "-af", filter_str,
-            str(output_path)
-        ]
+    # ------------------------------------------------------------------
+    # 文件 IO
+    # ------------------------------------------------------------------
 
-    def _run_command(self, cmd: List[str], output_path: Path) -> ProcessResult:
+    @staticmethod
+    def load_wav(file_path: Union[str, Path]) -> AudioBuffer:
+        """从 WAV 文件加载 PCM 数据。"""
+        with wave.open(str(file_path), "rb") as wf:
+            sample_rate = wf.getframerate()
+            sample_width = wf.getsampwidth()
+            channels = wf.getnchannels()
+            n_frames = wf.getnframes()
+            samples = wf.readframes(n_frames)
+        return AudioBuffer(
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+            channels=channels,
+            samples=samples,
+        )
+
+    @staticmethod
+    def save_wav(audio: AudioBuffer, file_path: Union[str, Path]) -> bool:
+        """将 PCM buffer 写入 WAV 文件。"""
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                duration = self._get_duration(output_path)
-                return ProcessResult(success=True, output_path=output_path, duration=duration)
-            else:
-                return ProcessResult(success=False, error=result.stderr)
-        except Exception as e:
-            return ProcessResult(success=False, error=str(e))
-
-    def _get_duration(self, path: Path) -> float:
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-        except Exception:
-            pass
-        return 0.0
+            with wave.open(str(path), "wb") as wf:
+                wf.setnchannels(audio.channels)
+                wf.setsampwidth(audio.sample_width)
+                wf.setframerate(audio.sample_rate)
+                wf.writeframes(audio.samples)
+            return True
+        except (wave.Error, OSError) as e:
+            logger.error(f"保存 WAV 失败 ({path}): {e}")
+            return False
 
 
-class NormalizeEffect(BaseEffect):
-    """音量归一化效果"""
-
-    def __init__(self, target_level: float = -20):
-        self.target_level = target_level
-
-    def apply(self, input_path: Path, output_path: Path) -> ProcessResult:
-        cmd = self.get_command(input_path, output_path)
-        return self._run_command(cmd, output_path)
-
-    def get_command(self, input_path: Path, output_path: Path) -> List[str]:
-        return [
-            "ffmpeg", "-y", "-i", str(input_path),
-            "-af", f"volume={self.target_level}dB",
-            str(output_path)
-        ]
-
-    def _run_command(self, cmd: List[str], output_path: Path) -> ProcessResult:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode == 0:
-                duration = self._get_duration(output_path)
-                return ProcessResult(success=True, output_path=output_path, duration=duration)
-            else:
-                return ProcessResult(success=False, error=result.stderr)
-        except Exception as e:
-            return ProcessResult(success=False, error=str(e))
-
-    def _get_duration(self, path: Path) -> float:
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-        except Exception:
-            pass
-        return 0.0
-
-
-class AudioPostProcessor:
-    """音频后处理器"""
-
-    EFFECT_CLASSES = {
-        EffectType.REVERB: ReverbEffect,
-        EffectType.COMPRESSION: CompressionEffect,
-        EffectType.EQUALIZER: EqualizerEffect,
-        EffectType.NORMALIZE: NormalizeEffect,
-    }
-
-    def __init__(self, effects: List[EffectConfig] = None):
-        self.effects = effects or []
-
-    def add_effect(self, effect_type: EffectType, **params):
-        """添加效果"""
-        self.effects.append(EffectConfig(effect_type, params))
-
-    def process(self, input_path: Path, output_path: Path, effects: List[EffectConfig] = None) -> ProcessResult:
-        """处理音频文件
-
-        Args:
-            input_path: 输入文件
-            output_path: 输出文件
-            effects: 效果列表（如果为 None，使用初始化时的效果）
-
-        Returns:
-            ProcessResult 对象
-        """
-        use_effects = effects if effects is not None else self.effects
-
-        if not use_effects:
-            return ProcessResult(success=False, error="没有指定效果")
-
-        current_path = input_path
-        temp_paths = []
-
-        try:
-            for i, effect_config in enumerate(use_effects):
-                effect_cls = self.EFFECT_CLASSES.get(effect_config.effect_type)
-                if effect_cls is None:
-                    logger.warning(f"未知效果类型: {effect_config.effect_type}")
-                    continue
-
-                params = effect_config.params or {}
-                effect = effect_cls(**params)
-
-                if i < len(use_effects) - 1:
-                    temp_path = output_path.parent / f"{output_path.stem}_temp_{i}{output_path.suffix}"
-                    temp_paths.append(temp_path)
-                    target_path = temp_path
-                else:
-                    target_path = output_path
-
-                result = effect.apply(current_path, target_path)
-                if not result.success:
-                    return ProcessResult(success=False, error=f"效果 {effect_config.effect_type} 失败: {result.error}")
-
-                current_path = target_path
-
-            duration = self._get_duration(output_path)
-            return ProcessResult(success=True, output_path=output_path, duration=duration)
-
-        finally:
-            for temp_path in temp_paths:
-                if temp_path.exists():
-                    try:
-                        temp_path.unlink()
-                    except Exception:
-                        pass
-
-    def _get_duration(self, path: Path) -> float:
-        try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return float(result.stdout.strip())
-        except Exception:
-            pass
-        return 0.0
-
-
-def create_effect(effect_type: str, **params) -> BaseEffect:
-    """创建效果实例"""
-    effect_enum = EffectType(effect_type.lower())
-    effect_cls = AudioPostProcessor.EFFECT_CLASSES.get(effect_enum)
-    if effect_cls is None:
-        raise ValueError(f"未知效果类型: {effect_type}")
-    return effect_cls(**params)
+__all__ = [
+    "AudioBuffer",
+    "PostProcessStep",
+    "PostProcessStepStatus",
+    "PostProcessStepResult",
+    "PostProcessChainResult",
+    "PostProcessor",
+    "FadeInStep",
+    "FadeOutStep",
+    "DenoiseStep",
+    "ResampleStep",
+]

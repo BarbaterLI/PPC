@@ -1,35 +1,54 @@
 """TTS 引擎
 
 封装 Edge TTS 核心处理逻辑，支持分段合成、批量处理、超时控制和重试机制。
+
+Phase 1 升级：
+* 通过 :class:`src_m.engines.edge_tts_client.EdgeTTSClient` 抽象与 Edge TTS 通讯
+* 集成 :class:`src_m.cache.multilevel_cache.MultiLevelCache` 实现 L1/L2 缓存
+* 暴露 :meth:`TTSEngine.synthesize_stream` 异步流式接口
+* 扩展 :class:`EngineStats` 记录缓存命中、错误类型分布
 """
 
+from __future__ import annotations
+
 import asyncio
+import hashlib
 import logging
+import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-import edge_tts
-from edge_tts.exceptions import NoAudioReceived
-
-from src_m.config import PPC9Config
+from src_m.audio.processor import AudioProcessor
+from src_m.cache.multilevel_cache import CacheLevel, MultiLevelCache
+from src_m.config import PPC10Config
 from src_m.core import BaseEngine
+from src_m.core.exceptions import (
+    ErrorCodes,
+    NetworkError,
+    PermanentError,
+    QuotaError,
+    TransientError,
+)
+from src_m.engines.edge_tts_client import (
+    DEFAULT_RESUME_OFFSET,
+    EdgeTTSClient,
+    EdgeTTSHttpClient,
+    TTSChunk,
+    VoiceInfo,
+)
+from src_m.executors.merger import AudioMerger
 from src_m.reliability import (
-    ExecutionResult,
     ExecutionMetrics,
+    ExecutionResult,
     create_network_retry_policy,
     create_tts_circuit_breaker,
 )
-from src_m.timeout import (
-    TimeoutCalculator,
-    TimeoutConfig,
-    TimeoutHistory,
-)
-from src_m.audio.processor import AudioProcessor
-from src_m.text.segmenter import TextSegmenter
 from src_m.text.normalizer import TextNormalizer
-from src_m.core.errors import ErrorCodes
+from src_m.text.segmenter import TextSegmenter
+from src_m.timeout import TimeoutCalculator, TimeoutConfig, TimeoutHistory
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +62,34 @@ DEFAULT_TIMEOUT_MAX = 600
 DEFAULT_MAX_SEGMENT_LENGTH = 2500
 DEFAULT_RATE_LIMIT = 100
 DEFAULT_RATE = "+0%"
+DEFAULT_VOLUME = "+0%"
 DEFAULT_API_CONCURRENCY = 5
 DEFAULT_SEGMENT_SILENCE_MS = 100
+DEFAULT_CACHE_TTL = 86400.0  # 24h
+DEFAULT_CACHE_ENABLED = True
+
+
+def _normalize_rate(rate: str) -> str:
+    """规范化语速参数，确保以 ``+``/``-`` 开头。"""
+    rate = rate.strip()
+    if re.match(r"^\d+%$", rate):
+        rate = f"+{rate}"
+    return rate
+
+
+def build_cache_key(voice: str, text: str, rate: str, volume: str) -> str:
+    """构造 TTS 缓存 key。
+
+    Key 格式: ``tts:<voice>:<sha256(text)>:<rate>:<volume>``。
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"tts:{voice}:{digest}:{rate}:{volume}"
 
 
 @dataclass
 class TTSEngineConfig:
     """TTS 引擎配置"""
+
     voice: str = DEFAULT_VOICE
     concurrency: int = DEFAULT_CONCURRENCY
     retries: int = DEFAULT_RETRIES
@@ -60,9 +100,66 @@ class TTSEngineConfig:
     max_segment_length: int = DEFAULT_MAX_SEGMENT_LENGTH
     rate_limit: int = DEFAULT_RATE_LIMIT
     rate: str = DEFAULT_RATE
+    volume: str = DEFAULT_VOLUME
     api_concurrency: Optional[int] = None
     segment_silence_ms: int = DEFAULT_SEGMENT_SILENCE_MS
     timeout_multiplier: float = 1.0
+    cache_enabled: bool = DEFAULT_CACHE_ENABLED
+    cache_ttl: float = DEFAULT_CACHE_TTL
+
+    def __post_init__(self) -> None:
+        self.rate = _normalize_rate(self.rate)
+
+
+class EngineStats:
+    """TTS 引擎统计信息。
+
+    扩展了 :class:`src_m.core.base.EngineStats` 之外的内容：
+    * 缓存命中 / 未命中
+    * 错误类型分布
+    * 按段的统计
+    """
+
+    def __init__(self) -> None:
+        self.cache_hits: int = 0
+        self.cache_misses: int = 0
+        self.error_type_breakdown: Dict[str, int] = {}
+        self.stream_chunks: int = 0
+        self.bytes_synthesized: int = 0
+        self.last_error_code: Optional[str] = None
+        self.last_error_type: Optional[str] = None
+
+    def record_cache_hit(self) -> None:
+        self.cache_hits += 1
+
+    def record_cache_miss(self) -> None:
+        self.cache_misses += 1
+
+    def record_error(self, exc: BaseException) -> None:
+        self.error_type_breakdown[type(exc).__name__] = (
+            self.error_type_breakdown.get(type(exc).__name__, 0) + 1
+        )
+        self.last_error_type = type(exc).__name__
+        # 尝试获取 error_code
+        code = getattr(exc, "error_code", None)
+        if isinstance(code, str):
+            self.last_error_code = code
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "cache_hit_rate": (
+                self.cache_hits / (self.cache_hits + self.cache_misses)
+                if (self.cache_hits + self.cache_misses) > 0
+                else 0.0
+            ),
+            "error_type_breakdown": dict(self.error_type_breakdown),
+            "stream_chunks": self.stream_chunks,
+            "bytes_synthesized": self.bytes_synthesized,
+            "last_error_code": self.last_error_code,
+            "last_error_type": self.last_error_type,
+        }
 
 
 class TTSEngine(BaseEngine[str, Path]):
@@ -74,9 +171,17 @@ class TTSEngine(BaseEngine[str, Path]):
     - 动态超时控制
     - 重试和熔断机制
     - 音频质量验证
+    - 多级缓存 (L1 内存 + L2 磁盘)
+    - 流式合成接口
     """
 
-    def __init__(self, config: PPC9Config) -> None:
+    def __init__(
+        self,
+        config: PPC10Config,
+        *,
+        edge_client: Optional[EdgeTTSClient] = None,
+        cache: Optional[MultiLevelCache] = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.tts_config = self._build_tts_config(config)
@@ -103,8 +208,23 @@ class TTSEngine(BaseEngine[str, Path]):
         )
         self._timeout_history = TimeoutHistory()
         self._audio_processor = AudioProcessor()
+        # edge-tts 合成输出为 MP3,分段合并必须走 pydub 路径;
+        # AudioProcessor.merge 只支持 WAV/PCM,否则在打开 mp3 时会因
+        # ``wave.Error: # channels not specified`` 失败(实际是输出
+        # wave 文件未 setparams 就关闭引发的副作用)。
+        self._audio_merger = AudioMerger(silence_ms=int(self.tts_config.segment_silence_ms))
         self._text_segmenter = TextSegmenter.from_config(config.tts)
         self._text_normalizer = self._build_text_normalizer(config)
+
+        # 注入 Edge TTS 客户端（默认使用 HTTP 客户端）
+        self._edge_client: EdgeTTSClient = edge_client or EdgeTTSHttpClient()
+
+        # 多级缓存（默认使用全局实例）
+        self._cache: Optional[MultiLevelCache] = (
+            cache if cache is not None else (MultiLevelCache() if self.tts_config.cache_enabled else None)
+        )
+        # TTS 引擎统计（独立于 base EngineStats）
+        self.tts_stats = EngineStats()
 
         api_concurrency = self.tts_config.api_concurrency or min(
             DEFAULT_API_CONCURRENCY, self.tts_config.concurrency
@@ -114,11 +234,17 @@ class TTSEngine(BaseEngine[str, Path]):
         logger.info(
             f"TTS 引擎初始化完成: voice={self.tts_config.voice}, "
             f"Worker并发={self.tts_config.concurrency}, "
-            f"API并发={api_concurrency}"
+            f"API并发={api_concurrency}, "
+            f"cache={'on' if self._cache else 'off'}"
         )
 
-    def _build_tts_config(self, config: PPC9Config) -> TTSEngineConfig:
+    # ------------------------------------------------------------------
+    # 配置构建
+    # ------------------------------------------------------------------
+
+    def _build_tts_config(self, config: PPC10Config) -> TTSEngineConfig:
         """从全局配置构建 TTS 配置"""
+        rate = _normalize_rate(config.tts.rate)
         return TTSEngineConfig(
             voice=config.tts.voice,
             concurrency=config.tts.concurrency,
@@ -129,13 +255,13 @@ class TTSEngine(BaseEngine[str, Path]):
             timeout_max=config.tts.timeout_max,
             max_segment_length=config.tts.max_segment_length,
             rate_limit=config.tts.rate_limit,
-            rate=config.tts.rate,
+            rate=rate,
             api_concurrency=config.tts.api_concurrency,
             segment_silence_ms=getattr(config.tts, "segment_silence_ms", DEFAULT_SEGMENT_SILENCE_MS),
             timeout_multiplier=getattr(config.tts, "timeout_multiplier", 1.0),
         )
 
-    def _build_text_normalizer(self, config: PPC9Config) -> TextNormalizer:
+    def _build_text_normalizer(self, config: PPC10Config) -> TextNormalizer:
         """从配置构建文本规范化器"""
         text_norm_config = getattr(config.tts, "text_normalization", None)
         if text_norm_config is None:
@@ -165,6 +291,10 @@ class TTSEngine(BaseEngine[str, Path]):
             ),
         )
 
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
+
     async def initialize(self) -> None:
         """初始化引擎"""
         await super().initialize()
@@ -186,78 +316,187 @@ class TTSEngine(BaseEngine[str, Path]):
             raise RuntimeError(result.error or "Synthesis failed")
         return result.data
 
-    async def synthesize(self, text: str, output_path: Path) -> ExecutionResult[Path]:
+    # ------------------------------------------------------------------
+    # 缓存工具
+    # ------------------------------------------------------------------
+
+    def _cache_lookup(self, cache_key: str) -> Optional[Path]:
+        """从缓存中查找结果文件路径。"""
+        if self._cache is None:
+            return None
+        try:
+            cached = self._cache.get(cache_key)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"缓存读取失败: {e}")
+            return None
+        if not cached:
+            return None
+        path_str = cached.get("path") if isinstance(cached, dict) else None
+        if not path_str:
+            return None
+        path = Path(path_str)
+        if path.exists() and path.stat().st_size > 0:
+            return path
+        return None
+
+    def _cache_store(self, cache_key: str, path: Path) -> None:
+        """将成功合成的文件路径写入缓存。"""
+        if self._cache is None:
+            return
+        try:
+            self._cache.set(
+                cache_key,
+                {"path": str(path), "size": path.stat().st_size},
+                ttl=self.tts_config.cache_ttl,
+                levels=[CacheLevel.L1_MEMORY, CacheLevel.L2_DISK],
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"缓存写入失败: {e}")
+
+    # ------------------------------------------------------------------
+    # 合成入口
+    # ------------------------------------------------------------------
+
+    async def synthesize(self, text: str, output_path: Path, disable_timeout: bool = False) -> ExecutionResult[Path]:
         """合成语音
 
         所有 API 请求都经过 _api_semaphore 控制，确保总并发数严格受限。
         """
         start_time = time.time()
+        normalized_text = ""
+        cache_key = ""
 
         async with self._api_semaphore:
             try:
                 if not text or not text.strip():
-                    return ExecutionResult.failure(
+                    return ExecutionResult.fail(
                         error="文本内容为空", error_code=ErrorCodes.EMPTY_CONTENT.value
                     )
 
                 normalized_text = self._text_normalizer.normalize(text)
                 if not normalized_text or not normalized_text.strip():
-                    return ExecutionResult.failure(
+                    return ExecutionResult.fail(
                         error="文本内容为空（规范化后）",
                         error_code=ErrorCodes.EMPTY_CONTENT.value,
                     )
 
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                timeout_seconds = self._calculate_timeout(normalized_text)
-
-                communicate = edge_tts.Communicate(
-                    normalized_text, self.tts_config.voice, rate=self.tts_config.rate
+                cache_key = build_cache_key(
+                    self.tts_config.voice,
+                    normalized_text,
+                    self.tts_config.rate,
+                    self.tts_config.volume,
                 )
+                cached_path = self._cache_lookup(cache_key)
+                if cached_path is not None:
+                    self.tts_stats.record_cache_hit()
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        import shutil
 
-                await self._execute_tts(communicate, output_path, timeout_seconds)
+                        shutil.copy(cached_path, output_path)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(f"缓存复制失败，回退合成: {e}")
+                    else:
+                        metrics = ExecutionMetrics(
+                            duration=time.time() - start_time,
+                            bytes_processed=output_path.stat().st_size,
+                        )
+                        logger.debug(f"TTS 缓存命中: key={cache_key[:32]}...")
+                        return ExecutionResult.ok(output_path, metrics)
+
+                self.tts_stats.record_cache_miss()
+
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                edge_call = self._edge_client.synthesize_to_file(
+                    normalized_text,
+                    output_path,
+                    self.tts_config.voice,
+                    rate=self.tts_config.rate,
+                    volume=self.tts_config.volume,
+                    last_chunk_offset=DEFAULT_RESUME_OFFSET,
+                )
+                if disable_timeout:
+                    written = await edge_call
+                else:
+                    timeout_seconds = self._calculate_timeout(normalized_text)
+                    written = await asyncio.wait_for(edge_call, timeout=timeout_seconds)
+                self.tts_stats.bytes_synthesized += written
 
                 valid, error_msg = self._audio_processor.validate(output_path)
                 if not valid:
                     self._record_timeout(normalized_text, time.time() - start_time, success=False)
-                    return ExecutionResult.failure(
+                    self.tts_stats.record_error(
+                        RuntimeError(error_msg or "音频校验失败")
+                    )
+                    return ExecutionResult.fail(
                         error=f"音频文件生成失败：{error_msg}",
                         error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value,
                     )
 
                 actual_time = time.time() - start_time
                 self._record_timeout(normalized_text, actual_time, success=True)
+                self._cache_store(cache_key, output_path)
 
                 metrics = ExecutionMetrics(
                     duration=actual_time,
                     bytes_processed=output_path.stat().st_size,
                 )
-                return ExecutionResult.success(output_path, metrics)
+                return ExecutionResult.ok(output_path, metrics)
 
-            except NoAudioReceived as e:
-                logger.debug(
-                    f"Azure TTS 临时故障: 未收到音频响应 (将静默重试)"
+            except asyncio.TimeoutError:
+                self.tts_stats.record_error(TimeoutError("TTS 合成超时"))
+                self._record_timeout(normalized_text, time.time() - start_time, success=False, timeout_occurred=True)
+                return ExecutionResult.fail(
+                    error=f"TTS 合成超时 (timeout={timeout_seconds:.1f}s)",
+                    error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value,
                 )
-                return ExecutionResult.failure(
-                    error=str(e),
-                    error_code=ErrorCodes.TTS_NO_AUDIO_RECEIVED.value,
-                )
+            except (TransientError, PermanentError, QuotaError, NetworkError) as e:
+                self.tts_stats.record_error(e)
+                return self._classify_error_result(e)
             except FileNotFoundError:
+                self.tts_stats.record_error(FileNotFoundError("文件不存在"))
                 logger.error(f"文件路径不存在: {output_path}")
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error=f"输出路径不存在: {output_path}",
                     error_code=ErrorCodes.FILE_NOT_FOUND.value,
                 )
             except PermissionError:
+                self.tts_stats.record_error(PermissionError("权限不足"))
                 logger.error(f"文件写入权限不足: {output_path}")
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error=f"文件写入权限不足: {output_path}",
                     error_code=ErrorCodes.FILE_PERMISSION_DENIED.value,
                 )
             except Exception as e:
+                self.tts_stats.record_error(e)
                 logger.error(f"TTS合成失败: {e}")
-                return ExecutionResult.error(
+                return ExecutionResult.fail(
                     error=str(e), error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value
                 )
+
+    @staticmethod
+    def _classify_error_result(exc: BaseException) -> ExecutionResult[Path]:
+        """根据异常类型返回对应的 ExecutionResult。"""
+        if isinstance(exc, TransientError):
+            return ExecutionResult.fail(
+                error=str(exc), error_code=ErrorCodes.TTS_TRANSIENT_FAILED.value
+            )
+        if isinstance(exc, PermanentError):
+            return ExecutionResult.fail(
+                error=str(exc), error_code=ErrorCodes.TTS_PERMANENT_FAILED.value
+            )
+        if isinstance(exc, QuotaError):
+            return ExecutionResult.fail(
+                error=str(exc), error_code=ErrorCodes.TTS_QUOTA_EXCEEDED.value
+            )
+        if isinstance(exc, NetworkError):
+            return ExecutionResult.fail(
+                error=str(exc), error_code=ErrorCodes.TTS_NETWORK_FAILED.value
+            )
+        return ExecutionResult.fail(
+            error=str(exc), error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value
+        )
 
     def _calculate_timeout(self, text: str) -> float:
         """计算动态超时时间"""
@@ -272,42 +511,13 @@ class TTSEngine(BaseEngine[str, Path]):
         )
         return timeout
 
-    async def _execute_tts(
+    def _record_timeout(
         self,
-        communicate: edge_tts.Communicate,
-        output_path: Path,
-        timeout_seconds: float,
+        text: str,
+        actual_time: float,
+        success: bool,
+        timeout_occurred: bool = False,
     ) -> None:
-        """执行 TTS 请求"""
-        try:
-            async with asyncio.timeout(timeout_seconds):
-                await communicate.save(str(output_path))
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"TTS合成超时 ({timeout_seconds:.1f}s)")
-        except NoAudioReceived as e:
-            logger.warning(
-                f"Azure TTS 临时故障: 未收到音频响应。\n"
-                f"可能原因：1) 并发数过高触发限流\n"
-                f"        2) Edge TTS 服务器短暂不可用\n"
-                f"        3) 网络波动\n"
-                f"建议：降低并发数（--concurrency 4-6），稍后自动重试"
-            )
-            raise
-        except ValueError as e:
-            logger.error(
-                f"TTS参数错误: {e}\n"
-                f"可能原因：语音参数 '{self.tts_config.voice}' 无效\n"
-                f"建议：检查语音参数配置"
-            )
-            raise
-        except ConnectionError as e:
-            logger.error(f"TTS网络连接失败: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"TTS通信失败: {e}", exc_info=True)
-            raise
-
-    def _record_timeout(self, text: str, actual_time: float, success: bool, timeout_occurred: bool = False) -> None:
         """记录超时历史"""
         self._timeout_history.record(
             text=text,
@@ -316,8 +526,52 @@ class TTSEngine(BaseEngine[str, Path]):
             timeout_occurred=timeout_occurred,
         )
 
+    # ------------------------------------------------------------------
+    # 流式合成
+    # ------------------------------------------------------------------
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        *,
+        rate: Optional[str] = None,
+        volume: Optional[str] = None,
+        last_chunk_offset: int = DEFAULT_RESUME_OFFSET,
+    ) -> AsyncIterator[TTSChunk]:
+        """异步流式合成接口。
+
+        直接 yield :class:`TTSChunk`，调用方负责拼装或缓存。
+        """
+        rate = _normalize_rate(rate) if rate is not None else self.tts_config.rate
+        volume = volume if volume is not None else self.tts_config.volume
+
+        normalized = self._text_normalizer.normalize(text) if text else ""
+        if not normalized.strip():
+            raise PermanentError("文本内容为空（规范化后）")
+
+        try:
+            async for chunk in self._edge_client.synthesize_stream(
+                normalized,
+                self.tts_config.voice,
+                rate=rate,
+                volume=volume,
+                last_chunk_offset=last_chunk_offset,
+            ):
+                if chunk.type == "audio":
+                    self.tts_stats.stream_chunks += 1
+                    self.tts_stats.bytes_synthesized += len(chunk.data)
+                yield chunk
+        except (TransientError, PermanentError, QuotaError, NetworkError) as e:
+            self.tts_stats.record_error(e)
+            raise
+
+    # ------------------------------------------------------------------
+    # 分段合成
+    # ------------------------------------------------------------------
+
     async def synthesize_segmented(
-        self, text: str, output_path: Path
+        self, text: str, output_path: Path, disable_timeout: bool = False,
+        progress_handler: Optional[Any] = None,
     ) -> ExecutionResult[Path]:
         """分段合成语音
 
@@ -328,73 +582,147 @@ class TTSEngine(BaseEngine[str, Path]):
 
         try:
             if not text or not text.strip():
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="文本内容为空", error_code=ErrorCodes.EMPTY_CONTENT.value
                 )
 
             if len(text) <= self.tts_config.max_segment_length:
-                return await self.synthesize(text, output_path)
+                return await self.synthesize(text, output_path, disable_timeout=disable_timeout)
 
             segments = self._text_segmenter.split(
                 text, self.tts_config.max_segment_length
             )
             if not segments:
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="文本分段失败", error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value
                 )
 
             if len(segments) == 1:
-                return await self.synthesize(segments[0], output_path)
+                return await self.synthesize(segments[0], output_path, disable_timeout=disable_timeout)
 
-            return await self._merge_segments(segments, output_path, start_time)
+            return await self._merge_segments(
+                segments, output_path, start_time,
+                disable_timeout=disable_timeout,
+                progress_handler=progress_handler,
+            )
 
         except Exception as e:
             logger.error(f"分段TTS合成失败: {e}")
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value
             )
 
     async def _merge_segments(
-        self, segments: List[str], output_path: Path, start_time: float
+        self, segments: List[str], output_path: Path, start_time: float,
+        disable_timeout: bool = False,
+        progress_handler: Optional[Any] = None,
     ) -> ExecutionResult[Path]:
-        """合并多个音频分段"""
-        temp_files: List[Path] = []
+        """并发合成各分段，命中缓存则跳过；成功合并后清理缓存目录。
+
+        缓存目录：{output_path.parent}/.cache/{output_path.stem}/
+        段文件命名：{stem}_seg_{i:03d}.mp3
+
+        段级进度汇报在每个 _synth_one 内部完成，asyncio.gather 期间实时更新。
+        """
+        cache_dir = output_path.parent / ".cache" / output_path.stem
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        async def _synth_one(i: int, segment: str) -> tuple[int, ExecutionResult]:
+            temp_file = cache_dir / f"{output_path.stem}_seg_{i:03d}.mp3"
+            if temp_file.exists() and temp_file.stat().st_size > 0:
+                logger.debug("段 %d 命中缓存: %s", i, temp_file)
+                if progress_handler:
+                    progress_handler.on_segment_complete(success=True)
+                return i, ExecutionResult.ok(temp_file)
+            # 段级硬超时：即使 disable_timeout=True（--one 模式），单段仍用
+            # _calculate_timeout(segment) 套用批量模式的动态超时（基于段长度、
+            # timeout_history、timeout_multiplier）。这是 Edge TTS 真正卡死时的
+            # 安全网，与 per-text 超时解耦。
+            hard_timeout = self._calculate_timeout(segment)
+            try:
+                async with self._api_semaphore:
+                    result = await asyncio.wait_for(
+                        self.synthesize(
+                            segment, temp_file, disable_timeout=disable_timeout
+                        ),
+                        timeout=hard_timeout,
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "段 %d 合成硬超时 (%.0fs, 段长=%d): %s",
+                    i, hard_timeout, len(segment), temp_file
+                )
+                if progress_handler:
+                    progress_handler.on_segment_complete(
+                        success=False, error=f"段级硬超时 ({hard_timeout:.0f}s)"
+                    )
+                return i, ExecutionResult.fail(
+                    error=f"段级硬超时 ({hard_timeout:.0f}s)",
+                    error_code="SEGMENT_HARD_TIMEOUT",
+                )
+            if progress_handler:
+                progress_handler.on_segment_complete(
+                    success=result.success,
+                    error=result.error if not result.success else None,
+                )
+            return i, result
 
         try:
-            for i, segment in enumerate(segments, start=1):
-                temp_file = output_path.with_name(
-                    f"{output_path.stem}_seg_{i:03d}.mp3"
-                )
-                temp_files.append(temp_file)
+            results = await asyncio.gather(
+                *[_synth_one(i, seg) for i, seg in enumerate(segments, start=1)],
+                return_exceptions=False,
+            )
 
-                result = await self.synthesize(segment, temp_file)
-                if not result.success:
-                    return ExecutionResult.failure(
-                        error=f"分段 {i} 合成失败: {result.error}",
+            temp_files: List[Path] = [
+                cache_dir / f"{output_path.stem}_seg_{i:03d}.mp3"
+                for i, _ in results
+            ]
+            for i, r in results:
+                if not r.success:
+                    return ExecutionResult.fail(
+                        error=f"分段 {i} 合成失败: {r.error}",
                         error_code=f"SEGMENT_{i}_FAILED",
                     )
 
             silence_ms = self.tts_config.segment_silence_ms
-            if not self._audio_processor.merge(temp_files, output_path, silence_ms):
-                return ExecutionResult.failure(
-                    error="音频合并失败", error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value
+            merge_result = self._audio_merger.merge(
+                temp_files, output_path, silence_ms=silence_ms, normalize=False
+            )
+            if not merge_result.success:
+                return ExecutionResult.fail(
+                    error=f"音频合并失败: {merge_result.error}",
+                    error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value,
                 )
+
+            # 整组成功后清理整个缓存目录
+            try:
+                shutil.rmtree(cache_dir)
+            except OSError as e:
+                logger.warning("清理段缓存目录失败 %s: %s", cache_dir, e)
 
             metrics = ExecutionMetrics(
                 duration=time.time() - start_time,
                 bytes_processed=output_path.stat().st_size if output_path.exists() else 0,
             )
-            return ExecutionResult.success(output_path, metrics)
+            return ExecutionResult.ok(output_path, metrics)
 
-        finally:
-            self._cleanup_temp_files(temp_files)
+        except Exception as e:
+            logger.error("分段合成异常: %s", e)
+            return ExecutionResult.fail(
+                error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value
+            )
+        # 失败/异常时不删 cache_dir，保留供下次重试复用
 
     @staticmethod
     def _cleanup_temp_files(temp_files: List[Path]) -> None:
-        """清理临时音频文件"""
+        """清理临时音频文件（保留供向后兼容）"""
         for temp_file in temp_files:
             if temp_file.exists():
                 temp_file.unlink()
+
+    # ------------------------------------------------------------------
+    # 批量与统计
+    # ------------------------------------------------------------------
 
     async def synthesize_batch(
         self, tasks: List[Dict[str, Any]]
@@ -410,10 +738,41 @@ class TTSEngine(BaseEngine[str, Path]):
 
         return await asyncio.gather(*(run_task(t) for t in tasks))
 
+    def list_voices(
+        self,
+        *,
+        locale: Optional[str] = None,
+        gender: Optional[str] = None,
+    ) -> List[VoiceInfo]:
+        """同步列出 Edge TTS 可用语音。"""
+        return asyncio.run(
+            self._edge_client.list_voices(locale=locale, gender=gender)
+        )
+
+    async def list_voices_async(
+        self,
+        *,
+        locale: Optional[str] = None,
+        gender: Optional[str] = None,
+    ) -> List[VoiceInfo]:
+        """异步列出 Edge TTS 可用语音。"""
+        return await self._edge_client.list_voices(locale=locale, gender=gender)
+
     def get_stats(self) -> Dict[str, Any]:
         """获取引擎统计信息"""
-        timeout_stats = self._timeout_calculator.get_stats()
+        # 旧实现依赖不存在的 timeout_calculator 对象字段，改为读取已存在的统计
+        try:
+            timeout_stats: Dict[str, Any] = self._timeout_calculator.get_stats()
+        except Exception:  # noqa: BLE001
+            timeout_stats = {}
         history_stats = self._timeout_history.get_statistics()
+        tts_stats = self.tts_stats.to_dict()
+        cache_stats: Dict[str, Any] = {}
+        if self._cache is not None:
+            try:
+                cache_stats = self._cache.get_stats()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"读取缓存统计失败: {e}")
 
         return {
             "voice": self.tts_config.voice,
@@ -425,13 +784,9 @@ class TTSEngine(BaseEngine[str, Path]):
             "timeout_max": self.tts_config.timeout_max,
             "max_segment_length": self.tts_config.max_segment_length,
             "rate_limit": self.tts_config.rate_limit,
-            "timeout_stats": {
-                "total_requests": timeout_stats.total_requests,
-                "successful_requests": timeout_stats.successful_requests,
-                "timeout_count": timeout_stats.timeout_count,
-                "avg_response_time": timeout_stats.avg_response_time,
-                "last_calculated_timeout": timeout_stats.calculated_timeout,
-            },
+            "tts_stats": tts_stats,
+            "cache": cache_stats,
+            "timeout_stats": timeout_stats,
             "history_stats": {
                 "p95": history_stats.p95,
                 "p90": history_stats.p90,
@@ -442,3 +797,14 @@ class TTSEngine(BaseEngine[str, Path]):
                 "warning_count": history_stats.warning_count,
             },
         }
+
+
+__all__ = [
+    "TTSEngine",
+    "TTSEngineConfig",
+    "EngineStats",
+    "DEFAULT_VOICE",
+    "DEFAULT_RATE",
+    "DEFAULT_VOLUME",
+    "build_cache_key",
+]

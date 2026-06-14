@@ -1,4 +1,4 @@
-"""扩展加载器 - 发现和加载用户自定义扩展。"""
+"""扩展加载器- 发现和加载用户自定义扩展"""
 
 import importlib
 import importlib.util
@@ -17,6 +17,7 @@ from src_m.extensions.base import (
     MetricsExporter,
     ToolIntegration,
     ExecutorExtension,
+    PipelineStepExtension,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,17 +29,41 @@ REQUIRED_INTERFACES = {
     ExtensionType.METRICS_EXPORTER: MetricsExporter,
     ExtensionType.EXECUTOR: ExecutorExtension,
     ExtensionType.TOOL_INTEGRATION: ToolIntegration,
+    ExtensionType.PIPELINE_STEP: PipelineStepExtension,
 }
 
 
+class _PipelineStepAdapter:
+    """将PipelineStepExtension 适配到PipelineStepExecutor 接口"""
+
+    def __init__(self, step_ext: PipelineStepExtension):
+        self._step_ext = step_ext
+
+    async def execute(self, params, inputs):
+        return await self._step_ext.execute(params, inputs)
+
+    def get_name(self) -> str:
+        return self._step_ext.get_step_name()
+
+    def get_input_type(self) -> str:
+        return self._step_ext.get_input_type()
+
+    def get_output_type(self) -> str:
+        return self._step_ext.get_output_type()
+
+
 class ExtensionLoader:
-    """加载并管理用户自定义扩展。"""
+    """加载并管理用户自定义扩展"""
 
     def __init__(self, extension_dirs: Optional[List[Path]] = None):
-        self._extension_dirs = extension_dirs or []
+        self._extension_dirs = list(extension_dirs) if extension_dirs else []
         self._loaded_extensions: Dict[str, Extension] = {}
         self._failed_extensions: List[Dict[str, str]] = []
         self._extension_modules: Dict[str, str] = {}
+
+        builtin_dir = Path(__file__).parent
+        if builtin_dir.exists() and builtin_dir not in self._extension_dirs:
+            self._extension_dirs.append(builtin_dir)
 
         default_ext_dir = Path(__file__).parent.parent.parent / "extensions"
         if default_ext_dir.exists() and default_ext_dir not in self._extension_dirs:
@@ -101,7 +126,7 @@ class ExtensionLoader:
 
     async def _load_extension_from_file(self, file_path: Path) -> None:
         parent_name = file_path.parent.name
-        module_name = f"ppc9_ext_{parent_name}_{file_path.stem}"
+        module_name = f"ppc10_ext_{parent_name}_{file_path.stem}"
 
         try:
             spec = importlib.util.spec_from_file_location(module_name, file_path)
@@ -118,6 +143,7 @@ class ExtensionLoader:
                     await extension.initialize()
                     self._loaded_extensions[extension.metadata.name] = extension
                     self._extension_modules[extension.metadata.name] = module_name
+                    self._register_pipeline_steps(extension)
                     logger.info(f"Extension loaded successfully: {extension.metadata.name}")
                 else:
                     self._record_failure(file_path.name, "Interface validation failed")
@@ -133,7 +159,7 @@ class ExtensionLoader:
 
     async def _load_extension_from_package(self, package_path: Path) -> None:
         parent_name = package_path.parent.name
-        module_name = f"ppc9_ext_{parent_name}_{package_path.name}"
+        module_name = f"ppc10_ext_{parent_name}_{package_path.name}"
 
         try:
             init_file = package_path / "__init__.py"
@@ -151,6 +177,7 @@ class ExtensionLoader:
                     await extension.initialize()
                     self._loaded_extensions[extension.metadata.name] = extension
                     self._extension_modules[extension.metadata.name] = module_name
+                    self._register_pipeline_steps(extension)
                     logger.info(f"Extension loaded successfully: {extension.metadata.name}")
                 else:
                     self._record_failure(package_path.name, "Interface validation failed")
@@ -185,6 +212,31 @@ class ExtensionLoader:
             return True
 
         return isinstance(extension, required_interface)
+
+    def _register_pipeline_steps(self, extension: Extension) -> None:
+        """将扩展提供的管道步骤注册到StepRegistry"""
+        try:
+            from src_m.pipeline.registry import StepRegistry
+
+            registry = StepRegistry()
+
+            if isinstance(extension, PipelineStepExtension):
+                adapter = _PipelineStepAdapter(extension)
+                registry.register(adapter)
+                logger.info(
+                    f"Registered pipeline step '{adapter.get_name()}' from extension '{extension.metadata.name}'"
+                )
+
+            for step in extension.get_pipeline_steps():
+                adapter = _PipelineStepAdapter(step)
+                registry.register(adapter)
+                logger.info(
+                    f"Registered pipeline step '{adapter.get_name()}' from extension '{extension.metadata.name}'"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to register pipeline steps for extension '{extension.metadata.name}': {e}"
+            )
 
     def _record_failure(self, filename: str, error: str) -> None:
         self._failed_extensions.append({
@@ -252,3 +304,35 @@ class ExtensionLoader:
         self._loaded_extensions.clear()
         self._failed_extensions.clear()
         self._extension_modules.clear()
+
+    # -------------------------------------------------------------------------
+    # CLI 子命令自动注册
+    # -------------------------------------------------------------------------
+
+    def has_cli(self, name: str) -> bool:
+        """判断指定扩展是否实现了 register_cli 接口。"""
+        ext = self._loaded_extensions.get(name)
+        if ext is None:
+            return False
+        return callable(getattr(ext, "register_cli", None))
+
+    def get_cli_extensions(self) -> List[Extension]:
+        """返回所有实现了 register_cli 接口的扩展。"""
+        return [
+            ext for ext in self._loaded_extensions.values()
+            if callable(getattr(ext, "register_cli", None))
+        ]
+
+    def register_cli_for(self, name: str, app) -> bool:
+        """为指定扩展调用 register_cli(app) 注册 CLI 子命令。
+
+        返回 True 表示成功注册，False 表示扩展不存在或未实现 register_cli。
+        """
+        ext = self._loaded_extensions.get(name)
+        if ext is None:
+            return False
+        register_fn = getattr(ext, "register_cli", None)
+        if not callable(register_fn):
+            return False
+        register_fn(app)
+        return True

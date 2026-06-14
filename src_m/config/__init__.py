@@ -3,7 +3,7 @@
 """
 
 from src_m.config.schema import (
-    PPC9Config,
+    PPC10Config,
     CoreConfig,
     TTSConfig,
     SplitConfig,
@@ -46,7 +46,7 @@ from src_m.config.migration import (
 )
 
 __all__ = [
-    "PPC9Config",
+    "PPC10Config",
     "CoreConfig",
     "TTSConfig",
     "SplitConfig",

@@ -12,7 +12,7 @@ pydub==0.25.1
 psutil==7.2.2
 
 # HTML/XML 解析
-BeautifulSoup4==4.14.3
+beautifulsoup4==4.14.3
 lxml==6.1.0
 
 # CLI 命令行框架
@@ -21,10 +21,11 @@ rich==15.0.0
 
 # 配置管理/数据验证
 pydantic==2.13.3
-pyyaml==6.0.3
-
-audioop-lts
+PyYAML==6.0.3
 
 # 番茄小说下载器集成
 requests>=2.31.0
 packaging>=23.0
+
+# 仅在 Python >= 3.13 时安装 (替代已移除的 audioop 模块)
+audioop-lts>=0.2.0; python_version >= "3.13"

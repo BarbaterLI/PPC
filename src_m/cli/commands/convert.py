@@ -1,4 +1,4 @@
-"""转换命令实现 - 批量 TTS 转换与进度追踪。"""
+"""转换命令实现 - 批量 TTS 转换与进度追踪"""
 
 import asyncio
 import sys
@@ -13,11 +13,12 @@ from ...executors import TTSExecutor
 from ...reliability import create_tts_retry_policy
 from ..output import OutputFormatter, TaskStatus, RetryInfo, console, BrandColors, Icons, ParallelProgress
 from ..simple_progress import SimpleProgressHandler
+from ..errors import CLIError, ErrorCode as E
 
 
 @dataclass
 class TaskTrackingInfo:
-    """任务追踪信息。"""
+    """任务追踪信息"""
     name: str
     status: str = "pending"
     retries: int = 0
@@ -28,11 +29,12 @@ class TaskTrackingInfo:
 
 
 class ConvertProgressHandler:
-    """转换进度处理器。"""
+    """转换进度处理器"""
 
-    def __init__(self, output: OutputFormatter, total_tasks: int):
+    def __init__(self, output: OutputFormatter, total_tasks: int, max_retries: int = 3):
         self.output = output
         self.total_tasks = total_tasks
+        self._max_retries = max_retries
         self.completed = 0
         self.failed = 0
         self.total_retries = 0
@@ -51,31 +53,31 @@ class ConvertProgressHandler:
         self._error_type_counts: Dict[str, int] = {}
 
     def start(self):
-        """启动进度显示。"""
+        """启动进度显示"""
         self._start_time = time.time()
         self._parallel_progress = ParallelProgress(console, max_workers=4)
-        self._parallel_progress.start(self.total_tasks, "TTS转换中")
+        self._parallel_progress.start(self.total_tasks, "TTS转换")
 
     def stop(self):
-        """停止进度显示。"""
+        """停止进度显示"""
         if self._parallel_progress:
             self._parallel_progress.stop()
             self._parallel_progress = None
 
     def register_task(self, task_id: str, name: str):
-        """注册任务。"""
+        """注册任务"""
         self.task_infos[task_id] = TaskTrackingInfo(name=name)
         if self._parallel_progress:
             self._parallel_progress.add_task(name)
 
     def on_task_start(self, task_id: str):
-        """任务开始回调。"""
+        """任务开始回调"""
         if task_id in self.task_infos:
             self.task_infos[task_id].status = "running"
             self.task_infos[task_id].start_time = time.time()
 
     def on_task_complete(self, task_id: str, success: bool, error: Optional[str] = None):
-        """任务完成回调。"""
+        """任务完成回调"""
         if task_id in self.task_infos:
             info = self.task_infos[task_id]
             info.status = "completed" if success else "failed"
@@ -115,15 +117,15 @@ class ConvertProgressHandler:
                     self._parallel_progress.fail_task(info.name, error or "未知错误")
 
     def on_quarantine(self, task_id: str):
-        """任务进入隔离区回调。"""
+        """任务进入隔离区回调"""
         self._quarantined_count += 1
 
     def on_circuit_breaker_trip(self):
-        """熔断器触发回调。"""
+        """熔断器触发回调"""
         self._circuit_breaker_trips += 1
 
     def on_retry(self, task_id: str, attempt: int, error: str, delay: float):
-        """重试回调。"""
+        """重试回调"""
         if task_id in self.task_infos:
             self.task_infos[task_id].retries = attempt
             self.total_retries += 1
@@ -138,7 +140,7 @@ class ConvertProgressHandler:
         self.output.retry_status(retry_info)
 
     def get_stats(self) -> Dict:
-        """获取实时统计。"""
+        """获取实时统计"""
         elapsed = time.time() - self._start_time if self._start_time else 0
 
         current_speed = 0.0
@@ -176,7 +178,7 @@ class ConvertProgressHandler:
         }
 
     def get_detailed_stats(self) -> Dict:
-        """获取详细统计。"""
+        """获取详细统计"""
         elapsed = time.time() - self._start_time if self._start_time else 0
 
         retry_rate = (self.total_retries / (self.completed + self.failed) * 100) if (self.completed + self.failed) > 0 else 0
@@ -231,7 +233,7 @@ class ConvertProgressHandler:
         }
 
     def get_summary(self) -> Dict:
-        """获取汇总统计。"""
+        """获取汇总统计"""
         return {
             "total": self.total_tasks,
             "completed": self.completed,
@@ -244,8 +246,8 @@ class ConvertProgressHandler:
 
 
 def handle_convert(
-    input_dir: Path,
-    output_dir: Path,
+    input: Path,
+    output: Optional[Path],
     voice: Optional[str],
     concurrency: Optional[int],
     preset: str,
@@ -254,12 +256,51 @@ def handle_convert(
     timeout_multiplier: Optional[float] = None,
     rate: Optional[str] = None,
     recursive: bool = False,
-    ramp_up: Optional[float] = None
+    ramp_up: Optional[float] = None,
+    strict: bool = False,
+    one: bool = False,
 ):
-    """处理转换命令。"""
-    output = OutputFormatter(verbose=False)
+    """处理转换命令
 
-    output.show_banner()
+    - one=False: 批量模式，处理 input 目录下所有 .txt → output
+    - one=True : 单文件模式，input 为单 .txt，output 可缺省（默认 input.parent）
+    """
+    output_dir: Path
+    if one:
+        if not input.exists():
+            raise CLIError(
+                E.E_INPUT_NOT_FOUND,
+                f"输入文件不存在: {input}",
+                hint="--one 模式下 input 必须为已存在的单 .txt 文件",
+            )
+        if input.is_dir():
+            raise CLIError(
+                E.E_INPUT_NOT_FOUND,
+                f"--one 模式下 input 必须是文件,不能是目录: {input}",
+                hint="移除 --one 进入批量模式,或提供单文件路径",
+            )
+        if input.suffix.lower() != ".txt":
+            raise CLIError(
+                E.E_INPUT_NOT_FOUND,
+                f"--one 模式下 input 必须是 .txt 文件: {input}",
+                hint="提供 .txt 文件路径",
+            )
+        if output is None:
+            output = input.parent
+        output.mkdir(parents=True, exist_ok=True)
+        output_dir = output
+    else:
+        if output is None:
+            raise CLIError(
+                E.E_INPUT_NOT_FOUND,
+                "批量模式必须指定输出目录",
+                hint="用法: ppc10 convert <input_dir> <output_dir>  或  ppc10 convert <file> --one",
+            )
+        output_dir = output
+
+    formatter = OutputFormatter(verbose=False)
+
+    formatter.show_banner()
 
     config_manager = ConfigManager()
 
@@ -273,54 +314,151 @@ def handle_convert(
     if concurrency is not None:
         config.tts.concurrency = concurrency
     if rate is not None:
-        config.tts.rate = rate
+        import re as _re
+        rate_val = rate.strip()
+        if _re.match(r'^\d+%$', rate_val):
+            rate_val = f"+{rate_val}"
+        elif not _re.match(r'^[+-]\d+%$', rate_val):
+            raise CLIError(
+                E.E_BUSINESS,
+                f"无效的 rate 参数: '{rate}',应为 '+0%'、'+40%'、'-10%' 等格式",
+                hint="rate 必须带正负号前缀和百分号,例如 --rate +40% 或 --rate -10%",
+            )
+        config.tts.rate = rate_val
     if timeout_multiplier is not None:
         config.tts._timeout_multiplier = timeout_multiplier
     if ramp_up is not None:
         config.tts.ramp_up_enabled = True
         config.tts.ramp_up_duration = ramp_up
 
-    output.info(f"输入目录: {input_dir}")
-    output.info(f"输出目录: {output_dir}")
-    output.info(f"语音: {config.tts.voice}")
-    output.info(f"并发数: {config.tts.concurrency}")
-    output.info(f"音频速度: {config.tts.rate}")
+    formatter.info(f"输入: {input}")
+    formatter.info(f"输出目录: {output_dir}")
+    formatter.info(f"语音: {config.tts.voice}")
+    formatter.info(f"并发数: {config.tts.concurrency}")
+    formatter.info(f"音频速度: {config.tts.rate}")
+    if one:
+        formatter.info("模式: --one（单文件无限重试，无超时）")
     if timeout_multiplier is not None:
-        output.info(f"超时倍率: {timeout_multiplier}x (基于动态计算的超时)")
+        formatter.info(f"超时倍率: {timeout_multiplier}x (基于动态计算的超时)")
     if config.tts.ramp_up_enabled:
-        output.info(f"并发预热: {config.tts.ramp_up_duration:.0f}s 内从 1 逐步增加到 {config.tts.concurrency} 并发")
+        formatter.info(f"并发预热: {config.tts.ramp_up_duration:.0f}s 内从 1 逐步增加到{config.tts.concurrency} 并发")
     if resume:
-        output.info(f"断点续传: 已启用")
+        formatter.info(f"断点续传: 已启用")
     if recursive:
-        output.info(f"递归模式: 启用")
+        formatter.info(f"递归模式: 启用")
 
-    if not input_dir.exists():
-        output.error_panel(
-            f"输入目录不存在: {input_dir}",
-            title="输入错误",
-            error_type="FileNotFoundError",
-            suggestion="请检查路径是否正确，或使用绝对路径"
+    if not one and not input.exists():
+        raise CLIError(
+            E.E_INPUT_NOT_FOUND,
+            f"输入目录不存在: {input}",
+            hint="请检查路径是否正确,或使用绝对路径",
         )
-        sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if one:
+        output_file = output_dir / (input.stem + ".mp3")
+
+        # 预分段以获取段数（让 --one 进度显示总段数而非 1）
+        from ...utils.files import detect_encoding as _detect_enc
+        from ...text.segmenter import TextSegmenter
+        try:
+            _enc = _detect_enc(input)
+            _text = input.read_text(encoding=_enc or "utf-8")
+        except (OSError, UnicodeDecodeError):
+            _text = ""
+        if _text and _text.strip():
+            if len(_text) <= config.tts.max_segment_length:
+                _segments = [_text]
+            else:
+                _segmenter = TextSegmenter.from_config(config.tts)
+                _segments = _segmenter.split(_text, config.tts.max_segment_length) or [_text]
+        else:
+            _segments = []
+        total_segments = len(_segments)
+        formatter.info(f"分段数: {total_segments}")
+
+        # 单文件模式直接走 execute_one
+        async def run_convert():
+            from ...reliability import create_tts_retry_policy
+            retry_policy = create_tts_retry_policy(
+                max_retries=config.reliability.tts_retry.max_retries,
+                base_delay=config.reliability.tts_retry.base_delay,
+                max_delay=config.reliability.tts_retry.max_delay,
+                exponential_base=config.reliability.tts_retry.exponential_base,
+                jitter=config.reliability.tts_retry.jitter
+            )
+            from ..simple_progress import SimpleProgressHandler
+            progress_handler = SimpleProgressHandler(total_tasks=total_segments)
+            from ...executors import TTSExecutor
+            async with TTSExecutor(config, retry_policy) as executor:
+                progress_handler.start()
+                try:
+                    ok = await executor.execute_one(
+                        input, output_file, progress_handler=progress_handler
+                    )
+                except KeyboardInterrupt:
+                    formatter.warning_panel("用户中断", title="中断")
+                    return False
+                finally:
+                    progress_handler.stop()
+                return ok
+
+        try:
+            success = asyncio.run(run_convert())
+            if success:
+                formatter.success_panel(
+                    f"已生成: {output_file}",
+                    title="完成",
+                    details={"文件": str(output_file)},
+                )
+            else:
+                raise CLIError(E.E_BUSINESS, "--one 模式未成功", exit_code=1)
+            return
+        except KeyboardInterrupt:
+            formatter.warning("\n用户中断")
+            raise CLIError(E.E_BUSINESS, "用户中断 (Ctrl+C)", exit_code=130)
+        except CLIError:
+            raise
+        except OSError as e:
+            raise CLIError(
+                E.E_BUSINESS,
+                f"文件操作失败: {e}",
+                hint="请检查文件路径、权限或磁盘空间",
+            ) from e
+        except TimeoutError as e:
+            raise CLIError(
+                E.E_BUSINESS,
+                f"操作超时: {e}",
+                hint="可尝试 --timeout-multiplier 增大超时时间",
+            ) from e
+        # 顶层错误包装：捕获所有未处理的异常，统一转为 CLIError 以提供一致的错误输出
+        except Exception as e:
+            raise CLIError(
+                E.E_BUSINESS,
+                f"执行失败: {e}",
+                hint="使用 --verbose 复跑获取 stack trace",
+            ) from e
+
     if recursive:
-        txt_files = sorted(input_dir.rglob("*.txt"))
+        txt_files = sorted(input.rglob("*.txt"))
     else:
-        txt_files = sorted(input_dir.glob("*.txt"))
+        txt_files = sorted(input.glob("*.txt"))
     if not txt_files:
-        output.warning_panel(
-            f"未找到 .txt 文件: {input_dir}",
-            title="无文件",
-            suggestion="请确保输入目录中包含 .txt 文件"
-        )
-        sys.exit(0)
+        msg = f"No .txt files found in {input}. Nothing to do."
+        if strict:
+            raise CLIError(
+                E.E_INPUT_EMPTY,
+                msg,
+                hint="Remove --strict to allow empty input",
+            )
+        formatter.info(msg)
+        return
 
     files_to_process = []
     for txt_file in txt_files:
         if recursive:
-            rel_path = txt_file.relative_to(input_dir)
+            rel_path = txt_file.relative_to(input)
             output_file = output_dir / rel_path.with_suffix(".mp3")
         else:
             output_file = output_dir / txt_file.with_suffix(".mp3").name
@@ -328,14 +466,14 @@ def handle_convert(
             files_to_process.append(txt_file)
 
     if not files_to_process:
-        output.success_panel(
+        formatter.success_panel(
             "所有文件已处理完成，无需转换",
             title="完成",
             details={"已处理": len(txt_files)}
         )
-        sys.exit(0)
+        return
 
-    output.info(f"待处理文件数: {len(files_to_process)}")
+    formatter.info(f"待处理文件数: {len(files_to_process)}")
 
     async def run_convert():
         retry_policy = create_tts_retry_policy(
@@ -349,7 +487,7 @@ def handle_convert(
 
         async with TTSExecutor(config, retry_policy) as executor:
             if resume:
-                ckpt_path = checkpoint_path or output_dir / ".ppc9_checkpoint.json"
+                ckpt_path = checkpoint_path or output_dir / ".ppc10_checkpoint.json"
                 executor.enable_checkpoint(ckpt_path)
 
             executor.set_progress_callback(progress_handler)
@@ -357,23 +495,23 @@ def handle_convert(
 
             try:
                 result = await executor.add_batch_with_progress(
-                    input_dir,
+                    input,
                     output_dir,
                     progress_handler=progress_handler,
                     recursive=recursive
                 )
             except KeyboardInterrupt:
-                output.warning_panel("用户中断，检查点已保存", title="中断")
-                output.info("使用 --resume 参数可从中断处继续")
+                formatter.warning_panel("用户中断，检查点已保存", title="中断")
+                formatter.info("使用 --resume 参数可从中断处继续")
                 return False
             finally:
                 progress_handler.stop()
 
             stats = progress_handler.get_stats()
 
-            output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-            output.console.print(f"[bold white]  {Icons.STAR} 转换完成报告[/bold white]")
-            output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
+            formatter.console.print(f"\n[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]")
+            formatter.console.print(f"[bold white]  {Icons.STAR} 转换完成报告[/bold white]")
+            formatter.console.print(f"[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]\n")
 
             completed = stats['completed']
             failed = stats['failed']
@@ -396,7 +534,7 @@ def handle_convert(
                 result_color = BrandColors.ERROR
                 result_text = "需改进"
 
-            output.console.print(f"[bold {result_color}]{result_icon} 总体评价：{result_text}[/bold {result_color}]\n")
+            formatter.console.print(f"[bold {result_color}]{result_icon} 总体评价：{result_text}[/bold {result_color}]\n")
 
             from rich.table import Table
             from rich.box import SIMPLE
@@ -417,8 +555,8 @@ def handle_convert(
                 summary_table.add_row("重试次数", str(total_retries))
                 summary_table.add_row("实际API请求", f"{total + total_retries} (原始{total} + 重试{total_retries})")
 
-            output.console.print(summary_table)
-            output.console.print()
+            formatter.console.print(summary_table)
+            formatter.console.print()
 
             if failed > 0 and progress_handler.task_infos:
                 error_tasks = [
@@ -428,7 +566,7 @@ def handle_convert(
                 ][:5]
 
                 if error_tasks:
-                    output.console.print(f"[bold {BrandColors.ERROR}]📋 失败任务示例:[/bold {BrandColors.ERROR}]\n")
+                    formatter.console.print(f"[bold {BrandColors.ERROR}]📋 失败任务示例:[/bold {BrandColors.ERROR}]\n")
                     error_table = Table(show_header=True, box=SIMPLE, border_style=BrandColors.ERROR)
                     error_table.add_column("任务名", style="yellow", width=30)
                     error_table.add_column("错误信息", style="red", width=40)
@@ -437,25 +575,44 @@ def handle_convert(
                         short_error = error_msg[:50] + "..." if len(error_msg) > 50 else error_msg
                         error_table.add_row(task_name, short_error)
 
-                    output.console.print(error_table)
-                    output.console.print()
+                    formatter.console.print(error_table)
+                    formatter.console.print()
 
-            output.console.print(f"[bold {BrandColors.PRIMARY}]{'─' * 60}[/bold {BrandColors.PRIMARY}]")
+            formatter.console.print(f"[bold {BrandColors.PRIMARY}]{'─' * 60}[/bold {BrandColors.PRIMARY}]")
             from datetime import datetime
-            output.console.print(f"[dim]报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
+            formatter.console.print(f"[dim]报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
 
             return failed == 0
 
     try:
         success = asyncio.run(run_convert())
-        sys.exit(0 if success else 1)
+        if not success:
+            raise CLIError(
+                E.E_BUSINESS,
+                "存在失败任务,请查看上方重试/错误明细",
+                hint="使用 --verbose 复跑,或调整 --timeout-multiplier / 减少并发",
+            )
     except KeyboardInterrupt:
-        output.warning("\n用户中断")
-        sys.exit(130)
+        formatter.warning("\n用户中断")
+        raise CLIError(E.E_BUSINESS, "用户中断 (Ctrl+C)", exit_code=130)
+    except CLIError:
+        raise
+    except OSError as e:
+        raise CLIError(
+            E.E_BUSINESS,
+            f"文件操作失败: {e}",
+            hint="请检查文件路径、权限或磁盘空间",
+        ) from e
+    except TimeoutError as e:
+        raise CLIError(
+            E.E_BUSINESS,
+            f"操作超时: {e}",
+            hint="可尝试 --timeout-multiplier 增大超时时间，或减少并发数",
+        ) from e
+    # 顶层错误包装：捕获所有未处理的异常，统一转为 CLIError 以提供一致的错误输出
     except Exception as e:
-        output.error_panel(
+        raise CLIError(
+            E.E_BUSINESS,
             f"执行失败: {e}",
-            title="执行错误",
-            error_type=type(e).__name__
-        )
-        sys.exit(1)
+            hint="使用 --verbose 复跑获取 stack trace",
+        ) from e

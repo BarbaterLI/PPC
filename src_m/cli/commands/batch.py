@@ -1,4 +1,4 @@
-"""批量命令实现 - 文件归档与管理。"""
+"""批量命令实现 - 文件归档与管理"""
 
 import sys
 from pathlib import Path
@@ -6,24 +6,26 @@ from pathlib import Path
 from ...config import ConfigManager, get_preset
 from ...executors import BatcherExecutor
 from ..output import OutputFormatter, BrandColors, Icons
+from ..errors import CLIError, ErrorCode as E
 from rich.table import Table
-from rich.box import SIMPLE, ROUNDED
+from rich.box import SIMPLE
 
 
 def handle_batch(
     source_dir: Path,
     batch_size: int,
     dry_run: bool,
-    group_by_volume: bool = False
+    group_by_volume: bool = False,
+    strict: bool = False,
 ):
-    """处理批量命令。"""
+    """处理批量命令"""
     output = OutputFormatter(verbose=False)
 
     output.show_banner()
 
-    output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    output.console.print(f"[bold white]  {Icons.FOLDER} PPC9 批量归档[/bold white]")
-    output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
+    output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]")
+    output.console.print(f"[bold white]  {Icons.FOLDER} PPC10 批量归档[/bold white]")
+    output.console.print(f"[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]\n")
 
     config_manager = ConfigManager()
     config = config_manager.get_config()
@@ -46,13 +48,24 @@ def handle_batch(
     output.console.print()
 
     if not source_dir.exists():
-        output.error_panel(
-            f"源目录不存在：{source_dir}",
-            title="目录错误",
-            error_type="FileNotFoundError",
-            suggestion="请检查路径是否正确，或使用绝对路径"
+        raise CLIError(
+            E.E_INPUT_NOT_FOUND,
+            f"源目录不存在: {source_dir}",
+            hint="请检查路径是否正确,或使用绝对路径",
         )
-        sys.exit(1)
+
+    # 空输入友好处理 (Spec 9)
+    txt_files = sorted(source_dir.glob("*.txt"))
+    if not txt_files:
+        msg = f"No .txt files found in {source_dir}. Nothing to do."
+        if strict:
+            raise CLIError(
+                E.E_INPUT_EMPTY,
+                msg,
+                hint="Remove --strict to allow empty input",
+            )
+        output.info(msg)
+        return
 
     async def run_batch():
         async with BatcherExecutor(config) as executor:
@@ -70,9 +83,9 @@ def handle_batch(
                     archives = result.data
                     archive_count = len(archives)
 
-                    output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]")
+                    output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]")
                     output.console.print(f"[bold white]  {Icons.SUCCESS} 按卷归档报告[/bold white]")
-                    output.console.print(f"[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]\n")
+                    output.console.print(f"[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]\n")
 
                     from datetime import datetime
 
@@ -108,8 +121,8 @@ def handle_batch(
                         output.console.print(archive_table)
 
                     if dry_run:
-                        output.console.print(f"\n[{BrandColors.WARNING}]⚠ 预览模式：未实际创建归档文件[/{BrandColors.WARNING}]")
-                        output.console.print(f"[dim]提示：移除 --dry-run 参数以执行实际操作[/dim]")
+                        output.console.print(f"\n[{BrandColors.WARNING}]⚠️ 预览模式：未实际创建归档文件[/{BrandColors.WARNING}]")
+                        output.console.print(f"[dim]提示：移除--dry-run 参数以执行实际操作[/dim]")
 
                     output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'─' * 60}[/bold {BrandColors.SUCCESS}]")
                     output.console.print(f"[dim]报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
@@ -117,9 +130,9 @@ def handle_batch(
                     batches = result.data
                     batch_count = len(batches)
 
-                    output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]")
+                    output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]")
                     output.console.print(f"[bold white]  {Icons.SUCCESS} 批次规划报告[/bold white]")
-                    output.console.print(f"[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]\n")
+                    output.console.print(f"[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]\n")
 
                     from datetime import datetime
 
@@ -140,7 +153,7 @@ def handle_batch(
                     output.console.print()
 
                     if batch_count > 0:
-                        output.console.print(f"[bold {BrandColors.INFO}]📦 批次详情 (前 10 个):[/bold {BrandColors.INFO}]\n")
+                        output.console.print(f"[bold {BrandColors.INFO}]📦 批次详情 (前10 项:[/bold {BrandColors.INFO}]\n")
 
                         batches_table = Table(show_header=True, box=SIMPLE, border_style=BrandColors.INFO)
                         batches_table.add_column("序号", style="yellow", width=6)
@@ -163,18 +176,17 @@ def handle_batch(
                             output.console.print(f"\n[dim]... 还有 {batch_count - 10} 个批次[/dim]")
 
                         if dry_run:
-                            output.console.print(f"\n[{BrandColors.WARNING}]⚠ 预览模式：未实际创建批次文件[/{BrandColors.WARNING}]")
-                            output.console.print(f"[dim]提示：移除 --dry-run 参数以执行实际操作[/dim]")
+                            output.console.print(f"\n[{BrandColors.WARNING}]⚠️ 预览模式：未实际创建批次文件[/{BrandColors.WARNING}]")
+                            output.console.print(f"[dim]提示：移除--dry-run 参数以执行实际操作[/dim]")
 
                     output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'─' * 60}[/bold {BrandColors.SUCCESS}]")
                     output.console.print(f"[dim]报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
 
             else:
-                output.error_panel(
-                    f"规划失败：{result.error}",
-                    title="规划错误",
-                    error_type="BatchError",
-                    suggestion="请检查源目录是否有读取权限且包含有效文件"
+                raise CLIError(
+                    E.E_BUSINESS,
+                    f"规划失败: {result.error}",
+                    hint="请检查源目录是否有读取权限且包含有效文件",
                 )
 
             return result.success
@@ -182,19 +194,15 @@ def handle_batch(
     try:
         import asyncio
         success = asyncio.run(run_batch())
-        sys.exit(0 if success else 1)
+        if not success:
+            raise CLIError(E.E_BUSINESS, "批量归档未成功,请查看上文错误")
     except KeyboardInterrupt:
-        output.warning_panel(
-            "用户中断操作",
-            title="中断",
-            suggestion="如需继续，请重新运行命令"
-        )
-        sys.exit(130)
+        raise CLIError(E.E_BUSINESS, "用户中断操作 (Ctrl+C)", exit_code=130)
+    except CLIError:
+        raise
     except Exception as e:
-        output.error_panel(
-            f"执行失败：{e}",
-            title="执行错误",
-            error_type=type(e).__name__,
-            suggestion="使用 --verbose 参数查看详细错误信息"
-        )
-        sys.exit(1)
+        raise CLIError(
+            E.E_BUSINESS,
+            f"执行失败: {e}",
+            hint="使用 --verbose 参数查看详细错误信息",
+        ) from e

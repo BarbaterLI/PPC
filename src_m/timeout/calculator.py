@@ -116,6 +116,23 @@ class TimeoutCalculator:
         """Get timeout history"""
         return self._history
 
+    def get_stats(self) -> Dict[str, Any]:
+        """Get timeout calculator statistics.
+
+        Returns a snapshot of the current configuration and history statistics
+        for observability / monitoring use.
+        """
+        history_stats = self._history.get_statistics()
+        return {
+            "base_timeout": self.config.base_timeout,
+            "min_timeout": self.config.min_timeout,
+            "max_timeout": self.config.max_timeout,
+            "history_size": self._history.history_size,
+            "count": history_stats.count,
+            "average": history_stats.average,
+            "p95": history_stats.p95,
+        }
+
     def _calculate_complexity_timeout(
         self,
         task_type: str,

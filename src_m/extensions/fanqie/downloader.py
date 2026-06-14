@@ -1,12 +1,9 @@
 """番茄小说下载器核心下载/安装/启动逻辑。
-
-集成 zhongbai2333/Tomato-Novel-Downloader 到 PPC9，
-提供下载器管理、版本更新、TUI/Server 启动等功能。
-
+集成 zhongbai2333/Tomato-Novel-Downloader 的PPC10，提供下载器管理、版本更新、TUI/Server 启动等功能。
 番茄小说下载器支持以下运行模式：
 - TUI 模式（默认）：交互式终端界面
-- Server 模式（--server）：Web UI 服务器，浏览器访问
-- CLI 更新模式（--update <book_id>）：非交互式更新已有书籍
+- Server 模式（-server）：Web UI 服务器，浏览器访问
+- CLI 更新模式（-update <book_id>）：非交互式更新已有书籍
 
 GitHub: https://github.com/zhongbai2333/Tomato-Novel-Downloader
 """

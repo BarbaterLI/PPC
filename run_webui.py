@@ -1,34 +1,19 @@
+"""DEPRECATED: 此入口已废弃，请使用 ppc10.py。
+
+保留仅为向后兼容旧部署脚本。新代码请使用：
+    python ppc10.py --webui [--host HOST] [--port PORT] [--debug]
+"""
+
 import sys
 import os
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src_m.web import create_app
-from src_m.web.config import get_web_config
+print("[DEPRECATED] run_webui.py 已废弃，请改用 'python ppc10.py --webui'。", file=sys.stderr)
 
-
-def main():
-    config = get_web_config()
-
-    host = config.host
-    port = config.port
-    debug = config.debug
-
-    for i, arg in enumerate(sys.argv):
-        if arg == "--host" and i + 1 < len(sys.argv):
-            host = sys.argv[i + 1]
-        elif arg == "--port" and i + 1 < len(sys.argv):
-            port = int(sys.argv[i + 1])
-        elif arg == "--debug":
-            debug = True
-
-    print(f"PPC9 WebUI Server starting on http://{host}:{port}")
-    print(f"Debug mode: {debug}")
-
-    app = create_app("development" if debug else "production")
-    app.run(host=host, port=port, debug=debug, threaded=True)
-
+import ppc10
 
 if __name__ == "__main__":
-    main()
+    sys.argv = ["ppc10", "--webui"] + [a for a in sys.argv[1:] if a != "--webui"]
+    sys.exit(ppc10.main())

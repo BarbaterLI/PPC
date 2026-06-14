@@ -9,7 +9,14 @@ from .tts_executor import (
     RampUpController,
 )
 from .tts_segment import add_batch_with_progress
-from .tts_pipeline import TTSEngineProtocol
+
+
+class TTSEngineProtocol:
+    """TTS 引擎协议接口（类型安全）"""
+    async def synthesize(self, text: str, output_path):
+        ...
+    async def synthesize_segmented(self, text: str, output_path):
+        ...
 
 
 # 为 TTSExecutor 添加 add_batch 和 add_batch_with_progress 方法

@@ -1,7 +1,6 @@
 """Webhook 服务
 
-支持 HTTP POST 回调通知。
-"""
+支持 HTTP POST 回调通知。"""
 
 import hashlib
 import hmac
@@ -108,13 +107,12 @@ class WebhookService:
         data: Dict[str, Any],
         sync: bool = False,
     ) -> WebhookResult:
-        """发送 Webhook 请求
+        """发送Webhook 请求
 
         Args:
             event_type: 事件类型
             data: 载荷数据
-            sync: 是否同步发送
-
+            sync: 是否同步发送"
         Returns:
             WebhookResult 对象
         """
@@ -139,7 +137,7 @@ class WebhookService:
             return WebhookResult(success=True, status_code=0)
 
     def _send_request(self, payload: WebhookPayload) -> WebhookResult:
-        """发送 HTTP 请求"""
+        """发送HTTP 请求"""
         start_time = time.time()
 
         try:
@@ -147,7 +145,7 @@ class WebhookService:
 
             headers = {
                 "Content-Type": "application/json",
-                "User-Agent": "PPC9-Webhook/1.0",
+                "User-Agent": "PPC10-Webhook/1.0",
                 "X-Webhook-Event": payload.event,
                 "X-Webhook-Timestamp": payload.timestamp,
             }
@@ -280,7 +278,7 @@ class WebhookService:
         test_payload = WebhookPayload(
             event="test",
             timestamp=datetime.now().isoformat(),
-            data={"message": "PPC9 Webhook test"},
+            data={"message": "PPC10 Webhook test"},
         )
 
         original_url = self._url

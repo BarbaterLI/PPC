@@ -15,14 +15,14 @@ from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
 from pydantic import ValidationError
-from src_m.config.schema import PPC9Config
+from src_m.config.schema import PPC10Config
 from src_m.config.presets import get_preset
 from src_m.config.migration import ConfigMigrator
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_HMAC_KEY_ENV = "PPC9_CONFIG_SIGN_KEY"
-_CONFIG_SIGNATURE_MARKER = "# __ppc9_signature__: "
+_CONFIG_HMAC_KEY_ENV = "PPC10_CONFIG_SIGN_KEY"
+_CONFIG_SIGNATURE_MARKER = "# __ppc10_signature__: "
 
 
 def _get_sign_key() -> bytes:
@@ -38,7 +38,7 @@ def _compute_config_signature(content: str) -> str:
     return hmac.new(_get_sign_key(), content.encode("utf-8"), hashlib.sha256()).hexdigest()
 
 
-def load_config_from_file(manager) -> PPC9Config:
+def load_config_from_file(manager) -> PPC10Config:
     config = _load_default()
 
     if manager.ppc5_config_path.exists():
@@ -57,7 +57,7 @@ def load_config_from_file(manager) -> PPC9Config:
     return config
 
 
-def _load_default() -> PPC9Config:
+def _load_default() -> PPC10Config:
     return get_preset("balanced")
 
 
@@ -79,13 +79,13 @@ def _migrate_from_ppc5(ppc5_path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _merge_configs(base: PPC9Config, update: Dict[str, Any]) -> PPC9Config:
+def _merge_configs(base: PPC10Config, update: Dict[str, Any]) -> PPC10Config:
     if not update:
         return base
 
     base_dict = base.model_dump()
     merged = _deep_merge(base_dict, update)
-    return PPC9Config(**merged)
+    return PPC10Config(**merged)
 
 
 def _deep_merge(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,21 +98,21 @@ def _deep_merge(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _apply_temp_overrides(config: PPC9Config, temp_overrides: Dict[str, Any]) -> PPC9Config:
+def _apply_temp_overrides(config: PPC10Config, temp_overrides: Dict[str, Any]) -> PPC10Config:
     if not temp_overrides:
         return config
 
     config_dict = config.model_dump()
     merged = _deep_merge(config_dict, temp_overrides)
-    return PPC9Config(**merged)
+    return PPC10Config(**merged)
 
 
-def _validate(config: PPC9Config):
+def _validate(config: PPC10Config):
     try:
-        if isinstance(config, PPC9Config):
+        if isinstance(config, PPC10Config):
             logger.debug("配置验证通过 (实例已验证)")
         else:
-            PPC9Config.model_validate(config.model_dump())
+            PPC10Config.model_validate(config.model_dump())
             logger.debug("配置验证通过")
     except Exception as e:
         logger.warning("配置验证失败: %s", e)
@@ -190,12 +190,12 @@ def import_config(manager, import_path: Path, merge: bool = True) -> bool:
 
         if merge:
             merged_dict = _deep_merge(manager._config_dict.copy(), imported)
-            PPC9Config.model_validate(merged_dict)
-            manager._config = PPC9Config(**merged_dict)
+            PPC10Config.model_validate(merged_dict)
+            manager._config = PPC10Config(**merged_dict)
             manager._config_dict = merged_dict
         else:
-            PPC9Config.model_validate(imported)
-            manager._config = PPC9Config(**imported)
+            PPC10Config.model_validate(imported)
+            manager._config = PPC10Config(**imported)
             manager._config_dict = imported.copy()
 
         manager._dirty = True

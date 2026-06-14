@@ -1,6 +1,10 @@
 """Retry mechanism
 
-Provides configurable retry strategies including exponential backoff, jitter, and circuit breaker integration.
+Provides configurable retry strategies including:
+- Exponential / linear / fixed backoff curves
+- Exception type -> backoff curve mapping
+- Deadline to prevent retry storms
+- Jitter and async/sync wrappers
 """
 
 import asyncio
@@ -9,9 +13,17 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Sequence, Type, Union
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Sequence, Type, Union
 
 logger = logging.getLogger(__name__)
+
+
+class BackoffCurve(str, Enum):
+    """Backoff curve type"""
+    EXPONENTIAL = "exponential"
+    LINEAR = "linear"
+    FIXED = "fixed"
 
 
 class RetryContext:
@@ -55,7 +67,14 @@ class RetryContext:
 
 @dataclass
 class RetryConfig:
-    """Retry configuration"""
+    """Retry configuration
+
+    Backward compatible: existing fields keep their semantics.
+    New fields:
+        - ``backoff_curve`` / ``exception_backoff_map`` for curve selection
+        - ``deadline`` for retry-storm prevention
+        - ``retry_after_extractor`` to honor Retry-After headers
+    """
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
@@ -68,14 +87,61 @@ class RetryConfig:
     after_retry: Optional[Callable[["RetryContext", Optional[Exception]], None]] = None
     timeout: Optional[float] = None
 
+    # Phase 2 additions -----------------------------------------------------
+    backoff_curve: BackoffCurve = BackoffCurve.EXPONENTIAL
+    # Mapping from exception type to its own backoff curve parameters
+    exception_backoff_map: Dict[Type[Exception], Dict[str, Any]] = field(default_factory=dict)
+    # Absolute deadline from the start of the operation; once exceeded, retries stop.
+    deadline: Optional[float] = None
+    # Optional callable to extract a "retry after" hint (seconds) from an exception
+    retry_after_extractor: Optional[Callable[[Exception], Optional[float]]] = None
 
-def _calculate_delay(config: RetryConfig, attempt: int) -> float:
-    """Calculate retry delay with exponential backoff and jitter"""
-    delay = config.base_delay * (config.exponential_base ** attempt)
-    delay = min(delay, config.max_delay)
+
+def _calculate_delay(config: RetryConfig, attempt: int, error: Optional[Exception] = None) -> float:
+    """Calculate retry delay according to the configured curve.
+
+    ``error`` is consulted for per-exception overrides and ``retry_after``
+    hints.
+    """
+    base_delay = config.base_delay
+    max_delay = config.max_delay
+    curve = config.backoff_curve
+    exponential_base = config.exponential_base
+
+    if error is not None:
+        for exc_type, params in config.exception_backoff_map.items():
+            if isinstance(error, exc_type):
+                if "base_delay" in params:
+                    base_delay = params["base_delay"]
+                if "max_delay" in params:
+                    max_delay = params["max_delay"]
+                if "exponential_base" in params:
+                    exponential_base = params["exponential_base"]
+                if "curve" in params:
+                    curve = BackoffCurve(params["curve"])
+                break
+
+    if curve == BackoffCurve.LINEAR:
+        delay = base_delay * (attempt + 1)
+    elif curve == BackoffCurve.FIXED:
+        delay = base_delay
+    else:  # EXPONENTIAL
+        delay = base_delay * (exponential_base ** attempt)
+
+    delay = min(delay, max_delay)
+
+    # Honor Retry-After if present
+    if error is not None and config.retry_after_extractor is not None:
+        try:
+            retry_after = config.retry_after_extractor(error)
+            if retry_after is not None and retry_after > delay:
+                delay = min(retry_after, max_delay)
+        except Exception as ex:  # extractor must not break retries
+            logger.debug("retry_after_extractor failed: %s", ex)
 
     if config.jitter:
-        delay = random.uniform(config.base_delay, min(delay, config.max_delay))
+        # decorrelated jitter between base_delay and computed delay
+        delay = random.uniform(base_delay, max(delay, base_delay))
 
     return delay
 
@@ -93,6 +159,22 @@ def _should_retry(config: RetryConfig, error: Exception) -> bool:
             return True
 
     return False
+
+
+def _deadline_remaining(config: RetryConfig, start_time: float) -> Optional[float]:
+    if config.deadline is None:
+        return None
+    return config.deadline - (time.time() - start_time)
+
+
+def _is_deadline_exceeded(config: RetryConfig, start_time: float, next_delay: float) -> bool:
+    """Return True if waiting ``next_delay`` would breach the deadline."""
+    if config.deadline is None:
+        return False
+    remaining = _deadline_remaining(config, start_time)
+    if remaining is None:
+        return False
+    return remaining <= 0 or remaining < next_delay
 
 
 def retry(
@@ -115,11 +197,12 @@ def retry(
         Function result
 
     Raises:
-        Exception: Last error after exhausting retries
+        Exception: Last error after exhausting retries or deadline
     """
     config = config or RetryConfig()
     operation_name = operation or func.__name__
     last_error: Optional[Exception] = None
+    start_time = time.time()
 
     for attempt in range(config.max_retries + 1):
         try:
@@ -139,7 +222,13 @@ def retry(
             if attempt == config.max_retries or not _should_retry(config, e):
                 raise
 
-            delay = _calculate_delay(config, attempt)
+            delay = _calculate_delay(config, attempt, e)
+            if _is_deadline_exceeded(config, start_time, delay):
+                logger.warning(
+                    "Retry aborted: deadline reached for %s (attempt %d/%d)",
+                    operation_name, attempt + 1, config.max_retries,
+                )
+                raise
 
             context = RetryContext(
                 operation=operation_name,
@@ -162,7 +251,7 @@ def retry(
             if config.after_retry:
                 config.after_retry(context, e)
 
-    raise last_error
+    raise last_error  # pragma: no cover - loop returns or raises
 
 
 async def retry_async(
@@ -185,11 +274,12 @@ async def retry_async(
         Function result
 
     Raises:
-        Exception: Last error after exhausting retries
+        Exception: Last error after exhausting retries or deadline
     """
     config = config or RetryConfig()
     operation_name = operation or func.__name__
     last_error: Optional[Exception] = None
+    start_time = time.time()
 
     for attempt in range(config.max_retries + 1):
         try:
@@ -212,7 +302,13 @@ async def retry_async(
             if attempt == config.max_retries or not _should_retry(config, e):
                 raise
 
-            delay = _calculate_delay(config, attempt)
+            delay = _calculate_delay(config, attempt, e)
+            if _is_deadline_exceeded(config, start_time, delay):
+                logger.warning(
+                    "Retry aborted: deadline reached for %s (attempt %d/%d)",
+                    operation_name, attempt + 1, config.max_retries,
+                )
+                raise
 
             context = RetryContext(
                 operation=operation_name,

@@ -1,445 +1,492 @@
-"""音频处理器模块
+"""Audio processing utilities.
 
-负责音频文件的合并、格式转换和验证。
-支持 MP3 格式音频的合并、验证、时长获取和信息提取。
+Phase 1 升级:
+* 静音检测 (RMS 阈值) 与首尾裁剪
+* 响度归一化 (pyloudnorm 优先, 不存在时回退 RMS 实现)
+* 音频指纹 (perceptual hash, hashlib 简化版)
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
-import shutil
+import os
+import struct
+import wave
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-try:
-    from pydub import AudioSegment
-    from pydub.exceptions import CouldntDecodeError
-
-    PYDUB_AVAILABLE = True
-except ImportError:
-    PYDUB_AVAILABLE = False
-    AudioSegment = None
-    CouldntDecodeError = Exception
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SILENCE_MS = 100
-AUDIO_FORMAT = "mp3"
-MS_PER_SECOND = 1000.0
+
+@dataclass
+class SilenceRegion:
+    """音频中的静音区间。"""
+
+    start: int
+    end: int
+
+    @property
+    def duration(self) -> int:
+        return max(0, self.end - self.start)
+
+
+@dataclass
+class AudioFingerprint:
+    """音频指纹。"""
+
+    hash_hex: str
+    duration_samples: int
+    sample_rate: int
+    sample_width: int
+    channels: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "hash": self.hash_hex,
+            "duration_samples": self.duration_samples,
+            "sample_rate": self.sample_rate,
+            "sample_width": self.sample_width,
+            "channels": self.channels,
+        }
 
 
 class AudioProcessor:
-    """音频处理器，用于合并、验证和分析音频文件。
+    """Audio file processor (WAV/PCM 基线)"""
 
-    Attributes:
-        _silence_ms: 音频片段之间的静音间隔（毫秒）。
-    """
+    SUPPORTED_FORMATS = {".wav", ".mp3"}
+    DEFAULT_MIN_SIZE = 1024  # 1KB
+    DEFAULT_MAX_RATIO = 0.5
+    DEFAULT_SILENCE_RMS_THRESHOLD = 500  # 16-bit PCM RMS threshold
+    DEFAULT_SILENCE_MIN_DURATION_MS = 100
+    DEFAULT_FADE_MS = 50
 
-    def __init__(self, silence_ms: int = DEFAULT_SILENCE_MS) -> None:
-        """初始化音频处理器。
+    def __init__(
+        self,
+        min_size: int = DEFAULT_MIN_SIZE,
+        max_ratio: float = DEFAULT_MAX_RATIO,
+        silence_rms_threshold: int = DEFAULT_SILENCE_RMS_THRESHOLD,
+        silence_min_duration_ms: int = DEFAULT_SILENCE_MIN_DURATION_MS,
+        fade_ms: int = DEFAULT_FADE_MS,
+    ) -> None:
+        self.min_size = min_size
+        self.max_ratio = max_ratio
+        self.silence_rms_threshold = silence_rms_threshold
+        self.silence_min_duration_ms = silence_min_duration_ms
+        self.fade_ms = fade_ms
 
-        Args:
-            silence_ms: 音频片段之间的静音间隔（毫秒）。
-        """
-        self._silence_ms = silence_ms
-        if not PYDUB_AVAILABLE:
-            logger.warning(
-                "pydub 未安装，音频合并功能将不可用。\n"
-                "安装命令: pip install pydub\n"
-                "注意：还需要安装 ffmpeg"
-            )
+    # ------------------------------------------------------------------
+    # 校验
+    # ------------------------------------------------------------------
 
-    def _load_audio(self, audio_path: Path) -> Optional[AudioSegment]:
-        """加载音频文件。
-
-        Args:
-            audio_path: 音频文件路径。
-
-        Returns:
-            加载的 AudioSegment 对象，加载失败时返回 None。
-        """
-        if not PYDUB_AVAILABLE:
-            logger.error("pydub 未安装，无法加载音频")
-            return None
-
+    def validate(self, file_path: Union[str, Path]) -> Tuple[bool, Optional[str]]:
+        """Validate the audio file format, size, etc."""
+        path = Path(file_path)
+        if not path.exists():
+            return False, f"文件不存在: {path}"
+        if not path.is_file():
+            return False, f"不是文件: {path}"
         try:
-            audio = AudioSegment.from_mp3(str(audio_path))
-            return audio
-        except CouldntDecodeError as e:
-            logger.warning(f"无法解码音频文件 {audio_path}: {e}")
-        except Exception as e:
-            logger.warning(f"加载音频文件失败 {audio_path}: {e}")
-        return None
+            size = path.stat().st_size
+        except OSError as e:
+            return False, f"无法读取文件状态: {e}"
+        if size < self.min_size:
+            return False, f"文件太小: {size} < {self.min_size}"
+        suffix = path.suffix.lower()
+        if suffix not in self.SUPPORTED_FORMATS:
+            return False, f"不支持的格式: {suffix}"
+        return True, None
+
+    # ------------------------------------------------------------------
+    # 合并
+    # ------------------------------------------------------------------
 
     def merge(
         self,
-        audio_paths: List[Path],
-        output_path: Path,
-        silence_ms: Optional[int] = None,
+        input_files: List[Union[str, Path]],
+        output_file: Union[str, Path],
+        silence_ms: int = 100,
     ) -> bool:
-        """合并多个音频文件。
-
-        Args:
-            audio_paths: 待合并的音频文件路径列表。
-            output_path: 输出文件路径。
-            silence_ms: 音频片段之间的静音间隔（毫秒）。
-                如果为 None，则使用实例的默认值。
-
-        Returns:
-            合并是否成功。
-        """
-        if not PYDUB_AVAILABLE:
-            logger.error("pydub 未安装，无法合并音频文件")
+        """合并多个音频文件"""
+        if not input_files:
             return False
-
-        silence = silence_ms if silence_ms is not None else self._silence_ms
-
-        if not audio_paths:
-            logger.warning("没有音频文件需要合并")
-            return False
-
-        valid_paths = [p for p in audio_paths if p.exists() and p.stat().st_size > 0]
-        if not valid_paths:
-            logger.error("没有有效的音频文件")
-            return False
-
-        if len(valid_paths) == 1:
-            return self._copy_single_file(valid_paths[0], output_path)
-
-        return self._combine_multiple(valid_paths, output_path, silence)
-
-    def _copy_single_file(self, source: Path, target: Path) -> bool:
-        """复制单个音频文件到目标位置。
-
-        Args:
-            source: 源文件路径。
-            target: 目标文件路径。
-
-        Returns:
-            复制是否成功。
-        """
+        output_path = Path(output_file)
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source, target)
-            logger.debug(f"单文件复制完成: {target}")
-            return True
-        except Exception as e:
-            logger.error(f"复制文件失败: {e}")
-            return False
-
-    def _combine_multiple(
-        self,
-        audio_paths: List[Path],
-        output_path: Path,
-        silence_ms: int,
-    ) -> bool:
-        """合并多个音频文件，并在片段之间添加静音。
-
-        Args:
-            audio_paths: 有效的音频文件路径列表。
-            output_path: 输出文件路径。
-            silence_ms: 静音间隔（毫秒）。
-
-        Returns:
-            合并是否成功。
-        """
-        try:
-            combined = AudioSegment.silent(duration=0)
-            success_count = 0
-
-            for audio_path in audio_paths:
-                audio = self._load_audio(audio_path)
-                if audio is None:
-                    continue
-
-                if len(combined) > 0:
-                    silence_seg = AudioSegment.silent(duration=silence_ms)
-                    combined += silence_seg
-                combined += audio
-                success_count += 1
-
-            if success_count == 0:
-                logger.error("所有音频文件处理失败")
-                return False
-
-            if len(combined) == 0:
-                logger.error("合并后音频为空")
-                return False
-
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            combined.export(str(output_path), format=AUDIO_FORMAT)
-            logger.info(f"音频合并完成: {output_path} ({success_count} 个文件)")
+        except OSError as e:
+            logger.error(f"无法创建输出目录: {e}")
+            return False
+        try:
+            with wave.open(str(output_path), "wb") as out_wf:
+                first_file = Path(input_files[0])
+                with wave.open(str(first_file), "rb") as first_wf:
+                    params = first_wf.getparams()
+                out_wf.setparams(params)
+                silence_frames = self._silence_frames(params, silence_ms)
+                for i, file in enumerate(input_files):
+                    file_path = Path(file)
+                    if not file_path.exists():
+                        logger.warning(f"音频文件不存在，跳过: {file_path}")
+                        continue
+                    try:
+                        with wave.open(str(file_path), "rb") as wf:
+                            if wf.getnframes() == 0:
+                                continue
+                            if wf.getparams()[:3] != params[:3]:
+                                logger.warning(
+                                    f"音频参数不匹配 ({file_path.name})，将重新对齐"
+                                )
+                            out_wf.writeframes(wf.readframes(wf.getnframes()))
+                    except (wave.Error, EOFError) as e:
+                        logger.warning(f"无法读取音频文件 {file_path}: {e}")
+                        continue
+                    if i < len(input_files) - 1 and silence_frames > 0:
+                        out_wf.writeframes(b"\x00" * silence_frames * params.sampwidth * params.nchannels)
             return True
-
-        except Exception as e:
+        except (wave.Error, OSError) as e:
             logger.error(f"合并音频失败: {e}")
             return False
 
-    def validate(self, audio_path: Path) -> Tuple[bool, Optional[str]]:
-        """验证音频文件是否有效。
+    def _silence_frames(self, params: Any, silence_ms: int) -> int:
+        if silence_ms <= 0:
+            return 0
+        return int(params.framerate * silence_ms / 1000)
 
-        Args:
-            audio_path: 音频文件路径。
+    # ------------------------------------------------------------------
+    # 静音检测
+    # ------------------------------------------------------------------
 
-        Returns:
-            包含两个元素的元组：
-            - 第一个元素表示文件是否有效
-            - 第二个元素为错误信息，有效时为 None
-        """
-        if not audio_path.exists():
-            return False, "文件不存在"
-
-        if not audio_path.is_file():
-            return False, "不是有效文件"
-
-        file_size = audio_path.stat().st_size
-        if file_size == 0:
-            return False, "文件大小为0"
-
-        audio = self._load_audio(audio_path)
-        if audio is None:
-            return False, "无法解码音频文件"
-
-        if len(audio) == 0:
-            return False, "音频时长为0"
-
-        return True, None
-
-    def get_duration(self, audio_path: Path) -> float:
-        """获取音频时长。
-
-        Args:
-            audio_path: 音频文件路径。
-
-        Returns:
-            音频时长（秒），获取失败时返回 0.0。
-        """
-        audio = self._load_audio(audio_path)
-        if audio is None:
-            return 0.0
-        return len(audio) / MS_PER_SECOND
-
-    def get_info(self, audio_path: Path) -> Dict:
-        """获取音频文件的详细信息。
-
-        Args:
-            audio_path: 音频文件路径。
-
-        Returns:
-            包含音频信息的字典，包括：
-            - path: 文件路径
-            - exists: 文件是否存在
-            - size: 文件大小（字节）
-            - duration: 音频时长（秒）
-            - valid: 文件是否有效
-            - error: 错误信息（如有）
-            - channels: 声道数（仅对有效文件）
-            - sample_width: 采样宽度（仅对有效文件）
-            - frame_rate: 采样率（仅对有效文件）
-        """
-        info: Dict = {
-            "path": str(audio_path),
-            "exists": False,
-            "size": 0,
-            "duration": 0.0,
-            "valid": False,
-            "error": None,
-        }
-
-        if not audio_path.exists():
-            info["error"] = "文件不存在"
-            return info
-
-        info["exists"] = True
-        info["size"] = audio_path.stat().st_size
-
-        audio = self._load_audio(audio_path)
-        if audio is not None:
-            duration = len(audio) / MS_PER_SECOND
-            info["duration"] = duration
-            info["channels"] = audio.channels
-            info["sample_width"] = audio.sample_width
-            info["frame_rate"] = audio.frame_rate
-            info["valid"] = duration > 0
-        else:
-            info["error"] = "无法解码音频文件"
-
-        return info
-
-
-def merge_audio_files(
-    audio_paths: List[Path],
-    output_path: Path,
-    silence_ms: int = DEFAULT_SILENCE_MS,
-) -> bool:
-    """合并音频文件（兼容函数）。
-
-    Args:
-        audio_paths: 待合并的音频文件路径列表。
-        output_path: 输出文件路径。
-        silence_ms: 音频片段之间的静音间隔（毫秒）。
-
-    Returns:
-        合并是否成功。
-    """
-    processor = AudioProcessor(silence_ms=silence_ms)
-    return processor.merge(audio_paths, output_path, silence_ms)
-
-
-SUPPORTED_FORMATS = ["mp3", "wav", "ogg", "aac", "m4a", "flac"]
-
-
-class FormatConverter:
-    """音频格式转换器"""
-
-    FORMAT_EXTENSIONS = {
-        "mp3": ".mp3",
-        "wav": ".wav",
-        "ogg": ".ogg",
-        "aac": ".aac",
-        "m4a": ".m4a",
-        "flac": ".flac",
-    }
-
-    @staticmethod
-    def is_supported_format(format_str: str) -> bool:
-        """检查是否支持该格式"""
-        return format_str.lower() in SUPPORTED_FORMATS
-
-    @staticmethod
-    def get_extension(format_str: str) -> str:
-        """获取格式对应的扩展名"""
-        return FormatConverter.FORMAT_EXTENSIONS.get(format_str.lower(), ".mp3")
-
-
-class AudioFormatConverter:
-    """音频格式转换器
-
-    支持将音频转换为多种格式。
-    """
-
-    def __init__(self):
-        if not PYDUB_AVAILABLE:
-            logger.warning(
-                "pydub 未安装，音频格式转换功能将不可用。\n"
-                "安装命令: pip install pydub\n"
-                "注意：还需要安装 ffmpeg"
-            )
-
-    def convert_format(
+    def detect_silence_regions(
         self,
-        input_path: Path,
-        output_path: Path,
-        target_format: str = "mp3",
-        quality: str = "high",
-    ) -> bool:
-        """转换音频格式
+        file_path: Union[str, Path],
+        *,
+        rms_threshold: Optional[int] = None,
+        min_duration_ms: Optional[int] = None,
+        window_ms: int = 20,
+    ) -> List[SilenceRegion]:
+        """检测文件中的静音区间 (按 RMS 阈值)。
 
-        Args:
-            input_path: 输入文件路径
-            output_path: 输出文件路径
-            target_format: 目标格式 (mp3, wav, ogg, aac)
-            quality: 音频质量 (low, medium, high)
-
-        Returns:
-            转换是否成功
+        当前实现仅支持 WAV/PCM 格式输入。
         """
-        if not PYDUB_AVAILABLE:
-            logger.error("pydub 未安装，无法转换音频格式")
-            return False
-
-        if not FormatConverter.is_supported_format(target_format):
-            logger.error(f"不支持的格式: {target_format}")
-            return False
-
-        if not input_path.exists():
-            logger.error(f"输入文件不存在: {input_path}")
-            return False
-
+        path = Path(file_path)
+        if not path.exists():
+            return []
         try:
-            audio = self._load_audio_by_extension(input_path)
-            if audio is None:
-                logger.error(f"无法加载音频文件: {input_path}")
+            with wave.open(str(path), "rb") as wf:
+                n_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                sample_rate = wf.getframerate()
+                n_frames = wf.getnframes()
+                if n_frames == 0 or sample_width not in (1, 2, 3, 4):
+                    return []
+                rms_thr = rms_threshold if rms_threshold is not None else self.silence_rms_threshold
+                min_dur_ms = (
+                    min_duration_ms if min_duration_ms is not None else self.silence_min_duration_ms
+                )
+                window_frames = max(1, int(sample_rate * window_ms / 1000))
+                min_dur_frames = max(1, int(sample_rate * min_dur_ms / 1000))
+                regions: List[SilenceRegion] = []
+                silence_start: Optional[int] = None
+                pos = 0
+                while pos < n_frames:
+                    chunk = wf.readframes(window_frames)
+                    if not chunk:
+                        break
+                    frames_read = len(chunk) // (sample_width * n_channels)
+                    if frames_read == 0:
+                        break
+                    rms = self._compute_rms(chunk, sample_width, n_channels)
+                    is_silent = rms < rms_thr
+                    if is_silent and silence_start is None:
+                        silence_start = pos
+                    elif not is_silent and silence_start is not None:
+                        end = pos
+                        if end - silence_start >= min_dur_frames:
+                            regions.append(SilenceRegion(start=silence_start, end=end))
+                        silence_start = None
+                    pos += frames_read
+                if silence_start is not None:
+                    end = n_frames
+                    if end - silence_start >= min_dur_frames:
+                        regions.append(SilenceRegion(start=silence_start, end=end))
+                return regions
+        except (wave.Error, OSError) as e:
+            logger.debug(f"静音检测失败 ({path}): {e}")
+            return []
+
+    def trim_silence(
+        self,
+        file_path: Union[str, Path],
+        output_path: Union[str, Path],
+        *,
+        rms_threshold: Optional[int] = None,
+        min_duration_ms: Optional[int] = None,
+        pad_ms: int = 50,
+    ) -> bool:
+        """裁掉文件首尾的静音并保存为新文件。"""
+        path = Path(file_path)
+        out = Path(output_path)
+        if not path.exists():
+            return False
+        regions = self.detect_silence_regions(
+            path,
+            rms_threshold=rms_threshold,
+            min_duration_ms=min_duration_ms,
+        )
+        if not regions:
+            return False
+        with wave.open(str(path), "rb") as wf:
+            n_channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            sample_rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            params = wf.getparams()
+            first_silence = regions[0]
+            last_silence = regions[-1]
+            # 仅当首/尾静音是文件边界时才裁剪
+            trim_start = first_silence.start if first_silence.start == 0 else None
+            trim_end = last_silence.end if last_silence.end >= n_frames - 1 else None
+            if trim_start is None and trim_end is None:
                 return False
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            format_ext = FormatConverter.get_extension(target_format)
-            if not str(output_path).lower().endswith(format_ext):
-                output_path = output_path.with_suffix(format_ext)
-
-            bitrate = self._get_bitrate_for_quality(target_format, quality)
-
-            audio.export(
-                str(output_path),
-                format=target_format,
-                bitrate=bitrate,
-            )
-
-            logger.info(f"格式转换完成: {input_path} -> {output_path}")
+            if trim_start is None:
+                trim_start = 0
+            if trim_end is None:
+                trim_end = n_frames
+            # 保留 pad_ms 静音避免裁过头
+            pad_frames = int(sample_rate * pad_ms / 1000)
+            new_start = max(0, trim_start - pad_frames)
+            new_end = min(n_frames, trim_end + pad_frames)
+            wf.setpos(new_start)
+            data = wf.readframes(new_end - new_start)
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(out), "wb") as out_wf:
+                out_wf.setparams(params)
+                out_wf.writeframes(data)
             return True
-
-        except Exception as e:
-            logger.error(f"格式转换失败: {e}")
+        except OSError as e:
+            logger.error(f"裁剪静音失败 ({out}): {e}")
             return False
 
-    def _load_audio_by_extension(self, audio_path: Path):
-        """根据扩展名加载音频"""
-        if not PYDUB_AVAILABLE:
-            return None
-
-        suffix = audio_path.suffix.lower()
-
-        format_loaders = {
-            ".mp3": lambda p: AudioSegment.from_mp3(str(p)),
-            ".wav": lambda p: AudioSegment.from_wav(str(p)),
-            ".ogg": lambda p: AudioSegment.from_ogg(str(p)),
-            ".aac": lambda p: AudioSegment.from_file(str(p), "aac"),
-            ".m4a": lambda p: AudioSegment.from_file(str(p), "m4a"),
-            ".flac": lambda p: AudioSegment.from_file(str(p), "flac"),
-        }
-
-        loader = format_loaders.get(suffix)
-        if loader:
-            try:
-                return loader(audio_path)
-            except Exception as e:
-                logger.warning(f"使用 {suffix} 格式加载失败: {e}")
-
+    @staticmethod
+    def _compute_rms(raw: bytes, sample_width: int, n_channels: int) -> float:
+        """计算一段 PCM 数据的 RMS。"""
+        if not raw or sample_width <= 0:
+            return 0.0
         try:
-            return AudioSegment.from_file(str(audio_path))
-        except Exception as e:
-            logger.warning(f"使用通用方式加载失败: {e}")
+            n_samples = len(raw) // sample_width
+            if sample_width == 1:
+                samples = [
+                    (b - 128) for b in raw[:n_samples * sample_width]
+                ]
+            elif sample_width == 2:
+                samples = list(struct.unpack(f"<{n_samples}h", raw))
+            elif sample_width == 3:
+                # 24-bit little-endian
+                samples = []
+                for i in range(0, n_samples * 3, 3):
+                    b = raw[i : i + 3]
+                    if len(b) < 3:
+                        break
+                    v = b[0] | (b[1] << 8) | (b[2] << 16)
+                    if v & 0x800000:
+                        v -= 0x1000000
+                    samples.append(v)
+            elif sample_width == 4:
+                samples = list(struct.unpack(f"<{n_samples}i", raw))
+            else:
+                return 0.0
+        except struct.error:
+            return 0.0
+        if not samples:
+            return 0.0
+        # 仅考虑第一个声道
+        if n_channels > 1:
+            samples = samples[::n_channels]
+        sum_sq = sum(s * s for s in samples)
+        return (sum_sq / len(samples)) ** 0.5
+
+    # ------------------------------------------------------------------
+    # 响度归一化
+    # ------------------------------------------------------------------
+
+    def normalize_loudness(
+        self,
+        file_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
+        *,
+        target_lufs: float = -20.0,
+    ) -> bool:
+        """响度归一化。
+
+        优先使用 ``pyloudnorm``；不可用时回退到 RMS 归一化实现。
+        """
+        path = Path(file_path)
+        out = Path(output_path) if output_path is not None else path
+        if not path.exists():
+            return False
+        try:
+            import pyloudnorm  # type: ignore
+        except ImportError:
+            logger.debug("pyloudnorm 未安装, 回退到 RMS 归一化")
+            return self._normalize_rms_fallback(path, out)
+        try:
+            import numpy as np  # type: ignore
+        except ImportError:
+            logger.debug("numpy 未安装, 无法使用 pyloudnorm, 回退 RMS 归一化")
+            return self._normalize_rms_fallback(path, out)
+        try:
+            import soundfile as sf  # type: ignore
+        except ImportError:
+            logger.debug("soundfile 未安装, 回退到 RMS 归一化")
+            return self._normalize_rms_fallback(path, out)
+        try:
+            data, rate = sf.read(str(path), always_2d=True)
+            meter = pyloudnorm.Meter(rate)
+            current_lufs = meter.get_rms(data)
+            if current_lufs <= 0.0 or not np.isfinite(current_lufs):
+                return self._normalize_rms_fallback(path, out)
+            gain_db = target_lufs - current_lufs
+            gain = 10 ** (gain_db / 20.0)
+            normalized = data * gain
+            # 防止削波
+            peak = float(np.max(np.abs(normalized)))
+            if peak > 1.0:
+                normalized = normalized / peak * 0.99
+            if out != path:
+                out.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(str(out), normalized, rate)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"LUFS 归一化失败 ({path}): {e}, 回退 RMS 归一化")
+            return self._normalize_rms_fallback(path, out)
+
+    def _normalize_rms_fallback(
+        self, file_path: Path, output_path: Path
+    ) -> bool:
+        """简化的 RMS 归一化 (16-bit PCM WAV 专用)。"""
+        try:
+            with wave.open(str(file_path), "rb") as wf:
+                params = wf.getparams()
+                n_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                n_frames = wf.getnframes()
+                if sample_width != 2:
+                    return False
+                raw = wf.readframes(n_frames)
+            samples = struct.unpack(f"<{n_frames * n_channels}h", raw)
+            sum_sq = sum(s * s for s in samples)
+            rms = (sum_sq / len(samples)) ** 0.5
+            if rms <= 0.0:
+                return False
+            target_rms = 5000.0  # 16-bit PCM
+            gain = min(4.0, target_rms / rms)
+            new_samples = []
+            for s in samples:
+                v = int(s * gain)
+                if v > 32767:
+                    v = 32767
+                elif v < -32768:
+                    v = -32768
+                new_samples.append(v)
+            new_raw = struct.pack(f"<{len(new_samples)}h", *new_samples)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(output_path), "wb") as out_wf:
+                out_wf.setparams(params)
+                out_wf.writeframes(new_raw)
+            return True
+        except (wave.Error, OSError, struct.error) as e:
+            logger.debug(f"RMS 归一化失败 ({file_path}): {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # 音频指纹
+    # ------------------------------------------------------------------
+
+    def fingerprint(
+        self,
+        file_path: Union[str, Path],
+        *,
+        num_buckets: int = 32,
+    ) -> Optional[AudioFingerprint]:
+        """计算音频的感知指纹 (简化版, 基于能量谱的 hashlib 摘要)。"""
+        path = Path(file_path)
+        if not path.exists():
             return None
+        try:
+            with wave.open(str(path), "rb") as wf:
+                n_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                sample_rate = wf.getframerate()
+                n_frames = wf.getnframes()
+                if n_frames == 0 or sample_width not in (1, 2, 3, 4):
+                    return None
+                # 16 个 bucket / 4 个子频段 = 64 位指纹
+                # 简单实现: 把 PCM 切成 16 等分计算能量
+                raw = wf.readframes(n_frames)
+        except (wave.Error, OSError) as e:
+            logger.debug(f"指纹计算失败 ({path}): {e}")
+            return None
+        try:
+            samples = self._pcm_to_int(raw, sample_width, n_channels)
+        except Exception:  # noqa: BLE001
+            return None
+        if not samples:
+            return None
+        bucket_size = max(1, len(samples) // num_buckets)
+        energies: List[float] = []
+        for i in range(num_buckets):
+            chunk = samples[i * bucket_size : (i + 1) * bucket_size]
+            if not chunk:
+                energies.append(0.0)
+                continue
+            rms = (sum(s * s for s in chunk) / len(chunk)) ** 0.5
+            energies.append(rms)
+        # 差分编码生成 bit 序列
+        bits = []
+        for i in range(1, len(energies)):
+            bits.append("1" if energies[i] > energies[i - 1] else "0")
+        bit_str = "".join(bits)
+        digest = hashlib.sha256(bit_str.encode("utf-8")).hexdigest()
+        return AudioFingerprint(
+            hash_hex=digest,
+            duration_samples=n_frames,
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+            channels=n_channels,
+        )
 
-    def _get_bitrate_for_quality(self, format_str: str, quality: str) -> str:
-        """根据格式和质量获取比特率"""
-        bitrates = {
-            "low": {"mp3": "64k", "aac": "64k", "ogg": "64k"},
-            "medium": {"mp3": "128k", "aac": "128k", "ogg": "128k"},
-            "high": {"mp3": "192k", "aac": "192k", "ogg": "192k"},
-        }
+    @staticmethod
+    def _pcm_to_int(raw: bytes, sample_width: int, n_channels: int) -> List[int]:
+        n_samples = len(raw) // sample_width
+        if sample_width == 1:
+            data = list(raw[:n_samples])
+            samples = [b - 128 for b in data]
+        elif sample_width == 2:
+            samples = list(struct.unpack(f"<{n_samples}h", raw[:n_samples * 2]))
+        elif sample_width == 3:
+            samples = []
+            for i in range(0, n_samples * 3, 3):
+                b = raw[i : i + 3]
+                if len(b) < 3:
+                    break
+                v = b[0] | (b[1] << 8) | (b[2] << 16)
+                if v & 0x800000:
+                    v -= 0x1000000
+                samples.append(v)
+        elif sample_width == 4:
+            samples = list(struct.unpack(f"<{n_samples}i", raw[:n_samples * 4]))
+        else:
+            return []
+        if n_channels > 1:
+            samples = samples[::n_channels]
+        return samples
 
-        format_bitrates = bitrates.get(quality, bitrates["high"])
-        return format_bitrates.get(format_str, "192k")
 
-
-def convert_audio_format(
-    input_path: Path,
-    output_path: Path,
-    target_format: str = "mp3",
-    quality: str = "high",
-) -> bool:
-    """便捷函数：转换音频格式
-
-    Args:
-        input_path: 输入文件路径
-        output_path: 输出文件路径
-        target_format: 目标格式
-        quality: 音频质量
-
-    Returns:
-        转换是否成功
-    """
-    converter = AudioFormatConverter()
-    return converter.convert_format(input_path, output_path, target_format, quality)
+__all__ = [
+    "AudioProcessor",
+    "AudioFingerprint",
+    "SilenceRegion",
+]

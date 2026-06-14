@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def _get_sign_key() -> bytes:
     import hashlib
-    key = os.environ.get("PPC9_CONFIG_SIGN_KEY", "")
+    key = os.environ.get("PPC10_CONFIG_SIGN_KEY", "")
     if key:
         return key.encode("utf-8")
     machine_id = platform.node() + sys.executable
@@ -36,7 +36,7 @@ def get_latest_release(owner: str = "zhongbai2333", repo: str = "Tomato-Novel-Do
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "PPC9-Fanqie-Integration",
+        "User-Agent": "PPC10-Fanqie-Integration",
     }
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -56,7 +56,7 @@ def get_releases_list(
     params = {"per_page": min(per_page, 100), "page": page}
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "PPC9-Fanqie-Integration",
+        "User-Agent": "PPC10-Fanqie-Integration",
     }
     try:
         response = requests.get(url, headers=headers, params=params, timeout=15)
@@ -430,16 +430,21 @@ def uninstall_fanqie() -> bool:
         return False
 
 
+# Deferred import: downloader_core imports from this module (inside
+# get_status), so a module-level import would create a circular dependency.
+# Keeping the import deferred avoids that risk.
 def _get_fanqie_base_dir() -> Path:
     from src_m.extensions.fanqie.downloader_core import _get_fanqie_base_dir as get_base
     return get_base()
 
 
+# Deferred import: see _get_fanqie_base_dir above.
 def _get_exe_path() -> Path:
     from src_m.extensions.fanqie.downloader_core import _get_exe_path as get_exe
     return get_exe()
 
 
+# Deferred import: see _get_fanqie_base_dir above.
 def is_installed() -> bool:
     from src_m.extensions.fanqie.downloader_core import is_installed as check_installed
     return check_installed()

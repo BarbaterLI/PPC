@@ -1,12 +1,19 @@
-"""Unified distributed scheduler for PPC9 TTS cluster.
+"""Unified distributed scheduler for PPC10 TTS cluster.
 
 Merges MasterScheduler and NodePool functionality into a single
 coordinated scheduler that manages:
 - Node pool management (add/remove/health check)
 - Task scheduling and assignment
 - Load balancing (pluggable strategies)
-- Local and remote execution
-- Strategy injection points for custom extensions
+- Local fallback execution (only when no workers are available and
+  ``local_fallback`` is enabled)
+
+Design note: the scheduler is now a thin coordinator on top of the
+:mod:`src_m.infrastructure.processing_unit` module. When a task is
+submitted the scheduler forwards it to a worker's ``/api/v1/convert``
+endpoint; the worker is the only place that actually runs TTS. This
+means the master and worker share the same TTS execution code as
+``ppc10 convert``.
 """
 
 import asyncio
@@ -20,9 +27,17 @@ from typing import Any, Callable, Dict, List, Optional
 
 from aiohttp import ClientSession, ClientTimeout
 
-from src_m.config import PPC9Config
+from src_m.config import PPC10Config
 from src_m.distributed.node_pool import NodeInfo, NodePool, NodeStatus
 from src_m.extensions.base import LoadBalanceStrategy
+from src_m.infrastructure.processing_unit import (
+    ConvertRequest,
+    ConvertResult,
+    MasterUnit,
+    UnitRole,
+    WorkerUnit,
+    make_processing_unit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +53,13 @@ class TaskStatus(Enum):
 
 @dataclass
 class TaskAssignment:
-    """Task assignment information"""
+    """Task assignment information.
+
+    A single task corresponds to one text->audio synthesis. The
+    scheduler forwards a single :class:`ConvertRequest` to a worker per
+    task, so this dataclass still mirrors the per-text shape that legacy
+    callers expect.
+    """
     task_id: str
     text: str
     voice: str
@@ -81,15 +102,25 @@ class TaskAssignment:
 
 class DistributedScheduler:
     """Unified distributed scheduler.
-    
-    Combines task scheduling and node pool management into a single
-    coordinator that supports pluggable strategies for load balancing
-    and health checking.
+
+    The scheduler keeps the original public API
+    (``start``/``stop``/``submit_task``/``submit_batch``/``get_stats``/
+    ``on_task_complete``/``on_task_failed``/``set_load_balance_strategy``/
+    ``add_node``/``remove_node``) so existing callers keep working. The
+    key change is that TTS work is now done by the workers themselves
+    via the :class:`ProcessingUnit` abstraction. The scheduler only
+    chooses which worker should handle a task and forwards the
+    request.
+
+    If ``local_fallback`` is ``True`` and the node pool is empty, the
+    scheduler instantiates a local :class:`WorkerUnit` and runs the task
+    locally. Default is ``False`` so master nodes do not perform TTS
+    unless explicitly configured.
     """
 
     def __init__(
         self,
-        config: PPC9Config,
+        config: PPC10Config,
         max_retries: int = 3,
         retry_delay: float = 2.0,
         task_timeout: float = 300.0,
@@ -100,13 +131,22 @@ class DistributedScheduler:
         unhealthy_threshold: int = 3,
         custom_lb_strategy: Optional[LoadBalanceStrategy] = None,
         shutdown_timeout: float = 30.0,
+        local_fallback: Optional[bool] = None,
+        worker_unit: Optional[WorkerUnit] = None,
     ):
+        # ``local_fallback`` is the new name for the old ``local_execution``
+        # behaviour, but we keep both for backwards compatibility. If the
+        # caller passes ``local_fallback`` we honour it; otherwise we fall
+        # back to ``local_execution`` (default True).
+        if local_fallback is None:
+            local_fallback = local_execution
         self.config = config
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.task_timeout = task_timeout
         self.load_balance_strategy_name = load_balance_strategy
         self.local_execution = local_execution
+        self.local_fallback = local_fallback
         self.shutdown_timeout = shutdown_timeout
 
         self._node_pool = NodePool(
@@ -120,7 +160,6 @@ class DistributedScheduler:
         self._http_session: Optional[ClientSession] = None
         self._workers: List[asyncio.Task] = []
         self._num_workers = config.tts.concurrency
-        self._local_tts_engine = None
 
         self._total_tasks = 0
         self._completed_tasks = 0
@@ -133,9 +172,13 @@ class DistributedScheduler:
 
         self._custom_lb_strategy = custom_lb_strategy
 
+        # Optional injected local worker used for fallback. When the
+        # caller does not provide one we lazily create it in :meth:`start`.
+        self._local_worker_unit: Optional[WorkerUnit] = worker_unit
+
         logger.info(
-            "DistributedScheduler initialized: workers=%s, strategy=%s, local_execution=%s",
-            self._num_workers, load_balance_strategy, local_execution,
+            "DistributedScheduler initialized: workers=%s, strategy=%s, local_execution=%s, local_fallback=%s",
+            self._num_workers, load_balance_strategy, local_execution, self.local_fallback,
         )
 
     @property
@@ -147,11 +190,6 @@ class DistributedScheduler:
         """Start the scheduler"""
         await self._node_pool.start()
 
-        if self.local_execution:
-            from src_m.engines.tts_engine import TTSEngine
-            self._local_tts_engine = TTSEngine(self.config)
-            await self._local_tts_engine.initialize()
-
         self._http_session = ClientSession(
             timeout=ClientTimeout(total=self.task_timeout)
         )
@@ -159,6 +197,22 @@ class DistributedScheduler:
         for i in range(self._num_workers):
             worker = asyncio.create_task(self._worker_loop(f"worker-{i}"))
             self._workers.append(worker)
+
+        # Lazily create the local worker used for fallback. This only
+        # spins up a TTSExecutor when ``local_fallback`` is enabled.
+        if self.local_fallback and self._local_worker_unit is None:
+            self._local_worker_unit = make_processing_unit(
+                role=UnitRole.WORKER,
+                host="local",
+                port=0,
+                config=self.config,
+                max_concurrency=self.config.tts.concurrency,
+                node_id=f"{id(self)}-local",
+            )
+            try:
+                await self._local_worker_unit.start()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("local worker start: %s", e)
 
         logger.info("DistributedScheduler started with %d workers", self._num_workers)
 
@@ -182,9 +236,12 @@ class DistributedScheduler:
             await self._http_session.close()
             self._http_session = None
 
-        if self._local_tts_engine:
-            await self._local_tts_engine.cleanup()
-            self._local_tts_engine = None
+        if self._local_worker_unit is not None:
+            try:
+                await self._local_worker_unit.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("local worker stop: %s", e)
+            self._local_worker_unit = None
 
         await self._node_pool.stop()
 
@@ -245,7 +302,7 @@ class DistributedScheduler:
 
     def set_load_balance_strategy(self, strategy: LoadBalanceStrategy):
         """Set a custom load balance strategy.
-        
+
         Args:
             strategy: Custom load balance strategy implementation
         """
@@ -260,13 +317,13 @@ class DistributedScheduler:
         max_concurrency: int = 4,
     ) -> NodeInfo:
         """Add a node to the pool.
-        
+
         Args:
             host: Node host address
             port: Node port
             node_id: Optional node identifier
             max_concurrency: Maximum concurrent tasks for this node
-            
+
         Returns:
             NodeInfo for the added node
         """
@@ -274,14 +331,32 @@ class DistributedScheduler:
 
     async def remove_node(self, node_id: str) -> bool:
         """Remove a node from the pool.
-        
+
         Args:
             node_id: Node identifier to remove
-            
+
         Returns:
             True if node was removed, False if not found
         """
         return await self._node_pool.remove_node(node_id)
+
+    async def forward_convert(self, node: NodeInfo, request: ConvertRequest) -> ConvertResult:
+        """Forward a convert request to a specific node.
+
+        Public helper used by callers that need to push a convert
+        request through the HTTP transport without going through the
+        task queue.
+        """
+        if self._http_session is None:
+            raise RuntimeError("Scheduler not started")
+        url = f"{node.base_url}/api/v1/convert"
+        async with self._http_session.post(url, json=request.to_dict()) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status >= 400:
+                raise RuntimeError(str(data.get("error") or data))
+            return ConvertResult.from_dict(data)
+
+    # ----------------------------------------------------------- workers
 
     async def _worker_loop(self, worker_id: str):
         """Worker main loop"""
@@ -314,7 +389,7 @@ class DistributedScheduler:
             logger.info("Worker %s cancelled", worker_id)
 
     async def _execute_task(self, task: TaskAssignment):
-        """Execute a single task"""
+        """Execute a single task by forwarding it to a worker (or running locally)."""
         task.status = TaskStatus.RUNNING
         task.attempts += 1
         task.started_at = datetime.now(timezone.utc)
@@ -340,12 +415,12 @@ class DistributedScheduler:
                             },
                         )
 
-            if self.local_execution:
+            if self.local_fallback:
                 await self._execute_on_local_node(task)
                 return
 
             task.status = TaskStatus.FAILED
-            task.error = "No available nodes and local execution disabled"
+            task.error = "No available nodes and local fallback disabled"
             async with self._counter_lock:
                 self._failed_tasks += 1
             await self._notify_task_failed(task)
@@ -369,7 +444,14 @@ class DistributedScheduler:
                 await self._notify_task_failed(task)
 
     async def _execute_on_remote_node(self, task: TaskAssignment, node: Optional[NodeInfo] = None) -> bool:
-        """Execute task on a remote node"""
+        """Forward the task to a remote node and stream the audio back.
+
+        For backwards compatibility with the legacy single-text API
+        (which used ``/api/v1/synthesize``) the request is sent as a
+        single-text payload to that endpoint. The full convert flow
+        (multiple files / directory handling) should use
+        :meth:`forward_convert` directly.
+        """
         try:
             if node is None:
                 node = await self._select_best_node()
@@ -378,6 +460,9 @@ class DistributedScheduler:
                 return False
 
             task.assigned_node = node.node_id
+
+            if self._http_session is None:
+                raise RuntimeError("Scheduler not started")
 
             url = f"{node.base_url}/api/v1/synthesize"
             payload = {
@@ -406,8 +491,8 @@ class DistributedScheduler:
                 await self._node_pool.update_node_stats(
                     node.node_id,
                     {
-                        "total_requests": node.total_requests + 1,
-                        "successful_requests": node.successful_requests + 1,
+                        "total_requests": 1,
+                        "successful_requests": 1,
                         "current_concurrency": node.current_concurrency,
                     },
                 )
@@ -421,45 +506,67 @@ class DistributedScheduler:
             return False
 
     async def _execute_on_local_node(self, task: TaskAssignment):
-        """Execute task on local node"""
-        if self._local_tts_engine is None:
-            raise RuntimeError("Local TTS engine not initialized")
+        """Execute task on the local fallback worker.
+
+        This is the only place where a master can run TTS itself, and
+        it only happens when ``local_fallback`` is enabled. The work is
+        delegated to the shared :class:`WorkerUnit`, which uses the
+        same :class:`TTSExecutor` that ``ppc10 convert`` uses. Since
+        per-text execution isn't a directory-style convert, we materialise
+        the text into a temporary file and call the worker's convert
+        handler. If the worker isn't ready we fall back to a simple
+        failure notification.
+        """
+        if self._local_worker_unit is None:
+            raise RuntimeError("Local worker not initialised; local_fallback disabled?")
 
         task.assigned_node = "local"
         start_time = time.time()
 
         try:
-            should_segment = (
-                self.config.tts.enable_segmentation
-                and len(task.text) > self.config.tts.max_segment_length
-            )
+            import tempfile
 
-            if should_segment:
-                result = await self._local_tts_engine.synthesize_segmented(
-                    task.text, task.output_path
+            with tempfile.TemporaryDirectory(prefix="ppc10-sched-") as tmpdir:
+                in_dir = Path(tmpdir) / "in"
+                out_dir = Path(tmpdir) / "out"
+                in_dir.mkdir(parents=True, exist_ok=True)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                input_file = in_dir / f"{task.task_id}.txt"
+                input_file.write_text(task.text, encoding="utf-8")
+
+                request = ConvertRequest(
+                    input_dir=in_dir,
+                    output_dir=out_dir,
+                    voice=task.voice or None,
+                    rate=task.rate or None,
+                    recursive=False,
                 )
-            else:
-                result = await self._local_tts_engine.synthesize(task.text, task.output_path)
+                result = await self._local_worker_unit.handle_convert_request(request)
 
-            task.duration = time.time() - start_time
-            task.completed_at = datetime.now(timezone.utc)
+                task.duration = time.time() - start_time
+                task.completed_at = datetime.now(timezone.utc)
 
-            if result.success:
+                if not result.success:
+                    raise RuntimeError(result.error or "Local execution failed")
+
+                # Copy the synthesised file back to the task's output path.
+                expected = out_dir / input_file.with_suffix(".mp3").name
+                if expected.exists():
+                    task.output_path.parent.mkdir(parents=True, exist_ok=True)
+                    task.output_path.write_bytes(expected.read_bytes())
+
                 task.status = TaskStatus.COMPLETED
                 async with self._counter_lock:
                     self._completed_tasks += 1
                 logger.info("Task completed %s (local execution)", task.task_id)
                 await self._notify_task_complete(task)
-            else:
-                raise RuntimeError(result.error or "Local synthesis failed")
-
         except Exception as e:
             logger.error("Local execution failed %s: %s", task.task_id, e)
             raise
 
     async def _select_best_node(self) -> Optional[NodeInfo]:
         """Select the best node using the configured or custom strategy.
-        
+
         This is the strategy injection point that allows custom load
         balancing strategies to be used.
         """
@@ -497,3 +604,6 @@ class DistributedScheduler:
                     await result
             except Exception as e:
                 logger.warning("Callback execution failed: %s", e)
+
+
+__all__ = ["DistributedScheduler", "TaskStatus", "TaskAssignment"]

@@ -25,7 +25,7 @@ def launch_tui(
 
     if not is_installed():
         raise FileNotFoundError(
-            "番茄小说下载器未安装，请先运行: ppc9 fanqie install"
+            "番茄小说下载器未安装，请先运行 ppc10 fanqie install"
         )
 
     exe_path = _get_exe_path()
@@ -34,7 +34,7 @@ def launch_tui(
     if extra_args:
         cmd.extend(extra_args)
 
-    logger.info(f"启动番茄小说下载器 TUI: {' '.join(cmd)}")
+    logger.info(f"启动番茄小说下载器TUI: {' '.join(cmd)}")
     return subprocess.Popen(cmd)
 
 
@@ -53,7 +53,7 @@ def launch_server(
 
     if not is_installed():
         raise FileNotFoundError(
-            "番茄小说下载器未安装，请先运行: ppc9 fanqie install"
+            "番茄小说下载器未安装，请先运行 ppc10 fanqie install"
         )
 
     exe_path = _get_exe_path()
@@ -67,7 +67,7 @@ def launch_server(
     if extra_args:
         cmd.extend(extra_args)
 
-    logger.info(f"启动番茄小说下载器 Server: {' '.join(cmd)}")
+    logger.info(f"启动番茄小说下载器Server: {' '.join(cmd)}")
     return subprocess.Popen(cmd, env=env)
 
 
@@ -81,7 +81,7 @@ def update_book(book_id: str, data_dir: Optional[str] = None) -> Tuple[bool, str
     if not re.match(r'^[a-zA-Z0-9_-]+$', book_id):
         return False, "无效的书籍ID格式"
     if not is_installed():
-        return False, "番茄小说下载器未安装，请先运行: ppc9 fanqie install"
+        return False, "番茄小说下载器未安装，请先运行 ppc10 fanqie install"
 
     exe_path = _get_exe_path()
     effective_data_dir = data_dir or str(_get_default_data_dir())

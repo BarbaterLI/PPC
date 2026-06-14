@@ -1,4 +1,4 @@
-"""分割命令实现 - 文本文件章节分割。"""
+"""分割命令实现 - 文本文件章节分割"""
 
 import json
 import sys
@@ -8,12 +8,13 @@ from typing import Optional, List
 from ...config import ConfigManager, get_preset, CustomRule
 from ...executors import SplitterExecutor
 from ..output import OutputFormatter, BrandColors, Icons
-from rich.panel import Panel
-from rich.box import ROUNDED
+from ..errors import CLIError, ErrorCode as E
+from rich.box import SIMPLE
+from rich.table import Table
 
 
 def parse_custom_rules(rules_input: str) -> List[CustomRule]:
-    """解析自定义规则输入（JSON 字符串或文件路径）。"""
+    """解析自定义规则输入（JSON 字符串或文件路径）"""
     if not rules_input:
         return []
 
@@ -54,16 +55,17 @@ def handle_split(
     preset: str,
     custom_rules: Optional[str] = None,
     add_title_separator: Optional[bool] = None,
-    hierarchical: bool = False
+    hierarchical: bool = False,
+    strict: bool = False,
 ):
-    """处理分割命令。"""
+    """处理分割命令"""
     output = OutputFormatter(verbose=False)
 
     output.show_banner()
 
-    output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    output.console.print(f"[bold white]  {Icons.BOOK} PPC9 章节分割[/bold white]")
-    output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
+    output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]")
+    output.console.print(f"[bold white]  {Icons.BOOK} PPC10 章节分割[/bold white]")
+    output.console.print(f"[bold {BrandColors.PRIMARY}]{'█' * 60}[/bold {BrandColors.PRIMARY}]\n")
 
     config_manager = ConfigManager()
 
@@ -91,32 +93,44 @@ def handle_split(
     if custom_rules:
         try:
             custom_rules_list = parse_custom_rules(custom_rules)
-            config_details["自定义规则"] = f"{len(custom_rules_list)} 条"
+            config_details["自定义规则"] = f"{len(custom_rules_list)} 个"
 
             rules_preview = []
             for rule in custom_rules_list[:3]:
                 rules_preview.append(f"{rule.name} (priority={rule.priority})")
             if len(custom_rules_list) > 3:
-                rules_preview.append(f"... 还有 {len(custom_rules_list) - 3} 条")
+                rules_preview.append(f"... 还有 {len(custom_rules_list) - 3} 个")
 
             config_details["规则预览"] = ", ".join(rules_preview)
         except ValueError as e:
-            output.error_panel(
-                f"解析自定义规则失败：{e}",
-                title="配置错误",
-                error_type="ValueError",
-                suggestion="请检查 JSON 格式是否正确或文件路径是否存在"
+            raise CLIError(
+                E.E_CONFIG_INVALID,
+                f"解析自定义规则失败: {e}",
+                hint="请检查 JSON 格式是否正确或文件路径是否存在",
             )
-            sys.exit(1)
 
     if not input_file.exists():
-        output.error_panel(
-            f"输入文件不存在：{input_file}",
-            title="文件错误",
-            error_type="FileNotFoundError",
-            suggestion="请检查路径是否正确，或使用绝对路径"
+        raise CLIError(
+            E.E_INPUT_NOT_FOUND,
+            f"输入文件不存在: {input_file}",
+            hint="请检查路径是否正确,或使用绝对路径",
         )
-        sys.exit(1)
+
+    # 空输入友好处理 (Spec 9)
+    try:
+        if input_file.stat().st_size == 0:
+            msg = f"Input file is empty: {input_file}. Nothing to do."
+            if strict:
+                raise CLIError(
+                    E.E_INPUT_EMPTY,
+                    msg,
+                    hint="Remove --strict to allow empty input",
+                )
+            output.info(msg)
+            return
+    except OSError:
+        # input_file 已被 existence check 覆盖,stat 失败意味着别的问题
+        pass
 
     if output_dir is None:
         output_dir = input_file.with_name(f"{input_file.stem}_chapters")
@@ -135,16 +149,16 @@ def handle_split(
             if result.success:
                 chapter_count = len(result.data)
 
-                output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]")
+                output.console.print(f"\n[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]")
                 output.console.print(f"[bold white]  {Icons.SUCCESS} 分割完成报告[/bold white]")
-                output.console.print(f"[bold {BrandColors.SUCCESS}]{'═' * 60}[/bold {BrandColors.SUCCESS}]\n")
+                output.console.print(f"[bold {BrandColors.SUCCESS}]{'█' * 60}[/bold {BrandColors.SUCCESS}]\n")
 
                 from rich.table import Table
                 from rich.box import SIMPLE
 
                 summary_table = Table(show_header=False, box=SIMPLE, border_style=BrandColors.SUCCESS)
                 summary_table.add_column("指标", style="bold", width=20)
-                summary_table.add_column("值", style="cyan", width=25)
+                summary_table.add_column("否", style="cyan", width=25)
 
                 summary_table.add_row("输入文件", input_file.name)
                 summary_table.add_row("输出目录", output_dir.name)
@@ -159,7 +173,7 @@ def handle_split(
                 output.console.print()
 
                 if chapter_count > 0:
-                    output.console.print(f"[bold {BrandColors.INFO}]📄 前 5 个章节:[/bold {BrandColors.INFO}]\n")
+                    output.console.print(f"[bold {BrandColors.INFO}]📄 前5 个章节[/bold {BrandColors.INFO}]\n")
 
                     chapters_table = Table(show_header=True, box=SIMPLE, border_style=BrandColors.INFO)
                     chapters_table.add_column("序号", style="yellow", width=6)
@@ -182,7 +196,7 @@ def handle_split(
                 # Show volume stats if hierarchical mode
                 volume_stats = executor.get_volume_stats()
                 if volume_stats:
-                    output.console.print(f"\n[bold {BrandColors.INFO}]📚 卷信息:[/bold {BrandColors.INFO}]\n")
+                    output.console.print(f"\n[bold {BrandColors.INFO}]📚 卷信息[/bold {BrandColors.INFO}]\n")
 
                     vol_table = Table(show_header=True, box=SIMPLE, border_style=BrandColors.INFO)
                     vol_table.add_column("序号", style="yellow", width=6)
@@ -203,11 +217,10 @@ def handle_split(
                 output.console.print(f"[dim]报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
 
             else:
-                output.error_panel(
-                    f"分割失败：{result.error}",
-                    title="分割错误",
-                    error_type="SplitError",
-                    suggestion="请检查输入文件格式或查看日志获取更多信息"
+                raise CLIError(
+                    E.E_BUSINESS,
+                    f"分割失败: {result.error}",
+                    hint="请检查输入文件格式或查看日志获取更多信息",
                 )
 
             return result.success
@@ -215,19 +228,15 @@ def handle_split(
     try:
         import asyncio
         success = asyncio.run(run_split())
-        sys.exit(0 if success else 1)
+        if not success:
+            raise CLIError(E.E_BUSINESS, "分割未成功,请查看上文错误")
     except KeyboardInterrupt:
-        output.warning_panel(
-            "用户中断操作",
-            title="中断",
-            suggestion="如需继续，请重新运行命令"
-        )
-        sys.exit(130)
+        raise CLIError(E.E_BUSINESS, "用户中断操作 (Ctrl+C)", exit_code=130)
+    except CLIError:
+        raise
     except Exception as e:
-        output.error_panel(
-            f"执行失败：{e}",
-            title="执行错误",
-            error_type=type(e).__name__,
-            suggestion="使用 --verbose 参数查看详细错误信息"
-        )
-        sys.exit(1)
+        raise CLIError(
+            E.E_BUSINESS,
+            f"执行失败: {e}",
+            hint="使用 --verbose 参数查看详细错误信息",
+        ) from e

@@ -3,6 +3,8 @@ from .circuit import (
     CircuitBreakerConfig,
     CircuitState,
     HalfOpenLimiter,
+    TripStrategy,
+    SimpleCircuitBreaker,
     create_circuit_breaker,
     get_circuit_breakers,
 )
@@ -40,9 +42,23 @@ from .result import (
 from .retry import (
     RetryConfig,
     RetryContext,
+    BackoffCurve,
     create_default_retry,
     retry,
     retry_async,
+)
+from .rate_limiter import (
+    TokenBucketRateLimiter,
+    SlidingWindowRateLimiter,
+    AsyncTokenBucket,
+    AsyncSlidingWindow,
+    TwoTierRateLimiter,
+    TierRateLimiterConfig,
+    RateLimitStrategy,
+    RateLimitResult,
+    create_rate_limiter,
+    get_rate_limiter,
+    set_rate_limiter,
 )
 
 def __getattr__(name: str):
@@ -52,21 +68,29 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    # circuit
     "CircuitBreaker",
     "CircuitBreakerConfig",
     "CircuitBreakerError",
     "CircuitState",
-    "DeadlineExceededError",
     "HalfOpenLimiter",
+    "TripStrategy",
+    "SimpleCircuitBreaker",
+    # errors
+    "DeadlineExceededError",
     "MaxRetriesError",
     "OperationCancelledError",
     "ResourceExhaustedError",
+    # result
     "Result",
     "ResultState",
-    "RetryConfig",
-    "RetryContext",
     "Ok",
     "Err",
+    # retry
+    "RetryConfig",
+    "RetryContext",
+    "BackoffCurve",
+    # execution
     "ExecutionResult",
     "ExecutionMetrics",
     "RetryPolicy",
@@ -74,6 +98,16 @@ __all__ = [
     "RetryEventType",
     "TaskResult",
     "BatchResult",
+    # rate limiter
+    "TokenBucketRateLimiter",
+    "SlidingWindowRateLimiter",
+    "AsyncTokenBucket",
+    "AsyncSlidingWindow",
+    "TwoTierRateLimiter",
+    "TierRateLimiterConfig",
+    "RateLimitStrategy",
+    "RateLimitResult",
+    # factories
     "create_circuit_breaker",
     "create_default_retry",
     "create_error_from_exception",
@@ -81,9 +115,12 @@ __all__ = [
     "create_network_retry_policy",
     "create_tts_retry_policy",
     "create_tts_circuit_breaker",
+    "create_rate_limiter",
     "classify_exception",
     "format_exception_chain",
     "get_circuit_breakers",
+    "get_rate_limiter",
+    "set_rate_limiter",
     "is_ok",
     "is_err",
     "retry",

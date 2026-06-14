@@ -57,10 +57,10 @@ def install_extension():
         if file.filename == "":
             return jsonify({"error": "No file selected", "code": "BAD_REQUEST"}), 400
 
-        if not file.filename.endswith(".ppc9ext.zip"):
-            return jsonify({"error": "File must be a .ppc9ext.zip package", "code": "BAD_REQUEST"}), 400
+        if not file.filename.endswith(".ppc10ext.zip"):
+            return jsonify({"error": "File must be a .ppc10ext.zip package", "code": "BAD_REQUEST"}), 400
 
-        with tempfile.NamedTemporaryFile(suffix=".ppc9ext.zip", delete=False, mode="wb") as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".ppc10ext.zip", delete=False, mode="wb") as tmp:
             file.save(tmp)
             tmp_path = Path(tmp.name)
 

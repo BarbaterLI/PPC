@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Generic, TypeVar, Optional, Callable, Any
 from datetime import datetime
 
-from ..config import ConfigManager, PPC9Config
+from ..config import ConfigManager, PPC10Config
 from ..reliability import (
     ExecutionResult,
     ExecutionMetrics,
@@ -43,11 +43,11 @@ class BaseExecutor(ABC, Generic[InputType, OutputType]):
 
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
+        config: Optional[PPC10Config] = None,
         retry_policy: Optional[RetryPolicy] = None,
         circuit_breaker: Optional[CircuitBreaker] = None
     ):
-        self.config = config or PPC9Config()
+        self.config = config or PPC10Config()
         self.retry_policy = retry_policy or RetryPolicy()
         self.circuit_breaker = circuit_breaker
         self._initialized = False
@@ -94,11 +94,11 @@ class BaseExecutor(ABC, Generic[InputType, OutputType]):
             )
 
             metrics = self._create_metrics(start_time)
-            return ExecutionResult.success(result, metrics)
+            return ExecutionResult.ok(result, metrics)
 
         except Exception as e:
             logger.error(f"执行失败（已重试）: {e}")
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e),
                 error_code="EXECUTION_FAILED"
             )
@@ -130,10 +130,10 @@ class BaseExecutor(ABC, Generic[InputType, OutputType]):
             else:
                 result = self.circuit_breaker.call_sync(task, *args, **kwargs)
 
-            return ExecutionResult.success(result)
+            return ExecutionResult.ok(result)
 
         except Exception as e:
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e),
                 error_code="CIRCUIT_OPEN"
             )
@@ -164,7 +164,7 @@ class BatchExecutor(BaseExecutor[Path, Any]):
 
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
+        config: Optional[PPC10Config] = None,
         retry_policy: Optional[RetryPolicy] = None
     ):
         super().__init__(config, retry_policy)
@@ -235,11 +235,11 @@ class BatchExecutor(BaseExecutor[Path, Any]):
         )
 
         if failed == 0:
-            return ExecutionResult.success(results, metrics)
+            return ExecutionResult.ok(results, metrics)
         elif processed > 0:
             return ExecutionResult.partial(results, [f"{failed} 个任务失败"], metrics)
         else:
-            return ExecutionResult.failure(
+            return ExecutionResult.fail(
                 error=f"所有 {total} 个任务都失败了",
                 error_code="BATCH_FAILED"
             )
@@ -250,7 +250,7 @@ class StreamingExecutor(BaseExecutor[str, bytes]):
 
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
+        config: Optional[PPC10Config] = None,
         retry_policy: Optional[RetryPolicy] = None
     ):
         super().__init__(config, retry_policy)
@@ -299,9 +299,9 @@ class StreamingExecutor(BaseExecutor[str, bytes]):
         self._check_initialized()
         try:
             await self._process_stream(input_path, output_path)
-            return ExecutionResult.success(self._flush_buffer())
+            return ExecutionResult.ok(self._flush_buffer())
         except Exception as e:
-            return ExecutionResult.error(error=str(e))
+            return ExecutionResult.fail(error=str(e))
 
     async def _process_stream(self, input_path: Path, output_path: Path):
         """子类实现流式处理逻辑"""

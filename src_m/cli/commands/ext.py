@@ -4,7 +4,8 @@ import typer
 from typing import Optional
 from pathlib import Path
 
-from ..output import console, Icons, BrandColors
+from ..output import console, Icons, BrandColors, OutputFormatter
+from ..errors import CLIError, ErrorCode as E
 
 ext_app = typer.Typer(
     name="ext",
@@ -16,22 +17,25 @@ ext_app = typer.Typer(
 
 @ext_app.command("install")
 def ext_install(
-    zip_path: Path = typer.Argument(..., help="扩展包路径（.ppc9ext.zip）"),
+    zip_path: Path = typer.Argument(..., help="扩展包路径（.ppc10ext.zip）"),
     force: bool = typer.Option(False, "--force", "-f", help="强制覆盖安装"),
 ):
     """安装扩展包
 
-    从 .ppc9ext.zip 文件安装扩展到 extensions/ 目录。
+    从 .ppc10ext.zip 文件安装扩展到 extensions/ 目录。
 
-    示例:
-        ppc9 ext install my_ext.ppc9ext.zip
-        ppc9 ext install my_ext.ppc9ext.zip --force
+    Examples:
+        ppc10 ext install my_ext.ppc10ext.zip
+        ppc10 ext install my_ext.ppc10ext.zip --force
     """
     from src_m.extensions.package import ExtensionPackageManager
 
     if not zip_path.exists():
-        console.print(f"[{BrandColors.ERROR}]{Icons.ERROR} 文件不存在: {zip_path}[/{BrandColors.ERROR}]")
-        raise typer.Exit(1)
+        raise CLIError(
+            E.E_INPUT_NOT_FOUND,
+            f"文件不存在: {zip_path}",
+            hint="请检查路径是否正确",
+        )
 
     manager = ExtensionPackageManager()
     result = manager.install_package(zip_path, force=force)
@@ -42,8 +46,11 @@ def ext_install(
         console.print(f"  版本: {result['version']}")
         console.print(f"  路径: extensions/{result['name']}/")
     else:
-        console.print(f"[{BrandColors.ERROR}]{Icons.ERROR} 安装失败: {result.get('error', '未知错误')}[/{BrandColors.ERROR}]")
-        raise typer.Exit(1)
+        raise CLIError(
+            E.E_BUSINESS,
+            f"安装失败: {result.get('error', '未知错误')}",
+            hint="查看 --verbose 详细堆栈,或检查 zip 完整性",
+        )
 
 
 @ext_app.command("uninstall")
@@ -53,9 +60,9 @@ def ext_uninstall(
 ):
     """卸载扩展包
 
-    示例:
-        ppc9 ext uninstall my_extension
-        ppc9 ext uninstall my_extension --force
+    Examples:
+        ppc10 ext uninstall my_extension
+        ppc10 ext uninstall my_extension --force
     """
     from src_m.extensions.package import ExtensionPackageManager
 
@@ -65,30 +72,52 @@ def ext_uninstall(
     if result["success"]:
         console.print(f"[{BrandColors.SUCCESS}]{Icons.SUCCESS} 扩展已卸载: {name}[/{BrandColors.SUCCESS}]")
     else:
-        console.print(f"[{BrandColors.ERROR}]{Icons.ERROR} 卸载失败: {result.get('error', '未知错误')}[/{BrandColors.ERROR}]")
-        raise typer.Exit(1)
+        raise CLIError(
+            E.E_BUSINESS,
+            f"卸载失败: {result.get('error', '未知错误')}",
+            hint="如有依赖,可加 --force 强制卸载",
+        )
 
 
 @ext_app.command("list")
-def ext_list():
+def ext_list(
+    json_output: bool = typer.Option(False, "--json", help="以单行 JSON 数组输出"),
+):
     """列出已安装的扩展包
 
-    示例:
-        ppc9 ext list
+    默认以 Rich 表格输出;``--json`` 输出单行 JSON 数组,便于脚本消费。
+
+    Examples:
+        ppc10 ext list
+        ppc10 ext list --json
+        ppc10 ext list --json | jq '.[].name'
     """
     from src_m.extensions.package import ExtensionPackageManager
+    from src_m.cli.typer_app import get_output
+
+    output = get_output()
+    if json_output:
+        output.set_mode(json_output=True)
 
     manager = ExtensionPackageManager()
     packages = manager.list_packages()
 
-    if not packages:
-        console.print("[dim]未安装任何扩展包[/dim]")
-        return
-
-    console.print(f"[bold]已安装扩展 ({len(packages)})[/bold]\n")
-    for pkg in packages:
-        status = f"[{BrandColors.SUCCESS}]启用[/{BrandColors.SUCCESS}]" if pkg.get("enabled", True) else f"[{BrandColors.WARNING}]禁用[/{BrandColors.WARNING}]"
-        console.print(f"  {pkg['name']} v{pkg['version']}  [{pkg.get('type', 'unknown')}]  {status}")
+    records = [
+        {
+            "name": pkg.get("name", ""),
+            "version": pkg.get("version", ""),
+            "type": pkg.get("type", "unknown"),
+            "description": pkg.get("description", ""),
+            "enabled": bool(pkg.get("enabled", True)),
+        }
+        for pkg in packages
+    ]
+    headers = ["Name", "Version", "Type", "Description"]
+    rows = [
+        [r["name"], r["version"], r["type"], r["description"]]
+        for r in records
+    ]
+    output.print_table(headers, rows, title=f"已安装扩展 ({len(records)})", json_data=records)
 
 
 @ext_app.command("info")
@@ -97,8 +126,8 @@ def ext_info(
 ):
     """查看扩展详细信息
 
-    示例:
-        ppc9 ext info my_extension
+    Examples:
+        ppc10 ext info my_extension
     """
     from src_m.extensions.package import ExtensionPackageManager
 
@@ -106,8 +135,11 @@ def ext_info(
     info = manager.get_package_info(name)
 
     if info is None:
-        console.print(f"[{BrandColors.WARNING}]扩展 '{name}' 未安装[/{BrandColors.WARNING}]")
-        raise typer.Exit(1)
+        raise CLIError(
+            E.E_INPUT_NOT_FOUND,
+            f"扩展 '{name}' 未安装",
+            hint="使用 'ppc10 ext list' 查看已安装扩展",
+        )
 
     console.print(f"[bold]扩展: {info['name']}[/bold]\n")
     console.print(f"  版本: {info.get('version', '未知')}")
@@ -139,11 +171,11 @@ def ext_create(
 ):
     """创建扩展包模板
 
-    生成扩展包脚手架文件并打包为 .ppc9ext.zip。
+    生成扩展包脚手架文件并打包为 .ppc10ext.zip。
 
-    示例:
-        ppc9 ext create my_extension
-        ppc9 ext create my_extension -o ./my_projects
+    Examples:
+        ppc10 ext create my_extension
+        ppc10 ext create my_extension -o ./my_projects
     """
     from src_m.extensions.package import ExtensionPackageManager
 
@@ -152,7 +184,10 @@ def ext_create(
         zip_path = manager.create_template(name, output_dir)
         console.print(f"[{BrandColors.SUCCESS}]{Icons.SUCCESS} 扩展包模板已创建！[/{BrandColors.SUCCESS}]")
         console.print(f"  路径: {zip_path}")
-        console.print(f"\n[dim]提示: 编辑模板文件后，使用 ppc9 ext install {zip_path.name} 安装[/dim]")
+        console.print(f"\n[dim]提示: 编辑模板文件后，使用 ppc10 ext install {zip_path.name} 安装[/dim]")
     except Exception as e:
-        console.print(f"[{BrandColors.ERROR}]{Icons.ERROR} 创建失败: {e}[/{BrandColors.ERROR}]")
-        raise typer.Exit(1)
+        raise CLIError(
+            E.E_BUSINESS,
+            f"创建失败: {e}",
+            hint="使用 --verbose 查看详细堆栈",
+        ) from e

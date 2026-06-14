@@ -12,18 +12,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
 from datetime import datetime
 
-from src_m.config.schema import PPC9Config
+from src_m.config.schema import PPC10Config
 
 logger = logging.getLogger(__name__)
 
 
 class ConfigVersionManager:
     def __init__(self, max_versions: int = 10):
-        self._versions: List[Tuple[int, PPC9Config, datetime]] = []
+        self._versions: List[Tuple[int, PPC10Config, datetime]] = []
         self._max_versions = max_versions
         self._lock = threading.Lock()
 
-    def save_version(self, config: PPC9Config) -> int:
+    def save_version(self, config: PPC10Config) -> int:
         with self._lock:
             version = len(self._versions) + 1
             config_copy = copy.deepcopy(config)
@@ -35,7 +35,7 @@ class ConfigVersionManager:
             logger.debug("配置版本已保存: v%d", version)
             return version
 
-    def get_version(self, version: int) -> Optional[PPC9Config]:
+    def get_version(self, version: int) -> Optional[PPC10Config]:
         with self._lock:
             for v, config, _ in self._versions:
                 if v == version:
@@ -74,7 +74,7 @@ class ConfigVersionManager:
             ]
 
     @staticmethod
-    def _get_config_summary(config: PPC9Config) -> Dict[str, Any]:
+    def _get_config_summary(config: PPC10Config) -> Dict[str, Any]:
         log_level = config.core.log_level
         if hasattr(log_level, 'value'):
             log_level = log_level.value

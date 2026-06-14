@@ -1,3 +1,12 @@
+"""番茄小说下载器 Web API 端点。
+
+注意：番茄小说下载器现已迁移为标准扩展，CLI 调用方式变为：
+    ppc10 ext call fanqie_downloader <subcommand>
+
+可用的 subcommand 包括：install / update / tui / server / status / config / uninstall
+本模块提供对应的 HTTP 接口以供 WebUI 调用。
+"""
+
 import asyncio
 import logging
 import subprocess

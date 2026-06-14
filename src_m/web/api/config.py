@@ -136,7 +136,8 @@ def reset_config():
 @config_bp.route("/export", methods=["POST"])
 def export_config():
     try:
-        from src_m.config.manager import ConfigManager, _compute_config_signature
+        from src_m.config.manager_core import _compute_config_signature
+        from src_m.config.manager import ConfigManager
 
         mgr = ConfigManager()
         config_dict = mgr.get_all()
@@ -170,7 +171,7 @@ def import_config():
         file_content = file.read().decode("utf-8", errors="replace")
         file.seek(0)
 
-        from src_m.config.manager import _CONFIG_SIGNATURE_MARKER
+        from src_m.config.manager_core import _CONFIG_SIGNATURE_MARKER
         content_for_validation = file_content
         for line in file_content.splitlines():
             if line.startswith(_CONFIG_SIGNATURE_MARKER):

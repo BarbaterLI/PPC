@@ -34,7 +34,7 @@ class ConfigAnalyzer(BaseAnalyzer):
                     severity=Severity.CRITICAL,
                     category=AnalysisCategory.CONFIGURATION,
                     description=f"无法加载配置: {exc}",
-                    suggestion="运行 'ppc9 config init' 初始化配置文件",
+                    suggestion="运行 'ppc10 config init' 初始化配置文件",
                 )
             )
             return issues
@@ -47,8 +47,8 @@ class ConfigAnalyzer(BaseAnalyzer):
                     AnalysisIssue(
                         severity=Severity.HIGH,
                         category=AnalysisCategory.CONFIGURATION,
-                        description=f"并发数 ({concurrency}) > 16 但超时时间 ({timeout}s) < 60s，可能导致大量超时失败",
-                        suggestion="增加超时时间至 60s 以上，或降低并发数",
+                        description=f"并发数({concurrency}) > 16 但超时时间({timeout}s) < 60s，可能导致大量超时失败",
+                        suggestion="增加超时时间到60s 以上，或降低并发数",
                         location="tts.concurrency / tts.timeout",
                         details={"concurrency": concurrency, "timeout": timeout},
                     )
@@ -62,8 +62,8 @@ class ConfigAnalyzer(BaseAnalyzer):
                     AnalysisIssue(
                         severity=Severity.MEDIUM,
                         category=AnalysisCategory.CONFIGURATION,
-                        description="自动重试已启用但 retries 设置为 0，重试不会生效",
-                        suggestion="设置 retries > 0 或关闭 auto_retry",
+                        description="自动重试已启用但 retries 设置为0，重试不会生效",
+                        suggestion="设置 retries > 0 或关闭auto_retry",
                         location="tts.retries / features.auto_retry",
                         details={"retries": retries, "auto_retry": auto_retry},
                     )
@@ -78,7 +78,7 @@ class ConfigAnalyzer(BaseAnalyzer):
                         severity=Severity.MEDIUM,
                         category=AnalysisCategory.CONFIGURATION,
                         description=f"速率限制 ({rate_limit}) > 200 但缓冲区 ({buffer_size}) < 16，可能导致拥塞",
-                        suggestion="增大 buffer_size 至 16 以上，或降低 rate_limit",
+                        suggestion="增大 buffer_size 到16 以上，或降低 rate_limit",
                         location="tts.rate_limit / tts.buffer_size",
                         details={"rate_limit": rate_limit, "buffer_size": buffer_size},
                     )
@@ -92,7 +92,7 @@ class ConfigAnalyzer(BaseAnalyzer):
                     AnalysisIssue(
                         severity=Severity.CRITICAL,
                         category=AnalysisCategory.CONFIGURATION,
-                        description=f"最小超时 ({timeout_min}s) 大于最大超时 ({timeout_max}s)",
+                        description=f"最小超时({timeout_min}s) 大于最大超时({timeout_max}s)",
                         suggestion="调整 timeout_min <= timeout_max",
                         location="tts.timeout_min / tts.timeout_max",
                         details={"timeout_min": timeout_min, "timeout_max": timeout_max},
@@ -106,7 +106,7 @@ class ConfigAnalyzer(BaseAnalyzer):
                     severity=Severity.HIGH,
                     category=AnalysisCategory.CONFIGURATION,
                     description="TTS 语音模型未设置或为空",
-                    suggestion="运行 'ppc9 config set tts.voice <语音名>' 设置默认语音",
+                    suggestion="运行 'ppc10 config set tts.voice <语音名>' 设置默认语音",
                     location="tts.voice",
                     details={"voice": voice},
                 )

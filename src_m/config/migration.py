@@ -1,5 +1,5 @@
 """配置版本迁移
-支持从PPC5配置迁移到PPC6/PPC9
+支持从PPC5配置迁移到PPC6/PPC10
 """
 
 import configparser
@@ -17,7 +17,7 @@ VERSION_MAPPING = {
 
 
 class ConfigMigrator:
-    """配置迁移器"""
+    """配置迁移"""
 
     def migrate(self, source_path: Path, source_version: str = "5.0") -> Dict[str, Any]:
         """执行迁移"""
@@ -32,7 +32,7 @@ class ConfigMigrator:
         logger.info("开始迁移PPC5配置到PPC6格式...")
 
         if not v5_config_path.exists():
-            logger.warning("PPC5配置文件不存在: %s", v5_config_path)
+            logger.warning("PPC5配置文件不存在 %s", v5_config_path)
             return {}
 
         v5_config = self._load_v5_config(v5_config_path)
@@ -45,13 +45,13 @@ class ConfigMigrator:
         return v6_config
 
     def migrate_v8_to_v9(self, v8_config_path: Path) -> Dict[str, Any]:
-        """PPC8配置迁移到PPC9"""
+        """PPC8配置迁移到PPC10"""
         import yaml as _yaml
 
-        logger.info("开始迁移PPC8配置到PPC9格式...")
+        logger.info("开始迁移PPC8配置到PPC10格式...")
 
         if not v8_config_path.exists():
-            logger.warning("PPC8配置文件不存在: %s", v8_config_path)
+            logger.warning("PPC8配置文件不存在 %s", v8_config_path)
             return {}
 
         try:
@@ -143,7 +143,7 @@ class ConfigMigrator:
                 "max_segment_length": self._get_nested(v5_config, "tts.max_segment_length", 2500),
                 "min_segment_length": 100,
                 "enable_segmentation": True,
-                "punctuations": ['。', '！', '？', '；', '，', '、', '……', '——', '.', '!', '?', ';', ',', '\n'],
+                "punctuations": ['，', '。', '！', '？', '；', '：', '……', '——', '.', '!', '?', ';', ',', '\n'],
                 "segment_silence_ms": 100,
                 "segment_filename_format": "{stem}_seg_{index:03d}{suffix}",
                 "buffer_size": 32,
@@ -221,7 +221,7 @@ class ConfigMigrator:
 
     @staticmethod
     def _get_nested(data: Dict[str, Any], path: str, default: Any = None) -> Any:
-        """安全获取嵌套字典值"""
+        """安全获取嵌套字典"""
         keys = path.split(".")
         current = data
         for key in keys:

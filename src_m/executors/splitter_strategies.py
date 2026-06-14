@@ -3,14 +3,16 @@
 Contains all the pattern matching, splitting logic, and content handling.
 """
 
+import logging
 import re
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 
 from ..config.schema import RuleType, ConditionType
 from .splitter_core import ChapterInfo, VolumeInfo
 
-logger = __import__('logging').getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _merge_patterns(executor, preset: str) -> List[tuple]:
@@ -563,7 +565,7 @@ async def split_directory(
 ):
     """批量分割目录下的文件"""
     executor._check_initialized()
-    start_time = __import__('time').time()
+    start_time = time.time()
 
     files = sorted(input_dir.glob(pattern))
     results = []
@@ -578,17 +580,20 @@ async def split_directory(
 
     from ..reliability import ExecutionMetrics
     metrics = ExecutionMetrics(
-        duration=__import__('time').time() - start_time,
+        duration=time.time() - start_time,
         bytes_processed=succeeded,
         request_count=failed
     )
 
+    from ..reliability import ExecutionResult
+    from ..core.exceptions import ErrorCodes
+
     if failed == 0:
-        return __import__('..reliability', fromlist=['ExecutionResult']).ExecutionResult.success(results, metrics)
+        return ExecutionResult.ok(results, metrics)
     elif succeeded > 0:
-        return __import__('..reliability', fromlist=['ExecutionResult']).ExecutionResult.partial(results, [f"{failed} 个文件分割失败"], metrics)
+        return ExecutionResult.partial(results, [f"{failed} 个文件分割失败"], metrics)
     else:
-        return __import__('..reliability', fromlist=['ExecutionResult']).ExecutionResult.failure(
+        return ExecutionResult.fail(
             error="所有文件分割失败",
-            error_code=__import__('..core.errors', fromlist=['ErrorCodes']).ErrorCodes.BATCH_PROCESSING_FAILED.value
+            error_code=ErrorCodes.BATCH_PROCESSING_FAILED.value
         )

@@ -1,23 +1,32 @@
-"""分析命令 - 深度系统分析与健康评分。
+"""分析命令 - 统一系统健康检查与深度分析。
 
-提供性能、配置、错误模式、依赖、网络、资源和代码质量分析，
-支持自动修复、历史对比、持续监控和 JSON/HTML 导出。
+提供两种模式：
+- 默认（不带 --deep）：执行轻量级系统健康检查
+  （系统环境、依赖、网络、文件系统、系统资源、配置验证），
+  支持 --fix 交互式一键修复和 --export 导出 JSON 报告。
+- 深度模式（--deep）：对性能瓶颈、配置冲突、错误模式、依赖、网络、
+  资源和代码质量进行深度分析，生成健康评分和修复建议。
+两种模式可同时启用（既运行健康检查又运行深度分析）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import platform
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from rich.box import SIMPLE
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
-from rich.box import SIMPLE
 
 from ..output import OutputFormatter, Icons, BrandColors
+from ...config.manager import get_default_config_dir
 from ...analysis.engine import AnalysisEngine
 from ...analysis.models import (
     AnalysisCategory,
@@ -35,7 +44,7 @@ from ...analysis.analyzers import (
     CodeQualityAnalyzer,
 )
 from ...analysis.history import AnalysisHistoryManager
-from ...analysis.diff import AnalysisDiffer, compute_diff
+from ...analysis.diff import compute_diff
 from ...analysis.html_report import HTMLReportGenerator
 
 
@@ -50,6 +59,48 @@ class AnalyzeIcons:
     NETWORK = "[NET]"
     RESOURCE = "[RES]"
     QUALITY = "[QLT]"
+
+    SUCCESS = "+"
+    ERROR = "-"
+    WARNING = "!"
+    INFO = "i"
+
+    SYSTEM_ENV = "[ENV]"
+    DEPENDENCIES = "[DEP]"
+    NETWORK_CHECK = "[NET]"
+    FILESYSTEM = "[DIR]"
+    SYSTEM_RESOURCES = "[RES]"
+    CONFIG_CHECK = "[CFG]"
+
+    PYTHON = "PY"
+    OS = "OS"
+    ARCH = "ARC"
+    VENV = "VEN"
+    PACKAGE = "PKG"
+    TTS_SERVICE = "TTS"
+    API = "API"
+    CONFIG_DIR = "CFGD"
+    CONFIG_FILE = "CFGF"
+    OUTPUT_DIR = "OUTD"
+    DISK = "DSK"
+    PERMISSION = "PRM"
+    CPU = "CPU"
+    MEMORY = "MEM"
+    CPU_USAGE = "CPUU"
+    TTS_VOICE = "TTSS"
+    CONCURRENCY = "CONC"
+    RETRY = "RET"
+    TEXT_NORM = "TXN"
+
+
+class HealthCheckCategory:
+    """健康检查分类定义。"""
+    SYSTEM_ENV = "system_env"
+    DEPENDENCIES = "dependencies"
+    NETWORK = "network"
+    FILESYSTEM = "filesystem"
+    SYSTEM_RESOURCES = "system_resources"
+    CONFIG = "config"
 
 
 SEVERITY_COLORS = {
@@ -134,6 +185,10 @@ async def _run_analysis(
 
     return await engine.run()
 
+
+# -----------------------------------------------------------------------------
+# 深度分析（原有）显示与修复逻辑
+# -----------------------------------------------------------------------------
 
 def _display_issues(
     output: OutputFormatter,
@@ -362,7 +417,7 @@ def _display_results(
     categories_info: List[str],
 ) -> None:
     output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    output.console.print(f"[bold white]  {Icons.CHART} 分析结果[/bold white]")
+    output.console.print(f"[bold white]  {Icons.CHART} 深度分析结果[/bold white]")
     output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
 
     _display_health_score(output, report.score)
@@ -417,7 +472,7 @@ def _apply_fixes_interactive(
 
 def _export_json_report(
     output: OutputFormatter,
-    report: HealthReport,
+    report_or_results: Any,
     export: str,
 ) -> None:
     try:
@@ -425,16 +480,29 @@ def _export_json_report(
         if not export_path.suffix:
             export_path = export_path.with_suffix(".json")
 
+        if isinstance(report_or_results, HealthReport):
+            data = report_or_results.to_dict()
+            extra = {
+                "问题总数": str(len(report_or_results.issues)),
+                "健康评分": f"{report_or_results.score}/100",
+            }
+        else:
+            data = report_or_results
+            summary = data.get("summary", {}) if isinstance(data, dict) else {}
+            extra = {
+                "检查项数": str(summary.get("total", "-")),
+                "通过率": f"{summary.get('pass_rate', 0):.1f}%" if isinstance(summary, dict) else "-",
+            }
+
         with open(export_path, "w", encoding="utf-8") as f:
-            json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
         output.success_panel(
             f"报告已导出: {export_path}",
             title="导出成功",
             details={
                 "文件路径": str(export_path),
-                "问题总数": str(len(report.issues)),
-                "健康评分": f"{report.score}/100",
+                **extra,
             },
         )
     except Exception as e:
@@ -607,52 +675,620 @@ def _handle_watch_mode(
         output.console.print(f"\n[dim]监控已停止[/dim]")
 
 
-def _handle_history(
-    output: OutputFormatter,
-    args: List[str],
-) -> None:
-    history_mgr = AnalysisHistoryManager()
+# -----------------------------------------------------------------------------
+# 健康检查（来自 check.py）逻辑
+# -----------------------------------------------------------------------------
 
-    if not args or args[0] == "list":
-        records = history_mgr.list_reports(limit=30)
-        if not records:
-            output.console.print("[dim]暂无历史记录[/dim]")
-            return
+class _SystemChecker:
+    """系统检查器 - 执行系统诊断检查（轻量级健康检查模式）。"""
 
-        table = Table(
-            show_header=True,
-            box=SIMPLE,
-            border_style=BrandColors.PRIMARY,
+    def __init__(self, output: OutputFormatter):
+        self.output = output
+        self.results: Dict[str, List[Dict]] = {
+            HealthCheckCategory.SYSTEM_ENV: [],
+            HealthCheckCategory.DEPENDENCIES: [],
+            HealthCheckCategory.NETWORK: [],
+            HealthCheckCategory.FILESYSTEM: [],
+            HealthCheckCategory.SYSTEM_RESOURCES: [],
+            HealthCheckCategory.CONFIG: [],
+        }
+        self.fix_suggestions: Dict[str, List[str]] = {}
+
+    def add_result(
+        self,
+        category: str,
+        name: str,
+        status: bool,
+        detail: str,
+        icon: str = "",
+        suggestion: Optional[str] = None,
+    ):
+        self.results[category].append({
+            "name": name,
+            "status": status,
+            "detail": detail,
+            "icon": icon,
+        })
+
+        if not status and suggestion:
+            key = f"{category}:{name}"
+            self.fix_suggestions[key] = suggestion
+
+    def check_system_environment(self):
+        self.output.title(f"{Icons.GEAR} 系统环境检查")
+
+        python_version = platform.python_version()
+        python_ok = sys.version_info >= (3, 8)
+        self.add_result(
+            HealthCheckCategory.SYSTEM_ENV,
+            "Python 版本",
+            python_ok,
+            f"{python_version} (要求：3.8+)",
+            AnalyzeIcons.PYTHON,
+            "请升级 Python 到 3.8 或更高版本",
         )
-        table.add_column("ID", width=16)
-        table.add_column("时间", width=20)
-        table.add_column("评分", width=8)
-        table.add_column("问题数", width=8)
 
-        for record in records:
-            record_id = record.get("id", "-")
-            timestamp = record.get("timestamp", "-")
-            score = record.get("score", "-")
-            issue_count = record.get("issue_count", "-")
-            table.add_row(str(record_id), str(timestamp), str(score), str(issue_count))
+        os_info = f"{platform.system()} {platform.release()}"
+        self.add_result(
+            HealthCheckCategory.SYSTEM_ENV,
+            "操作系统",
+            True,
+            os_info,
+            AnalyzeIcons.OS,
+        )
 
-        output.console.print(table)
+        arch = platform.machine()
+        self.add_result(
+            HealthCheckCategory.SYSTEM_ENV,
+            "系统架构",
+            True,
+            f"{arch} ({platform.architecture()[0]})",
+            AnalyzeIcons.ARCH,
+        )
 
-    elif args[0] == "show" and len(args) > 1:
-        report_id = args[1]
-        report = history_mgr.get_report(report_id)
-        if report is None:
-            output.error(f"未找到记录: {report_id}")
-            return
+        in_venv = sys.prefix != sys.base_prefix
+        venv_status = "已激活" if in_venv else "未激活"
+        self.add_result(
+            HealthCheckCategory.SYSTEM_ENV,
+            "虚拟环境",
+            True,
+            venv_status,
+            AnalyzeIcons.VENV,
+            None,
+        )
 
-        _display_results(output, report, [])
+    def check_dependencies(self):
+        self.output.title(f"{Icons.BOOK} 依赖包检查")
+
+        required_deps = {
+            "typer": ("Typer", AnalyzeIcons.PACKAGE, "命令行框架"),
+            "rich": ("Rich", AnalyzeIcons.PACKAGE, "终端美化库"),
+            "edge_tts": ("Edge TTS", AnalyzeIcons.PACKAGE, "TTS 引擎"),
+            "pydub": ("PyDub", AnalyzeIcons.PACKAGE, "音频处理"),
+        }
+
+        for pkg_name, (display_name, icon, desc) in required_deps.items():
+            try:
+                import importlib
+                module = importlib.import_module(pkg_name)
+
+                try:
+                    version = getattr(module, "__version__", "unknown")
+                    if version == "unknown":
+                        from importlib.metadata import version as _pkg_version
+                        version = _pkg_version(pkg_name)
+                except Exception:
+                    version = "已安装"
+
+                self.add_result(
+                    HealthCheckCategory.DEPENDENCIES,
+                    display_name,
+                    True,
+                    f"{version} - {desc}",
+                    icon,
+                )
+            except ImportError:
+                self.add_result(
+                    HealthCheckCategory.DEPENDENCIES,
+                    display_name,
+                    False,
+                    "未安装",
+                    icon,
+                    f"运行 pip install {pkg_name} 安装",
+                )
+
+        optional_deps = {
+            "psutil": ("PSUtil", AnalyzeIcons.PACKAGE, "系统资源监控"),
+        }
+
+        self.output.info("\n可选依赖:")
+        for pkg_name, (display_name, icon, desc) in optional_deps.items():
+            try:
+                import importlib
+                module = importlib.import_module(pkg_name)
+
+                try:
+                    version = getattr(module, "__version__", "unknown")
+                    if version == "unknown":
+                        from importlib.metadata import version as _pkg_version
+                        version = _pkg_version(pkg_name)
+                except Exception:
+                    version = "已安装"
+
+                self.add_result(
+                    HealthCheckCategory.DEPENDENCIES,
+                    display_name,
+                    True,
+                    f"{version} - {desc}",
+                    icon,
+                )
+            except ImportError:
+                self.add_result(
+                    HealthCheckCategory.DEPENDENCIES,
+                    display_name,
+                    False,
+                    "未安装（可选）",
+                    icon,
+                    f"运行 pip install {pkg_name} 安装（可选）",
+                )
+
+    async def _check_tts_service(self) -> int:
+        try:
+            import edge_tts
+            voices = await edge_tts.list_voices()
+            return len(voices)
+        except Exception:
+            return 0
+
+    def check_network_connectivity(self):
+        self.output.title(f"{Icons.LINK} 网络连通性检查")
+
+        try:
+            voice_count = asyncio.run(self._check_tts_service())
+            tts_ok = voice_count > 0
+            self.add_result(
+                HealthCheckCategory.NETWORK,
+                "TTS 服务",
+                tts_ok,
+                f"{'正常' if tts_ok else '异常'} - {voice_count} 个语音" if tts_ok else "无法连接",
+                AnalyzeIcons.TTS_SERVICE,
+                "检查网络连接或代理设置" if not tts_ok else None,
+            )
+        except Exception as e:
+            self.add_result(
+                HealthCheckCategory.NETWORK,
+                "TTS 服务",
+                False,
+                f"检查失败：{str(e)}",
+                AnalyzeIcons.TTS_SERVICE,
+                "检查网络连接或稍后重试",
+            )
+
+        self.add_result(
+            HealthCheckCategory.NETWORK,
+            "API 端点",
+            True,
+            "可达（模拟检查）",
+            AnalyzeIcons.API,
+        )
+
+    def _get_config_dir(self) -> Path:
+        return get_default_config_dir()
+
+    def check_filesystem(self):
+        self.output.title(f"{Icons.FOLDER} 文件系统检查")
+
+        config_dir = self._get_config_dir()
+        config_exists = config_dir.exists()
+        self.add_result(
+            HealthCheckCategory.FILESYSTEM,
+            "配置目录",
+            config_exists,
+            str(config_dir),
+            AnalyzeIcons.CONFIG_DIR,
+            "可运行 'ppc10 config init' 创建配置目录" if not config_exists else None,
+        )
+
+        config_file = config_dir / "config.yml"
+        config_file_exists = config_file.exists()
+        self.add_result(
+            HealthCheckCategory.FILESYSTEM,
+            "配置文件",
+            config_file_exists,
+            str(config_file),
+            AnalyzeIcons.CONFIG_FILE,
+            "可运行 'ppc10 config init' 创建配置文件" if not config_file_exists else None,
+        )
+
+        output_dir = Path.cwd() / "output"
+        output_exists = output_dir.exists()
+        self.add_result(
+            HealthCheckCategory.FILESYSTEM,
+            "输出目录",
+            output_exists,
+            str(output_dir),
+            AnalyzeIcons.OUTPUT_DIR,
+            f"运行 mkdir {output_dir} 创建目录" if not output_exists else None,
+        )
+
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage(str(Path.home()))
+            free_gb = free / (1024 ** 3)
+            disk_ok = free_gb > 1.0
+            self.add_result(
+                HealthCheckCategory.FILESYSTEM,
+                "磁盘空间",
+                disk_ok,
+                f"可用：{free_gb:.2f} GB",
+                AnalyzeIcons.DISK,
+                "清理磁盘空间以确保正常运行" if not disk_ok else None,
+            )
+        except Exception as e:
+            self.add_result(
+                HealthCheckCategory.FILESYSTEM,
+                "磁盘空间",
+                False,
+                f"检查失败：{str(e)}",
+                AnalyzeIcons.DISK,
+            )
+
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            test_file = config_dir / ".permission_test"
+            test_file.touch(exist_ok=True)
+            test_file.unlink()
+            permission_ok = True
+        except PermissionError:
+            permission_ok = False
+        except Exception:
+            permission_ok = False
+
+        self.add_result(
+            HealthCheckCategory.FILESYSTEM,
+            "目录权限",
+            permission_ok,
+            "正常" if permission_ok else "权限不足",
+            AnalyzeIcons.PERMISSION,
+            "以管理员权限运行或修改目录权限" if not permission_ok else None,
+        )
+
+    def check_system_resources(self):
+        self.output.title(f"{Icons.CHART} 系统资源检查")
+
+        cpu_count = os.cpu_count() or 1
+        self.add_result(
+            HealthCheckCategory.SYSTEM_RESOURCES,
+            "CPU 核心",
+            True,
+            f"{cpu_count} 核心",
+            AnalyzeIcons.CPU,
+        )
+
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            total_gb = memory.total / (1024 ** 3)
+            available_gb = memory.available / (1024 ** 3)
+            memory_ok = available_gb > 1.0
+            self.add_result(
+                HealthCheckCategory.SYSTEM_RESOURCES,
+                "系统内存",
+                memory_ok,
+                f"总计：{total_gb:.2f} GB, 可用：{available_gb:.2f} GB",
+                AnalyzeIcons.MEMORY,
+                "关闭不必要的程序释放内存" if not memory_ok else None,
+            )
+        except ImportError:
+            self.add_result(
+                HealthCheckCategory.SYSTEM_RESOURCES,
+                "系统内存",
+                False,
+                "无法检测（未安装 psutil）",
+                AnalyzeIcons.MEMORY,
+                "运行 pip install psutil 安装",
+            )
+
+        try:
+            import psutil
+            cpu_percent = psutil.cpu_percent(interval=0.5)
+            cpu_ok = cpu_percent < 90
+            self.add_result(
+                HealthCheckCategory.SYSTEM_RESOURCES,
+                "CPU 使用率",
+                cpu_ok,
+                f"{cpu_percent:.1f}%",
+                AnalyzeIcons.CPU_USAGE,
+                "关闭高负载程序" if not cpu_ok else None,
+            )
+        except ImportError:
+            pass
+
+    def check_config(self):
+        self.output.title(f"{Icons.GEAR} 配置验证")
+
+        try:
+            from ...config.manager import ConfigManager
+            config_manager = ConfigManager()
+
+            try:
+                config = config_manager.get_config()
+                config_ok = True
+                config_detail = f"版本：{config.version}"
+            except Exception as e:
+                config_ok = False
+                config_detail = f"加载失败：{str(e)}"
+
+            self.add_result(
+                HealthCheckCategory.CONFIG,
+                "配置加载",
+                config_ok,
+                config_detail,
+                AnalyzeIcons.SUCCESS,
+                "运行 'ppc10 config init' 初始化配置" if not config_ok else None,
+            )
+
+            if config_ok:
+                tts_voice = config.tts.voice
+                voice_ok = bool(tts_voice)
+                self.add_result(
+                    HealthCheckCategory.CONFIG,
+                    "TTS 语音",
+                    voice_ok,
+                    tts_voice if voice_ok else "未设置",
+                    AnalyzeIcons.TTS_VOICE,
+                    "运行 'ppc10 config set tts.voice <语音名>' 设置" if not voice_ok else None,
+                )
+
+                concurrency = config.tts.concurrency
+                concurrency_ok = 1 <= concurrency <= 10
+                self.add_result(
+                    HealthCheckCategory.CONFIG,
+                    "并发数",
+                    concurrency_ok,
+                    str(concurrency),
+                    AnalyzeIcons.CONCURRENCY,
+                    "并发数应在 1-10 之间" if not concurrency_ok else None,
+                )
+
+                try:
+                    tts_retries = config.tts.retries
+                    reliability_retries = config.reliability.tts_retry.max_retries
+                    retries_ok = tts_retries >= 0 and reliability_retries >= 0
+                    self.add_result(
+                        HealthCheckCategory.CONFIG,
+                        "TTS 重试次数",
+                        retries_ok,
+                        f"TTS={tts_retries}, 可靠性={reliability_retries}",
+                        AnalyzeIcons.RETRY,
+                    )
+                except AttributeError as e:
+                    self.add_result(
+                        HealthCheckCategory.CONFIG,
+                        "TTS 重试次数",
+                        False,
+                        f"配置错误：{str(e)}",
+                        AnalyzeIcons.RETRY,
+                    )
+
+                text_norm = config.tts.text_normalization
+                norm_enabled = text_norm.enable_text_normalization
+                self.add_result(
+                    HealthCheckCategory.CONFIG,
+                    "文本规范化",
+                    True,
+                    f"{'启用' if norm_enabled else '禁用'}",
+                    AnalyzeIcons.TEXT_NORM,
+                )
+
+        except ImportError:
+            self.add_result(
+                HealthCheckCategory.CONFIG,
+                "配置模块",
+                False,
+                "无法导入配置模块",
+                AnalyzeIcons.ERROR,
+            )
+        except Exception as e:
+            self.add_result(
+                HealthCheckCategory.CONFIG,
+                "配置检查",
+                False,
+                f"检查失败：{str(e)}",
+                AnalyzeIcons.ERROR,
+                "查看详细日志获取更多信息",
+            )
+
+    def get_all_results(self) -> Dict[str, Any]:
+        all_checks = []
+        for category_results in self.results.values():
+            all_checks.extend(category_results)
+
+        total = len(all_checks)
+        passed = sum(1 for c in all_checks if c["status"])
+        failed = total - passed
+        pass_rate = (passed / total * 100) if total > 0 else 0
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "summary": {
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "pass_rate": round(pass_rate, 2),
+            },
+            "categories": {
+                name: results for name, results in self.results.items()
+            },
+            "suggestions": self.fix_suggestions,
+        }
+
+
+def _run_health_check(
+    output: OutputFormatter,
+    full: bool = False,
+) -> Dict[str, Any]:
+    """运行轻量级健康检查，返回结果字典。"""
+    is_windows = sys.platform == "win32"
+    gear_icon = "⚙" if not is_windows else "[GEAR]"
+
+    output.title(f"{gear_icon} PPC10 系统健康检查")
+
+    checker = _SystemChecker(output)
+    checker.check_system_environment()
+    checker.check_dependencies()
+    checker.check_network_connectivity()
+    checker.check_filesystem()
+    checker.check_system_resources()
+    checker.check_config()
+
+    results = checker.get_all_results()
+
+    output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
+    output.console.print(f"[bold white]  {Icons.CHART} 检查结果汇总[/bold white]")
+    output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
+
+    for category_name, category_results in checker.results.items():
+        if not category_results:
+            continue
+
+        category_labels = {
+            HealthCheckCategory.SYSTEM_ENV: "系统环境",
+            HealthCheckCategory.DEPENDENCIES: "依赖包",
+            HealthCheckCategory.NETWORK: "网络连通性",
+            HealthCheckCategory.FILESYSTEM: "文件系统",
+            HealthCheckCategory.SYSTEM_RESOURCES: "系统资源",
+            HealthCheckCategory.CONFIG: "配置验证",
+        }
+
+        category_icons = {
+            HealthCheckCategory.SYSTEM_ENV: AnalyzeIcons.SYSTEM_ENV,
+            HealthCheckCategory.DEPENDENCIES: AnalyzeIcons.DEPENDENCIES,
+            HealthCheckCategory.NETWORK: AnalyzeIcons.NETWORK_CHECK,
+            HealthCheckCategory.FILESYSTEM: AnalyzeIcons.FILESYSTEM,
+            HealthCheckCategory.SYSTEM_RESOURCES: AnalyzeIcons.SYSTEM_RESOURCES,
+            HealthCheckCategory.CONFIG: AnalyzeIcons.CONFIG_CHECK,
+        }
+
+        checks = [
+            {
+                "name": item["name"],
+                "status": item["status"],
+                "detail": item["detail"],
+                "icon": item["icon"],
+            }
+            for item in category_results
+        ]
+
+        label = category_labels.get(category_name, category_name)
+        icon = category_icons.get(category_name, "")
+        output.check_result_enhanced(checks, title=f"{icon} {label}", show_summary=False)
         output.console.print()
-        _export_html_report(output, report, f"analysis_history_{report_id}.html", previous=None)
+
+    summary = results["summary"]
+    pass_rate = summary["pass_rate"]
+
+    if pass_rate == 100:
+        summary_color = BrandColors.SUCCESS
+        summary_icon = Icons.SUCCESS
+        summary_text = "优秀"
+    elif pass_rate >= 70:
+        summary_color = BrandColors.WARNING
+        summary_icon = Icons.WARNING
+        summary_text = "良好"
     else:
-        output.error("用法: ppc9 analyze history list|show <id>")
+        summary_color = BrandColors.ERROR
+        summary_icon = Icons.ERROR
+        summary_text = "需改进"
+
+    summary_panel = Panel(
+        f"[bold]总计:[/bold] {summary['total']}  "
+        f"[{BrandColors.SUCCESS}]通过:[/{BrandColors.SUCCESS}] {summary['passed']}  "
+        f"[{BrandColors.ERROR}]失败:[/{BrandColors.ERROR}] {summary['failed']}  "
+        f"[bold {summary_color}]通过率:[/bold {summary_color}] {pass_rate:.1f}%  "
+        f"[bold {summary_color}]{summary_icon} 评价：{summary_text}[/bold {summary_color}]",
+        title="[bold]检查汇总[/bold]",
+        border_style=summary_color,
+        box=SIMPLE,
+    )
+    output.console.print(summary_panel)
+
+    if checker.fix_suggestions:
+        output.console.print(f"\n[bold {BrandColors.ACCENT}]{'─' * 60}[/bold {BrandColors.ACCENT}]")
+        output.console.print(f"[bold white]  {Icons.INFO} 修复建议[/bold white]")
+        output.console.print(f"[bold {BrandColors.ACCENT}]{'─' * 60}[/bold {BrandColors.ACCENT}]\n")
+
+        for key, suggestion in checker.fix_suggestions.items():
+            category, name = key.split(":", 1)
+            output.console.print(f"[yellow]{AnalyzeIcons.WARNING} {name}:[/yellow]")
+            output.console.print(f"  [green]→ {suggestion}[/green]\n")
+
+    return {
+        "results": results,
+        "checker": checker,
+    }
+
+
+def _apply_health_fixes(
+    output: OutputFormatter,
+    checker: _SystemChecker,
+) -> int:
+    """交互式应用健康检查发现的可一键修复项。"""
+    try:
+        if output.console.is_terminal and not Confirm.ask(
+            f"\n[{BrandColors.INFO}]是否执行一键修复？[/{BrandColors.INFO}]",
+            default=False,
+        ):
+            output.console.print("[dim]已跳过自动修复[/dim]")
+            return 0
+    except Exception:
+        pass
+
+    output.console.print(f"\n[bold {BrandColors.PRIMARY}]执行修复...[/bold {BrandColors.PRIMARY}]\n")
+
+    fixed_count = 0
+    for key, suggestion in checker.fix_suggestions.items():
+        category, name = key.split(":", 1)
+
+        if name == "配置目录":
+            config_dir = checker._get_config_dir()
+            try:
+                config_dir.mkdir(parents=True, exist_ok=True)
+                output.success(f"已创建配置目录：{config_dir}")
+                fixed_count += 1
+            except Exception as e:
+                output.error(f"创建配置目录失败：{e}")
+
+        elif name == "配置文件":
+            config_dir = checker._get_config_dir()
+            config_file = config_dir / "config.yml"
+            try:
+                config_dir.mkdir(parents=True, exist_ok=True)
+                from ...config.presets import COMMENTED_YAML_TEMPLATE
+                with open(config_file, "w", encoding="utf-8") as f:
+                    f.write(COMMENTED_YAML_TEMPLATE)
+                output.success(f"已创建配置文件：{config_file}")
+                fixed_count += 1
+            except Exception as e:
+                output.error(f"创建配置文件失败：{e}")
+
+        elif name == "输出目录":
+            output_dir = Path.cwd() / "output"
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output.success(f"已创建输出目录：{output_dir}")
+                fixed_count += 1
+            except Exception as e:
+                output.error(f"创建输出目录失败：{e}")
+
+    output.console.print(
+        f"\n[bold {BrandColors.SUCCESS}]完成修复：{fixed_count} 项[/bold {BrandColors.SUCCESS}]"
+    )
+    return fixed_count
 
 
 def handle_analyze(
+    deep: bool = False,
     performance: bool = False,
     config: bool = False,
     errors: bool = False,
@@ -666,15 +1302,36 @@ def handle_analyze(
     watch: bool = False,
     interval: int = 60,
     export_html: Optional[str] = None,
-    action: Optional[str] = None,
+    full: bool = False,
 ) -> None:
+    """统一处理 analyze 命令 - 健康检查 + 深度分析。
+
+    默认（不传 --deep）运行轻量级系统健康检查；
+    --deep 启用深度分析；两者可叠加。
+    """
     output = OutputFormatter(verbose=False)
 
-    if action == "history":
-        _handle_history(output, [])
+    deep_flags_set = any(
+        [performance, config, errors, dependency, network, resource, quality, diff, watch]
+    )
+    run_deep = deep or deep_flags_set
+
+    if not run_deep:
+        info = _run_health_check(output, full=full)
+        results = info["results"]
+        checker = info["checker"]
+
+        if fix:
+            _apply_health_fixes(output, checker)
+
+        if export:
+            _export_json_report(output, results, export)
+
         return
 
-    run_all = not any([performance, config, errors, dependency, network, resource, quality])
+    run_all = not any(
+        [performance, config, errors, dependency, network, resource, quality]
+    )
     if run_all:
         performance = True
         config = True
@@ -687,7 +1344,7 @@ def handle_analyze(
     is_windows = sys.platform == "win32"
     gear_icon = "⚙" if not is_windows else "[GEAR]"
 
-    output.title(f"{gear_icon} PPC9 系统分析")
+    output.title(f"{gear_icon} PPC10 系统深度分析")
 
     categories = []
     if performance:
@@ -738,7 +1395,9 @@ def handle_analyze(
         )
         return
 
-    report = asyncio.run(_run_analysis(performance, config, errors, dependency, network, resource, quality))
+    report = asyncio.run(
+        _run_analysis(performance, config, errors, dependency, network, resource, quality)
+    )
 
     _save_history(report)
 

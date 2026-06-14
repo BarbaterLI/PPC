@@ -1,4 +1,4 @@
-"""User-defined extension framework for PPC9 distributed TTS system.
+"""User-defined extension framework for PPC10 distributed TTS system.
 
 This package provides extension points and loading mechanisms for users
 to create custom extensions that integrate with the distributed system.

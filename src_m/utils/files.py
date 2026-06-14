@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import logging
 import zipfile
 from pathlib import Path
@@ -24,7 +25,7 @@ def safe_extract_zip(zip_file: zipfile.ZipFile, target_dir: Path) -> None:
         target_dir_for_file = extracted_path.parent
         target_dir_for_file.mkdir(parents=True, exist_ok=True)
         with zip_file.open(info) as src, open(extracted_path, "wb") as dst:
-            dst.write(src.read())
+            shutil.copyfileobj(src, dst)
 
 
 def detect_encoding(

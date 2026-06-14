@@ -43,7 +43,6 @@ class PoolStats(BasePoolStats):
     total_timeouts: int = 0
     total_health_checks: int = 0
     failed_health_checks: int = 0
-    total_acquire_count: int = 0
     last_validate_time: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -137,8 +136,8 @@ class ConnectionPool(BaseObjectPool[T]):
 
                 total_connections = len(self._active_connections) + len(self._idle_connections)
                 if total_connections < self.config.max_connections:
-                    connection = await self._create_new_connection(host)
-                    self._acquire_start_times[self._last_conn_id] = start_time
+                    connection, conn_id = await self._create_new_connection(host)
+                    self._acquire_start_times[conn_id] = start_time
                     self.stats.total_acquires += 1
                     self.stats.total_wait_time_ms += (time.time() - start_time) * 1000
                     self.stats.cache_misses += 1
@@ -306,9 +305,8 @@ class ConnectionPool(BaseObjectPool[T]):
             },
         }
 
-    async def _create_new_connection(self, host: Optional[str] = None) -> T:
+    async def _create_new_connection(self, host: Optional[str] = None) -> tuple:
         conn_id = self._generate_object_id()
-        self._last_conn_id = conn_id
 
         try:
             connection = await self._create_connection()
@@ -323,7 +321,7 @@ class ConnectionPool(BaseObjectPool[T]):
             if host:
                 self._add_to_host_mapping(conn_id, host)
             self.stats.total_connections_created += 1
-            return connection
+            return connection, conn_id
         except Exception as e:
             self.stats.total_errors += 1
             logger.error(f"Failed to create connection: {e}")
@@ -385,37 +383,31 @@ class ConnectionPool(BaseObjectPool[T]):
             if self.total_connections >= self.config.max_connections:
                 break
             try:
-                conn_id = self._generate_object_id()
-                connection = await self._create_connection()
+                connection, conn_id = await self._create_new_connection("")
                 connections_created.append((conn_id, connection))
             except Exception as e:
                 logger.warning(f"Failed to create warmup connection: {e}")
 
         async with self._lock:
             for conn_id, connection in connections_created:
-                self._connections[conn_id] = ConnectionInfo(
-                    connection_id=conn_id,
-                    created_at=time.time(),
-                    last_used_at=time.time(),
-                    is_active=False,
-                )
+                self._active_connections.pop(conn_id, None)
+                info = self._connections.get(conn_id)
+                if info:
+                    info.is_active = False
                 self._idle_connections[conn_id] = connection
-                self.stats.total_connections_created += 1
+                self._add_to_host_mapping(conn_id, "")
 
         logger.info(f"Warmup complete, idle connections: {self.idle_connections}")
 
     async def _create_and_idle_connection(self) -> None:
         try:
-            conn_id = self._generate_object_id()
-            connection = await self._create_connection()
-            self._connections[conn_id] = ConnectionInfo(
-                connection_id=conn_id,
-                created_at=time.time(),
-                last_used_at=time.time(),
-                is_active=False,
-            )
+            connection, conn_id = await self._create_new_connection("")
+            self._active_connections.pop(conn_id, None)
+            info = self._connections.get(conn_id)
+            if info:
+                info.is_active = False
             self._idle_connections[conn_id] = connection
-            self.stats.total_connections_created += 1
+            self._add_to_host_mapping(conn_id, "")
         except Exception as e:
             logger.warning(f"Failed to create warmup connection: {e}")
 

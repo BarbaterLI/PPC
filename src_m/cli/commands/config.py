@@ -5,9 +5,9 @@ from pathlib import Path
 
 from ...config import ConfigManager, get_preset, get_preset_names
 from ..output import OutputFormatter, config_wizard, Icons, BrandColors
+from ..errors import CLIError, ErrorCode as E
 from rich.table import Table
-from rich.box import ROUNDED, SIMPLE
-from rich.panel import Panel
+from rich.box import SIMPLE
 
 
 def handle_config(
@@ -26,10 +26,12 @@ def handle_config(
     output.show_banner()
 
     output.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    output.console.print(f"[bold white]  {Icons.GEAR} PPC9 配置管理[/bold white]")
+    output.console.print(f"[bold white]  {Icons.GEAR} PPC10 配置管理[/bold white]")
     output.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
 
     config_manager = ConfigManager()
+
+    config_existed_before = config_manager.config_source_exists
 
     if action == "path":
         output.console.print(f"[bold]配置目录:[/bold] [cyan]{config_manager.config_dir}[/cyan]")
@@ -90,13 +92,11 @@ def handle_config(
             val = config_manager.get(key)
             output.console.print(f"\n[bold]{key}:[/bold] [cyan]{val}[/cyan]")
         else:
-            output.error_panel(
+            raise CLIError(
+                E.E_BUSINESS,
                 "请指定配置键 (--key)",
-                title="参数错误",
-                error_type="ValueError",
-                suggestion="使用 'ppc9 config get --key <配置键>' 获取配置值"
+                hint="使用 'ppc10 config get --key <配置键>' 获取配置值",
             )
-            sys.exit(1)
 
     elif action == "set":
         if key and value:
@@ -114,13 +114,11 @@ def handle_config(
                     details={"配置键": key, "值": value}
                 )
         else:
-            output.error_panel(
+            raise CLIError(
+                E.E_BUSINESS,
                 "请指定配置键 (--key) 和值 (--value)",
-                title="参数错误",
-                error_type="ValueError",
-                suggestion="使用 'ppc9 config set --key <配置键> --value <值>' 设置配置"
+                hint="使用 'ppc10 config set --key <配置键> --value <值>' 设置配置",
             )
-            sys.exit(1)
 
     elif action == "reset":
         preset_name = preset or "balanced"
@@ -133,13 +131,11 @@ def handle_config(
             )
         else:
             available_presets = ", ".join(get_preset_names())
-            output.error_panel(
+            raise CLIError(
+                E.E_BUSINESS,
                 f"未知预设：{preset_name}",
-                title="参数错误",
-                error_type="ValueError",
-                suggestion=f"可用预设：{available_presets}"
+                hint=f"可用预设：{available_presets}",
             )
-            sys.exit(1)
 
     elif action == "export":
         if export_path:
@@ -150,21 +146,17 @@ def handle_config(
                     details={"路径": str(export_path)}
                 )
             else:
-                output.error_panel(
+                raise CLIError(
+                    E.E_BUSINESS,
                     "导出失败",
-                    title="导出错误",
-                    error_type="ExportError",
-                    suggestion="请检查文件路径是否有写入权限"
+                    hint="请检查文件路径是否有写入权限",
                 )
-                sys.exit(1)
         else:
-            output.error_panel(
+            raise CLIError(
+                E.E_BUSINESS,
                 "请指定导出路径 (--export)",
-                title="参数错误",
-                error_type="ValueError",
-                suggestion="使用 'ppc9 config export --export <路径>' 导出配置"
+                hint="使用 'ppc10 config export --export <路径>' 导出配置",
             )
-            sys.exit(1)
 
     elif action == "import":
         if import_path:
@@ -175,32 +167,26 @@ def handle_config(
                     details={"路径": str(import_path)}
                 )
             else:
-                output.error_panel(
+                raise CLIError(
+                    E.E_CONFIG_INVALID,
                     "导入失败",
-                    title="导入错误",
-                    error_type="ImportError",
-                    suggestion="请检查文件是否存在且格式正确"
+                    hint="请检查文件是否存在且格式正确",
                 )
-                sys.exit(1)
         else:
-            output.error_panel(
+            raise CLIError(
+                E.E_BUSINESS,
                 "请指定导入路径 (--import)",
-                title="参数错误",
-                error_type="ValueError",
-                suggestion="使用 'ppc9 config import --import <路径>' 导入配置"
+                hint="使用 'ppc10 config import --import <路径>' 导入配置",
             )
-            sys.exit(1)
 
     elif action == "init":
-        if config_manager.config_source_exists:
+        if config_existed_before:
             output.warning_panel(
                 f"配置文件已存在：{config_manager.config_path}",
                 title="提示",
                 suggestion="如需重新生成，请先删除现有文件或使用 'reset' 操作"
             )
         else:
-            config_manager._dirty = True
-            config_manager.save()
             output.success_panel(
                 f"配置文件已创建：{config_manager.config_path}",
                 title="初始化成功",
@@ -210,14 +196,12 @@ def handle_config(
                     "使用预设": "balanced"
                 }
             )
-            output.console.print(f"\n[dim]提示：使用 'ppc9 config show' 查看完整配置[/dim]")
+            output.console.print(f"\n[dim]提示：使用 'ppc10 config show' 查看完整配置[/dim]")
 
     else:
         available_actions = ["show", "get", "set", "reset", "export", "import", "init", "path", "wizard"]
-        output.error_panel(
+        raise CLIError(
+            E.E_BUSINESS,
             f"未知操作：{action}",
-            title="参数错误",
-            error_type="ValueError",
-            suggestion=f"可用操作：{', '.join(available_actions)}"
+            hint=f"可用操作：{', '.join(available_actions)}",
         )
-        sys.exit(1)

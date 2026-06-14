@@ -12,11 +12,11 @@ from typing import List, Dict, Any, Optional
 
 from bs4 import BeautifulSoup
 
-from src_m.config import PPC9Config
+from src_m.config import PPC10Config
 from src_m.core import BaseEngine
 from src_m.reliability import ExecutionResult, ExecutionMetrics
 from src_m.engines.chapter_engine import ChapterEngine
-from src_m.core.errors import ErrorCodes
+from src_m.core.exceptions import ErrorCodes
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
     负责 EPUB 文件的解析、元数据提取、章节分割。
     """
 
-    def __init__(self, config: PPC9Config) -> None:
+    def __init__(self, config: PPC10Config) -> None:
         super().__init__()
         self.config = config
         self.chapter_engine = ChapterEngine(config)
@@ -91,12 +91,12 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
 
         try:
             if not epub_path.exists():
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error=f"EPUB文件不存在: {epub_path}", error_code=ErrorCodes.FILE_NOT_FOUND.value
                 )
 
             if not self._is_valid_epub(epub_path):
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="无效的EPUB文件", error_code=ErrorCodes.INVALID_EPUB.value
                 )
 
@@ -106,7 +106,7 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
             chapters = self._extract_chapters(epub_path)
 
             if not chapters:
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="未提取到章节内容", error_code=ErrorCodes.NO_CHAPTERS.value
                 )
 
@@ -123,13 +123,13 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
                     duration=time.perf_counter() - start_time,
                     bytes_processed=len(result.data),
                 )
-                return ExecutionResult.success(result_data, metrics)
+                return ExecutionResult.ok(result_data, metrics)
 
             return result
 
         except Exception as e:
             logger.error(f"EPUB提取失败: {e}")
-            return ExecutionResult.error(error=str(e), error_code=ErrorCodes.EPUB_EXTRACTION_FAILED.value)
+            return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.EPUB_EXTRACTION_FAILED.value)
 
     @staticmethod
     def _is_valid_epub(file_path: Path) -> bool:
@@ -326,7 +326,7 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
         try:
             chapters = self._extract_chapters(epub_path)
             if not chapters:
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="未提取到章节内容", error_code=ErrorCodes.NO_CHAPTERS.value
                 )
 
@@ -338,11 +338,11 @@ class EPUBEngine(BaseEngine[Path, Dict[str, Any]]):
                 duration=time.perf_counter() - start_time,
                 bytes_processed=len(content.encode(ENCODING_UTF8)),
             )
-            return ExecutionResult.success(output_file, metrics)
+            return ExecutionResult.ok(output_file, metrics)
 
         except Exception as e:
             logger.error(f"EPUB文本提取失败: {e}")
-            return ExecutionResult.error(error=str(e), error_code=ErrorCodes.EPUB_EXTRACTION_FAILED.value)
+            return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.EPUB_EXTRACTION_FAILED.value)
 
     def get_stats(self) -> Dict[str, Any]:
         """获取引擎统计信息"""

@@ -20,6 +20,7 @@ class ExtensionType(Enum):
     METRICS_EXPORTER = "metrics_exporter"
     EXECUTOR = "executor"
     TOOL_INTEGRATION = "tool_integration"
+    PIPELINE_STEP = "pipeline_step"
 
 
 @dataclass
@@ -69,6 +70,10 @@ class Extension(ABC):
     def get_webui_config(self) -> Optional[Dict[str, Any]]:
         """返回扩展的 WebUI 面板配置（默认返回 None）。"""
         return None
+
+    def get_pipeline_steps(self) -> List['PipelineStepExtension']:
+        """返回扩展提供的管道步骤（默认返回空列表）。"""
+        return []
 
     @property
     def is_initialized(self) -> bool:
@@ -234,4 +239,39 @@ class ExecutorExtension(ABC):
     @abstractmethod
     def get_status(self) -> Dict[str, Any]:
         """获取执行器状态"""
+        pass
+
+
+class PipelineStepExtension(ABC):
+    """管道步骤扩展接口
+
+    用户可实现此接口来创建自定义管道步骤扩展。
+    """
+
+    @abstractmethod
+    async def execute(self, params: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """执行管道步骤
+
+        参数:
+            params: 步骤参数（来自管道定义）
+            inputs: 上游步骤的输出
+
+        返回:
+            步骤输出数据
+        """
+        pass
+
+    @abstractmethod
+    def get_step_name(self) -> str:
+        """返回步骤名称"""
+        pass
+
+    @abstractmethod
+    def get_input_type(self) -> str:
+        """返回输入数据类型"""
+        pass
+
+    @abstractmethod
+    def get_output_type(self) -> str:
+        """返回输出数据类型"""
         pass

@@ -1,6 +1,8 @@
 """Circuit breaker implementation
 
-Provides service fault tolerance, failure rate limiting, and automatic recovery.
+Provides service fault tolerance, failure rate limiting, automatic recovery,
+multi-strategy tripping (error rate / slow call rate / consecutive failures)
+and half-open canary ratio.
 """
 
 import asyncio
@@ -20,9 +22,21 @@ class CircuitState(str, Enum):
     HALF_OPEN = "half_open"
 
 
+class TripStrategy(str, Enum):
+    """Circuit breaker tripping strategy"""
+    ERROR_RATE = "error_rate"
+    SLOW_CALL_RATE = "slow_call_rate"
+    CONSECUTIVE_FAILURES = "consecutive_failures"
+    COMBINED = "combined"
+
+
 @dataclass
 class CircuitBreakerConfig:
-    """Circuit breaker configuration"""
+    """Circuit breaker configuration
+
+    Backward compatible: previous fields keep their semantics.
+    New fields introduced for multi-strategy and canary ratio.
+    """
     failure_threshold: int = 5
     success_threshold: int = 2
     timeout: float = 60.0
@@ -33,21 +47,53 @@ class CircuitBreakerConfig:
     slow_call_duration_threshold: float = 30.0
     slow_call_rate_threshold: float = 0.8
 
+    # Phase 2 - multi-strategy / canary additions
+    trip_strategy: TripStrategy = TripStrategy.COMBINED
+    consecutive_failure_threshold: int = 5
+    # Half-open canary ratio: fraction of probe calls allowed (0.0 - 1.0)
+    half_open_canary_ratio: float = 0.05
+    # If non-None and > 0, enable "exponential slow-call" detection where the
+    # threshold scales with the rolling mean latency.
+    adaptive_slow_call: bool = False
+
 
 class HalfOpenLimiter:
-    """Half-open state request limiter"""
+    """Half-open state request limiter with canary ratio support.
 
-    def __init__(self, max_calls: int):
+    When ``canary_ratio < 1.0``, only a probabilistic subset of the first
+    ``half_open_max_calls`` requests will be allowed to probe; the rest are
+    rejected as fast-fail so the system isn't flooded while recovering.
+    """
+
+    def __init__(self, max_calls: int, canary_ratio: float = 1.0):
+        if canary_ratio < 0.0:
+            canary_ratio = 0.0
+        if canary_ratio > 1.0:
+            canary_ratio = 1.0
         self._max_calls = max_calls
+        self._canary_ratio = canary_ratio
         self._current_calls = 0
         self._lock = asyncio.Lock()
+        # Used in canary mode to make decisions deterministic-ish but fair
+        self._attempt_counter = 0
 
     async def acquire(self) -> bool:
         async with self._lock:
-            if self._current_calls < self._max_calls:
-                self._current_calls += 1
-                return True
-            return False
+            if self._current_calls >= self._max_calls:
+                return False
+            if self._canary_ratio < 1.0:
+                # A zero canary ratio means no probes should be allowed.
+                if self._canary_ratio <= 0.0:
+                    return False
+                # The canary window is a fraction of max_calls; reserve the
+                # remainder for non-probe traffic.
+                canary_window = max(1, int(round(self._max_calls * self._canary_ratio)))
+                if self._current_calls >= canary_window:
+                    return False
+                # Probe slot - allow
+            self._current_calls += 1
+            self._attempt_counter += 1
+            return True
 
     async def release(self) -> None:
         async with self._lock:
@@ -55,10 +101,19 @@ class HalfOpenLimiter:
 
     def reset(self) -> None:
         self._current_calls = 0
+        self._attempt_counter = 0
 
     @property
     def current_calls(self) -> int:
         return self._current_calls
+
+    @property
+    def canary_ratio(self) -> float:
+        return self._canary_ratio
+
+    def set_canary_ratio(self, ratio: float) -> None:
+        ratio = max(0.0, min(1.0, ratio))
+        self._canary_ratio = ratio
 
 
 @dataclass
@@ -69,8 +124,12 @@ class CircuitBreakerStats:
     failed_calls: int = 0
     rejected_calls: int = 0
     state_changes: int = 0
+    consecutive_failures: int = 0
+    consecutive_successes: int = 0
     last_failure_time: Optional[float] = None
     last_success_time: Optional[float] = None
+    canary_allowed: int = 0
+    canary_rejected: int = 0
 
     @property
     def failure_rate(self) -> float:
@@ -86,6 +145,10 @@ class CircuitBreakerStats:
             "rejected_calls": self.rejected_calls,
             "failure_rate": self.failure_rate,
             "state_changes": self.state_changes,
+            "consecutive_failures": self.consecutive_failures,
+            "consecutive_successes": self.consecutive_successes,
+            "canary_allowed": self.canary_allowed,
+            "canary_rejected": self.canary_rejected,
         }
 
 
@@ -151,8 +214,8 @@ class SlidingWindowCounter:
 class CircuitBreaker:
     """Circuit breaker for fault tolerance
 
-    Supports failure rate limiting, half-open state control,
-    slow call detection, and customizable recovery strategies.
+    Supports multi-strategy tripping (error rate, slow-call rate,
+    consecutive failures) and half-open canary ratio.
     """
 
     def __init__(
@@ -166,12 +229,17 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._stats = CircuitBreakerStats()
         self._lock = asyncio.Lock()
-        self._half_open_limiter = HalfOpenLimiter(self.config.half_open_max_calls)
+        self._half_open_limiter = HalfOpenLimiter(
+            self.config.half_open_max_calls,
+            canary_ratio=self.config.half_open_canary_ratio,
+        )
         self._half_open_success_count: int = 0
         self._sliding_window = SlidingWindowCounter(self.config.sliding_window_size)
         self._on_state_change = on_state_change
         self._fallback: Optional[Callable[..., Any]] = None
         self._excluded_exceptions: Set[Type[Exception]] = set()
+
+    # ------------------------------------------------------------------ public
 
     def with_fallback(self, fallback: Callable[..., Any]) -> "CircuitBreaker":
         """Set fallback function"""
@@ -183,17 +251,30 @@ class CircuitBreaker:
         self._excluded_exceptions.update(exceptions)
         return self
 
+    def set_canary_ratio(self, ratio: float) -> "CircuitBreaker":
+        """Adjust the canary ratio at runtime."""
+        self._half_open_limiter.set_canary_ratio(ratio)
+        return self
+
     async def call(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Execute function call with circuit breaker"""
-        async with self._lock:
-            if not await self._check_allowed():
-                self._stats.rejected_calls += 1
-                logger.warning(f"Circuit breaker {self.name} rejected call, state: {self._state.value}")
-                if self._fallback:
-                    return self._fallback(*args, **kwargs)
-                raise CircuitBreakerError(
-                    f"Circuit breaker {self.name} is {self._state.value}"
-                )
+        allowed, is_canary_reject = await self._gate()
+        if not allowed:
+            self._stats.rejected_calls += 1
+            if is_canary_reject:
+                self._stats.canary_rejected += 1
+            logger.warning(
+                "Circuit breaker %s rejected call, state: %s",
+                self.name, self._state.value,
+            )
+            if self._fallback:
+                result = self._fallback(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return result
+            raise CircuitBreakerError(
+                f"Circuit breaker {self.name} is {self._state.value}"
+            )
 
         start_time = time.time()
         try:
@@ -206,8 +287,8 @@ class CircuitBreaker:
                 raise
             duration = time.time() - start_time
             await self._on_failure(e, duration)
-            if self._fallback:
-                return self._fallback(*args, **kwargs)
+            # Re-raise the original error; the fallback is reserved for the
+            # case where the gate has rejected the call (breaker open).
             raise
 
     def call_sync(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -217,41 +298,66 @@ class CircuitBreaker:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        
+
         if loop is None:
-            # No running event loop, safe to use run_until_complete
             return asyncio.run(self.call(func, *args, **kwargs))
-        
-        # Event loop is already running, use run_coroutine_threadsafe
+
         future = asyncio.run_coroutine_threadsafe(self.call(func, *args, **kwargs), loop)
         return future.result()
 
-    async def _check_allowed(self) -> bool:
-        if self._state == CircuitState.CLOSED:
-            return True
-        elif self._state == CircuitState.OPEN:
-            return await self._check_transition_to_half_open()
-        elif self._state == CircuitState.HALF_OPEN:
-            return await self._half_open_limiter.acquire()
-        return False
+    # ----------------------------------------------------------------- internal
+
+    async def _gate(self) -> tuple[bool, bool]:
+        """Decide whether a call is allowed right now.
+
+        Returns ``(allowed, is_canary_reject)``. When the breaker is in
+        half-open and the canary window is exhausted the call is rejected
+        with the canary flag set, which is reported differently for metrics.
+        """
+        async with self._lock:
+            if self._state == CircuitState.CLOSED:
+                return True, False
+            if self._state == CircuitState.OPEN:
+                if await self._check_transition_to_half_open():
+                    # transitioned just now - allow one probe
+                    self._stats.canary_allowed += 1
+                    return True, False
+                return False, False
+            if self._state == CircuitState.HALF_OPEN:
+                canary_window = max(
+                    1,
+                    int(round(self._half_open_limiter._max_calls
+                              * self._half_open_limiter._canary_ratio)),
+                )
+                # Distinguish between "no probe slots left" and
+                # "canary quota exhausted".
+                if self._half_open_limiter.current_calls >= self._half_open_limiter._max_calls:
+                    return False, False
+                if self._half_open_limiter.current_calls >= canary_window:
+                    # All canary slots consumed - fast-fail.
+                    return False, True
+                if await self._half_open_limiter.acquire():
+                    self._stats.canary_allowed += 1
+                    return True, False
+                return False, False
+            return False, False
 
     async def _check_transition_to_half_open(self) -> bool:
         now = time.time()
-        if self._state == CircuitState.OPEN:
-            if self._stats.last_failure_time is None:
-                await self._transition_to(CircuitState.HALF_OPEN)
-                return await self._half_open_limiter.acquire()
-            elif now - self._stats.last_failure_time >= self.config.timeout:
-                await self._transition_to(CircuitState.HALF_OPEN)
-                return await self._half_open_limiter.acquire()
-            else:
-                return False
+        if self._stats.last_failure_time is None:
+            await self._transition_to(CircuitState.HALF_OPEN)
+            return True
+        if now - self._stats.last_failure_time >= self.config.timeout:
+            await self._transition_to(CircuitState.HALF_OPEN)
+            return True
         return False
 
     async def _on_success(self, duration: float) -> None:
         self._stats.total_calls += 1
         self._stats.successful_calls += 1
         self._stats.last_success_time = time.time()
+        self._stats.consecutive_failures = 0
+        self._stats.consecutive_successes += 1
         await self._sliding_window.record_success()
 
         if duration > self.config.slow_call_duration_threshold:
@@ -261,12 +367,14 @@ class CircuitBreaker:
             self._half_open_success_count += 1
             await self._handle_half_open_success()
 
-        await self._check_slow_call_rate()
+        await self._maybe_trip_on_slow_rate()
 
     async def _on_failure(self, error: Exception, duration: float) -> None:
         self._stats.total_calls += 1
         self._stats.failed_calls += 1
         self._stats.last_failure_time = time.time()
+        self._stats.consecutive_failures += 1
+        self._stats.consecutive_successes = 0
         await self._sliding_window.record_failure()
 
         if duration > self.config.slow_call_duration_threshold:
@@ -275,32 +383,48 @@ class CircuitBreaker:
         if self._state == CircuitState.HALF_OPEN:
             await self._handle_half_open_failure()
         else:
-            await self._check_failure_rate()
+            await self._maybe_trip()
 
-    async def _check_failure_rate(self) -> None:
+    async def _maybe_trip(self) -> None:
+        """Trip the breaker according to the configured strategy."""
+        strategy = self.config.trip_strategy
+
+        if strategy == TripStrategy.CONSECUTIVE_FAILURES:
+            if self._stats.consecutive_failures >= self.config.consecutive_failure_threshold:
+                await self._transition_to(CircuitState.OPEN)
+                logger.warning(
+                    "Circuit breaker %s opened: %d consecutive failures",
+                    self.name, self._stats.consecutive_failures,
+                )
+            return
+
         total_calls = await self._sliding_window.get_total_calls()
         if total_calls < self.config.minimum_calls:
             return
 
-        failure_rate = await self._sliding_window.get_failure_rate()
-        if failure_rate >= self.config.failure_rate_threshold:
-            await self._transition_to(CircuitState.OPEN)
-            logger.warning(
-                f"Circuit breaker {self.name} opened, "
-                f"failure rate: {failure_rate:.2%}"
-            )
+        if strategy in (TripStrategy.ERROR_RATE, TripStrategy.COMBINED):
+            failure_rate = await self._sliding_window.get_failure_rate()
+            if failure_rate >= self.config.failure_rate_threshold:
+                await self._transition_to(CircuitState.OPEN)
+                logger.warning(
+                    "Circuit breaker %s opened, failure rate: %.2f%%",
+                    self.name, failure_rate * 100,
+                )
+                return
 
-    async def _check_slow_call_rate(self) -> None:
+        if strategy in (TripStrategy.SLOW_CALL_RATE, TripStrategy.COMBINED):
+            await self._maybe_trip_on_slow_rate(force=True)
+
+    async def _maybe_trip_on_slow_rate(self, force: bool = False) -> None:
         total_calls = await self._sliding_window.get_total_calls()
-        if total_calls < self.config.minimum_calls:
+        if total_calls < self.config.minimum_calls and not force:
             return
-
         slow_call_rate = await self._sliding_window.get_slow_call_rate()
         if slow_call_rate >= self.config.slow_call_rate_threshold:
             await self._transition_to(CircuitState.OPEN)
             logger.warning(
-                f"Circuit breaker {self.name} opened due to slow calls, "
-                f"slow call rate: {slow_call_rate:.2%}"
+                "Circuit breaker %s opened due to slow calls, slow rate: %.2f%%",
+                self.name, slow_call_rate * 100,
             )
 
     async def _handle_half_open_success(self) -> None:
@@ -308,12 +432,12 @@ class CircuitBreaker:
         if self._half_open_success_count >= self.config.success_threshold:
             await self._transition_to(CircuitState.CLOSED)
             await self._sliding_window.reset()
-            logger.info(f"Circuit breaker {self.name} closed after successful recovery")
+            logger.info("Circuit breaker %s closed after successful recovery", self.name)
 
     async def _handle_half_open_failure(self) -> None:
         await self._half_open_limiter.release()
         await self._transition_to(CircuitState.OPEN)
-        logger.info(f"Circuit breaker {self.name} reopened after half-open failure")
+        logger.info("Circuit breaker %s reopened after half-open failure", self.name)
 
     async def _transition_to(self, new_state: CircuitState) -> None:
         old_state = self._state
@@ -331,14 +455,11 @@ class CircuitBreaker:
             try:
                 self._on_state_change(self, old_state, new_state)
             except Exception as e:
-                logger.error(f"State change callback failed: {e}")
+                logger.error("State change callback failed: %s", e)
 
-        if new_state == CircuitState.OPEN:
-            logger.info(f"Circuit breaker {self.name}: {old_state.value} -> OPEN")
-        elif new_state == CircuitState.HALF_OPEN:
-            logger.info(f"Circuit breaker {self.name}: {old_state.value} -> HALF_OPEN")
-        elif new_state == CircuitState.CLOSED:
-            logger.info(f"Circuit breaker {self.name}: {old_state.value} -> CLOSED")
+        logger.info(
+            "Circuit breaker %s: %s -> %s", self.name, old_state.value, new_state.value,
+        )
 
     async def reset(self) -> None:
         async with self._lock:
@@ -380,6 +501,9 @@ class CircuitBreaker:
                 "failure_rate_threshold": self.config.failure_rate_threshold,
                 "minimum_calls": self.config.minimum_calls,
                 "half_open_max_calls": self.config.half_open_max_calls,
+                "trip_strategy": self.config.trip_strategy.value,
+                "consecutive_failure_threshold": self.config.consecutive_failure_threshold,
+                "half_open_canary_ratio": self.config.half_open_canary_ratio,
             },
             "stats": self._stats.to_dict(),
         }
@@ -391,6 +515,10 @@ class CircuitBreakerError(Exception):
     def __init__(self, message: str, breaker_name: str = ""):
         super().__init__(message)
         self.breaker_name = breaker_name
+
+
+# Backwards compatibility alias (see spec REMOVED Requirements)
+SimpleCircuitBreaker = CircuitBreaker
 
 
 _circuit_breakers: Dict[str, CircuitBreaker] = {}

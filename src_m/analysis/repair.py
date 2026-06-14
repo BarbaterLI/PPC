@@ -435,7 +435,7 @@ class BackupManager:
     """Manages backup and rollback operations for repair actions."""
 
     def __init__(self, backup_dir: Optional[str] = None) -> None:
-        self._backup_dir = Path(backup_dir) if backup_dir else Path(tempfile.gettempdir()) / "ppc9_repair_backups"
+        self._backup_dir = Path(backup_dir) if backup_dir else Path(tempfile.gettempdir()) / "ppc10_repair_backups"
         self._backups: Dict[str, str] = {}
 
     @property

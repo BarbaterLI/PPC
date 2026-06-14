@@ -1,7 +1,5 @@
 """定时任务调度器
-
-支持 cron 表达式配置的定时任务。
-"""
+支持 cron 表达式配置的定时任务。"""
 
 import json
 import logging
@@ -91,11 +89,11 @@ class ScheduledTask:
 
 
 class CronScheduler:
-    """Cron 定时任务调度器"""
+    """Cron 定时任务调度器"""""
 
     def __init__(self, storage_path: Optional[Path] = None):
         self._tasks: Dict[str, ScheduledTask] = {}
-        self._storage_path = storage_path or Path("~/.ppc9/scheduled_tasks.json").expanduser()
+        self._storage_path = storage_path or Path("~/.ppc10/scheduled_tasks.json").expanduser()
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -215,7 +213,7 @@ class CronScheduler:
             cron = croniter(cron_expr, datetime.now())
             return cron.get_next(datetime)
         except Exception as e:
-            logger.warning(f"Cron 表达式解析失败 '{cron_expr}': {e}")
+            logger.warning(f"Cron 表达式解析失败: '{cron_expr}': {e}")
             return None
 
     def _execute_command(self, command: Dict[str, Any]) -> bool:
@@ -292,7 +290,7 @@ class CronScheduler:
                     self._tasks[task.id] = task
                     if task.enabled and CRON_AVAILABLE:
                         task.next_run = self._calculate_next_run(task.cron_expr)
-            logger.info(f"已加载 {len(self._tasks)} 个定时任务")
+            logger.info(f"已加载{len(self._tasks)} 个定时任务")
         except Exception as e:
             logger.error(f"加载任务失败: {e}")
 

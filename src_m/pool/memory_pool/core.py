@@ -203,6 +203,7 @@ class MemoryPool(BaseObjectPool[T]):
             f"added {expand_count} blocks, "
             f"total blocks {self._stats.total_blocks + expand_count}"
         )
+        self._update_stats()
 
     def clear(self) -> None:
         with self._lock:
@@ -467,6 +468,7 @@ class AudioBufferPool:
             f"Audio buffer pool expanded: added {expand_count} buffers, "
             f"total {self._stats.total_buffers + expand_count}"
         )
+        self._update_stats()
 
     def clear(self) -> None:
         with self._lock:

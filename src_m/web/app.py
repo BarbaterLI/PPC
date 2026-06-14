@@ -12,6 +12,7 @@ from src_m.web.api.analyze import analyze_bp
 from src_m.web.api.extensions import extensions_bp
 from src_m.web.api.fanqie import fanqie_bp
 from src_m.web.api.distributed import distributed_bp
+from src_m.web.api.pipelines import pipelines_bp
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ def create_app(config_name: str = "development") -> Flask:
     app.register_blueprint(extensions_bp)
     app.register_blueprint(fanqie_bp)
     app.register_blueprint(distributed_bp)
+    app.register_blueprint(pipelines_bp)
 
     static_folder = os.environ.get('FLASK_STATIC_FOLDER')
     if not static_folder:
@@ -65,6 +67,9 @@ def create_app(config_name: str = "development") -> Flask:
 
     @app.errorhandler(Exception)
     def handle_exception(e):
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
         logger.exception("Unhandled exception")
         return jsonify({"error": str(e), "code": type(e).__name__}), 500
 

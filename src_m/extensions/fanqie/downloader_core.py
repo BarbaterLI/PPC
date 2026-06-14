@@ -56,8 +56,8 @@ def get_installed_version() -> Optional[str]:
     if ver_file.exists():
         try:
             return ver_file.read_text(encoding="utf-8").strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("读取版本文件失败: %s", e)
     return None
 
 

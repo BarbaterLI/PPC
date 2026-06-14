@@ -1,16 +1,18 @@
 """Output formatting module - Clean, friendly terminal output using Rich."""
 
+import json
 import sys
 import os
 import io
 import logging
-from typing import Optional, Any, Callable, Dict, List
+import platform
+from typing import Optional, Any, Callable, Dict, List, Literal
 from datetime import datetime
 from dataclasses import dataclass
 
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from ppc9 import __version__
+from ppc10 import __version__
 
 if sys.platform == "win32":
     os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -40,20 +42,52 @@ from rich.box import ROUNDED, SIMPLE
 console = Console(file=sys.stdout, legacy_windows=False)
 
 
+# ---------------------------------------------------------------------------
+# 主题与颜色（Spec: 统一颜色主题）
+# ---------------------------------------------------------------------------
+
+# 语义颜色 → Rich style。所有需要颜色的代码都应当走 THEME,
+# 不再散落 hardcode "[bold green]xxx[/bold green]" 之类的写法。
+# mvp-cleanup:仅保留 4 个语义色,未在白名单里的名称 c() 会抛 KeyError。
+THEME: Dict[str, str] = {
+    "success": "bold green",
+    "warning": "bold yellow",
+    "error":   "bold red",
+    "info":    "cyan",
+}
+
+
+def c(name: str, text: str) -> str:
+    """按 :data:`THEME` 包裹 ``text``。
+
+    若 :data:`no_color` 全局标记为 True(由 ``--no-color`` 触发),
+    则直接返回 ``text``(不附加 ANSI 转义)。``name`` 必须是
+    :data:`THEME` 中已注册的语义键,否则抛出 :class:`KeyError`。
+    """
+    if name not in THEME:
+        raise KeyError(
+            f"Unknown color name: {name!r}. Valid: {list(THEME.keys())}"
+        )
+    if globals().get("no_color", False):
+        return text
+    style = THEME[name]
+    return f"[{style}]{text}[/{style}]"
+
+
+# 全局 --no-color 标记(由 typer_app 在解析后写入)
+no_color: bool = False
+
+
 class BrandAssets:
     """Brand assets."""
     LOGO_ASCII = """
-██████╗ ██████╗  ██████╗ █████╗ 
-██╔══██╗██╔══██╗██╔════╝██╔══██╗
-██████╔╝██████╔╝██║     █████╔╝
-██╔═══╝ ██╔═══╝ ██║     ██╔══██╗
-██║     ██║     ██████╗ ███████╗
-╚═╝     ╚═╝      ╚═════╝ ╚════╝ 
-                                ██╗   ██╗
-                                ╚██╗ ██╔╝
-                                 ╚████╔╝ 
-                                  ╚██╔╝  
-                                   ╚═╝   """
+██████╗ ██████╗  ██████╗     ██╗ ██████╗ 
+██╔══██╗██╔══██╗██╔════╝    ███║██╔═████╗
+██████╔╝██████╔╝██║         ╚██║██║██╔██║
+██╔═══╝ ██╔═══╝ ██║          ██║████╔╝██║
+██║     ██║     ╚██████╗     ██║╚██████╔╝
+╚═╝     ╚═╝      ╚═════╝     ╚═╝ ╚═════╝ 
+                                         """
     VERSION = __version__
     TAGLINE = "Ultimate Text-to-Speech Tool"
     COPYRIGHT = "© 2026 BLY Team. All rights reserved."
@@ -71,47 +105,6 @@ class BrandColors:
     TEXT_PRIMARY = "#2C3E50"
     TEXT_SECONDARY = "#7F8C8D"
     BACKGROUND = "#ECF0F1"
-
-
-class ProgressStyles:
-    """Progress bar styles."""
-    DEFAULT = "cyan"
-    SUCCESS = "green"
-    WARNING = "yellow"
-    ERROR = "red"
-    PULSE = "magenta"
-    GRADIENT = "blue"
-
-    BAR_STYLES = {
-        "default": "█▓▒░ ",
-        "smooth": "━━━╸ ",
-        "blocks": "█▉▊▋▌▍▎▏ ",
-        "pulse": "▰▱▰▱▰▱▰▱ ",
-        "gradient": "▓▒░▒▓░▒▓▒░ ",
-    }
-
-    ANIMATION_PATTERNS = {
-        "pulse": ["◐", "◓", "◑", "◒"],
-        "wave": ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"],
-        "bounce": ["⠁", "⠃", "⠇", "⡇", "⡏", "⡟", "⡿", "⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"],
-        "gradient": ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🔵", "🟢", "🟡", "🟠"],
-        "gradient_ascii": ["█", "▓", "▒", "░", "●", "◐", "◑", "○", "◆", "◇"],
-    }
-
-    STYLE_MODES = {
-        "pulse": {
-            "bar_style": "pulse",
-            "animation": "pulse",
-            "color": "magenta",
-            "complete_style": "bold magenta",
-        },
-        "gradient": {
-            "bar_style": "gradient",
-            "animation": "gradient",
-            "color": "blue",
-            "complete_style": "bold blue",
-        },
-    }
 
 
 class Icons:
@@ -261,13 +254,264 @@ class OutputFormatter:
         self._progress: Optional[Progress] = None
         self._live: Optional[Live] = None
         self._task_statuses: dict = {}
+        # 模式:human / json / quiet;由 --json/--quiet 决定
+        self.mode: Literal["human", "json", "quiet"] = "human"
+        self.no_color: bool = False
+
+    # ------------------------------------------------------------------
+    # 模式 / 开关管理
+    # ------------------------------------------------------------------
+
+    def set_mode(
+        self,
+        verbose: Optional[bool] = None,
+        quiet: Optional[bool] = None,
+        json_output: Optional[bool] = None,
+        no_color: Optional[bool] = None,
+    ) -> None:
+        """一次性写入多个开关;按优先级 json > quiet > human 决定 mode。"""
+        if verbose is not None:
+            self.verbose = bool(verbose)
+        if quiet is not None:
+            self.quiet = bool(quiet)
+        else:
+            self.quiet = getattr(self, "quiet", False)
+        if json_output is not None:
+            self.json_output = bool(json_output)
+        else:
+            self.json_output = getattr(self, "json_output", False)
+        if no_color is not None:
+            self.set_no_color(bool(no_color))
+
+        if self.json_output:
+            self.mode = "json"
+        elif self.quiet:
+            self.mode = "quiet"
+        else:
+            self.mode = "human"
 
     def set_verbose(self, verbose: bool):
         """Set verbose mode."""
-        self.verbose = verbose
+        self.verbose = bool(verbose)
+
+    def set_quiet(self, quiet: bool):
+        """Set quiet mode."""
+        self.quiet = bool(quiet)
+        if quiet and self.mode == "human":
+            self.mode = "quiet"
+
+    def set_json(self, json_output: bool):
+        """Set json mode."""
+        self.json_output = bool(json_output)
+        if json_output:
+            self.mode = "json"
+        elif self.mode == "json":
+            self.mode = "human"
+
+    def set_no_color(self, no_color: bool):
+        """Set no-color mode (全局 + 本地)。"""
+        self.no_color = bool(no_color)
+        # 同步全局标记
+        globals()["no_color"] = bool(no_color)
+        try:
+            self.console.no_color = bool(no_color)
+        except Exception:
+            pass
+        try:
+            console.no_color = bool(no_color)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 渲染入口
+    # ------------------------------------------------------------------
+
+    def print_table(
+        self,
+        headers: List[str],
+        rows: List[List[Any]],
+        title: Optional[str] = None,
+        json_data: Any = None,
+    ) -> None:
+        """统一表格输出。
+
+        - ``json`` 模式:输出单行 JSON(``json_data`` 优先,否则由 headers+rows 装配)。
+        - ``human`` 模式:渲染 Rich ``Table``。
+        - ``quiet`` 模式:不输出。
+        """
+        if self.mode == "quiet":
+            return
+
+        if self.mode == "json":
+            if json_data is None:
+                json_data = [
+                    {h: (r[i] if i < len(r) else None) for i, h in enumerate(headers)}
+                    for r in rows
+                ]
+            sys.stdout.write(json.dumps(json_data, ensure_ascii=False))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        from rich.table import Table
+        from rich.box import SIMPLE
+        table = Table(
+            title=title,
+            show_header=True,
+            header_style="bold",
+            box=SIMPLE,
+            border_style=BrandColors.PRIMARY,
+        )
+        for h in headers:
+            table.add_column(str(h))
+        for row in rows:
+            table.add_row(*[("" if v is None else str(v)) for v in row])
+        self.console.print(table)
+
+    def print_panel(
+        self,
+        text: str,
+        title: Optional[str] = None,
+        style: str = "info",
+        border_style: Optional[str] = None,
+    ) -> None:
+        """统一面板输出。
+
+        - ``json`` 模式:不渲染 Rich Panel,仅在文本非空时作为 ``{"message": text}`` 单行输出。
+        - ``quiet`` 模式:不输出。
+        - ``human`` 模式:渲染 Rich ``Panel``。
+        """
+        if self.mode == "quiet":
+            return
+
+        if self.mode == "json":
+            payload = {"message": text}
+            if title:
+                payload["title"] = title
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        from rich.panel import Panel
+        panel = Panel(
+            text,
+            title=title,
+            border_style=border_style or style,
+            expand=False,
+            padding=(0, 1),
+        )
+        self.console.print(panel)
+
+    def print_version_card(self) -> None:
+        """``--version`` 卡片。
+
+        - ``json`` 模式:单行 JSON,含 version / commit / python / platform / edge_tts / rich / repository。
+        - 其它:Rich Panel,内嵌 Table。
+        """
+        commit = os.environ.get("PPC10_COMMIT", "-")
+        py_ver = platform.python_version()
+        plat = platform.platform()
+
+        edge_tts_ver = "-"
+        try:
+            import edge_tts  # type: ignore
+            edge_tts_ver = getattr(edge_tts, "__version__", "-")
+        except Exception:
+            pass
+
+        rich_ver = "-"
+        try:
+            import rich  # type: ignore
+            rich_ver = getattr(rich, "__version__", "-")
+        except Exception:
+            pass
+
+        repository = os.environ.get("PPC10_REPOSITORY", "https://github.com/bly-team/ppc10")
+
+        info = {
+            "version": __version__,
+            "commit": commit,
+            "python": py_ver,
+            "platform": plat,
+            "edge_tts": edge_tts_ver,
+            "rich": rich_ver,
+            "repository": repository,
+        }
+
+        if self.mode == "json":
+            sys.stdout.write(json.dumps(info, ensure_ascii=False))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.box import SIMPLE
+
+        table = Table(show_header=False, box=SIMPLE, border_style=BrandColors.PRIMARY)
+        table.add_column("Key", style="bold cyan", width=14)
+        table.add_column("Value", style="white")
+
+        for key in ("version", "commit", "python", "platform", "edge_tts", "rich", "repository"):
+            table.add_row(key, str(info[key]))
+
+        title = f"[bold green]PPC10 v{__version__}[/bold green]"
+        self.console.print(Panel(table, title=title, border_style=BrandColors.PRIMARY, padding=(0, 1)))
+
+    def error(self, exc) -> None:
+        """统一错误渲染入口。
+
+        支持两种调用方式:
+        1. ``error(CLIError(...))`` —— 输出 ``[ERROR] <CODE>  <message>`` + ``Hint``。
+        2. ``error("xxx")`` —— 兼容旧用法,按 E_BUSINESS 渲染单行红字错误。
+
+        ``--verbose`` 时追加 stack;``--json`` 时输出单行 JSON。
+        """
+        # 延迟 import 避免循环
+        from .errors import CLIError
+
+        if isinstance(exc, CLIError):
+            code = exc.code.value
+            message = exc.message
+            hint = exc.hint
+            cause = exc.__cause__
+        elif isinstance(exc, BaseException):
+            code = "E_BUSINESS"
+            message = str(exc)
+            hint = None
+            cause = exc
+        else:
+            # 字符串(或其它) —— 兼容旧 output.error("xxx") 调用
+            code = "E_BUSINESS"
+            message = str(exc)
+            hint = None
+            cause = None
+
+        if self.mode == "json":
+            payload = {"error": {"code": code, "message": message, "hint": hint}}
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        self.console.print(f"[bold red][ERROR] {code}  {message}[/bold red]")
+        if hint:
+            self.console.print(f"  [bold yellow]Hint:[/bold yellow]  {hint}")
+        if self.verbose and cause is not None:
+            import traceback
+            try:
+                tb = "".join(traceback.format_exception(type(cause), cause, cause.__traceback__))
+                self.console.print(f"[dim]{tb}[/dim]")
+            except Exception:
+                pass
 
     def info(self, message: str, **kwargs):
         """Info message."""
+        if self.mode == "quiet":
+            return
+        if self.mode == "json":
+            return  # JSON 模式下不向 stderr 喷 info
         if self.verbose:
             self._log("INFO", message)
         else:
@@ -275,14 +519,27 @@ class OutputFormatter:
 
     def success(self, message: str):
         """Success message."""
+        if self.mode == "quiet":
+            return
+        if self.mode == "json":
+            return
         console.print(f"+ {message}", style=OutputStyle.SUCCESS)
 
-    def error(self, message: str):
-        """Error message."""
+    def error_text(self, message: str):
+        """原始错误消息(走 THEME 主题),不渲染 traceback。
+
+        业务错误应优先抛 :class:`CLIError` 并由 :meth:`error` 渲染。
+        """
+        if self.mode == "json":
+            return
         console.print(f"- {message}", style=OutputStyle.ERROR)
 
     def warning(self, message: str):
         """Warning message."""
+        if self.mode == "quiet":
+            return
+        if self.mode == "json":
+            return
         console.print(f"! {message}", style=OutputStyle.WARNING)
 
     def debug(self, message: str):
@@ -557,7 +814,7 @@ class OutputFormatter:
             for example in examples:
                 content += f"  {example}\n"
 
-        self.panel(content, f"ppc9 {command}", "green")
+        self.panel(content, f"ppc10 {command}", "green")
 
     def check_result(self, checks: list):
         """Show check results."""
@@ -714,7 +971,7 @@ class OutputFormatter:
 
     def show_welcome(self):
         """Show welcome info."""
-        welcome_content = f"""[{BrandColors.PRIMARY}]欢迎使用 PPC9![/{BrandColors.PRIMARY}]
+        welcome_content = f"""[{BrandColors.PRIMARY}]欢迎使用 PPC10![/{BrandColors.PRIMARY}]
 
 [{BrandColors.TEXT_SECONDARY}]冰璃岩项目开发组 - 一个功能强大的文本转语音工具，支持多种语音引擎和批量处理。[/{BrandColors.TEXT_SECONDARY}]"""
         self.console.print(Panel(
@@ -724,17 +981,17 @@ class OutputFormatter:
             expand=False
         ))
         self.console.print()
-        version_line = f"[bold {BrandColors.PRIMARY}]PPC9[/bold {BrandColors.PRIMARY}] v[{BrandColors.ACCENT}]{BrandAssets.VERSION}[/{BrandColors.ACCENT}] [{BrandColors.TEXT_SECONDARY}]│[/{BrandColors.TEXT_SECONDARY}] [{BrandColors.SECONDARY}]冰璃岩文本转语音工具[/{BrandColors.SECONDARY}]"
+        version_line = f"[bold {BrandColors.PRIMARY}]PPC10[/bold {BrandColors.PRIMARY}] v[{BrandColors.ACCENT}]{BrandAssets.VERSION}[/{BrandColors.ACCENT}] [{BrandColors.TEXT_SECONDARY}]│[/{BrandColors.TEXT_SECONDARY}] [{BrandColors.SECONDARY}]冰璃岩文本转语音工具[/{BrandColors.SECONDARY}]"
         self.console.print(f"  {version_line}")
         self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 50}[/{BrandColors.TEXT_SECONDARY}]")
         self.console.print()
         commands_table = Table(show_header=False, box=None, padding=(0, 2))
         commands_table.add_column("命令", style=f"bold {BrandColors.PRIMARY}")
         commands_table.add_column("说明", style=BrandColors.TEXT_SECONDARY)
-        commands_table.add_row(f"{Icons.SOUND} ppc9 convert", "转换文本为语音")
-        commands_table.add_row(f"{Icons.FOLDER} ppc9 batch", "批量处理文件")
-        commands_table.add_row(f"{Icons.GEAR} ppc9 config", "配置设置")
-        commands_table.add_row(f"{Icons.INFO} ppc9 --help", "查看帮助信息")
+        commands_table.add_row(f"{Icons.SOUND} ppc10 convert", "转换文本为语音")
+        commands_table.add_row(f"{Icons.FOLDER} ppc10 batch", "批量处理文件")
+        commands_table.add_row(f"{Icons.GEAR} ppc10 config", "配置设置")
+        commands_table.add_row(f"{Icons.INFO} ppc10 --help", "查看帮助信息")
         self.console.print(Panel(
             commands_table,
             title=f"[{BrandColors.SECONDARY}][BOOK] 常用命令 [/{BrandColors.SECONDARY}]",
@@ -743,9 +1000,9 @@ class OutputFormatter:
         ))
         self.console.print()
         tips = [
-            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc9 convert -i input.txt[/bold] 快速转换单个文件"),
-            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc9 config wizard[/bold] 进行交互式配置"),
-            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc9 --verbose[/bold] 获取详细输出信息"),
+            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc10 convert -i input.txt[/bold] 快速转换单个文件"),
+            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc10 config wizard[/bold] 进行交互式配置"),
+            (f"[bold {BrandColors.ACCENT}]i[/bold {BrandColors.ACCENT}]", f"使用 [bold]ppc10 --verbose[/bold] 获取详细输出信息"),
         ]
         tips_table = Table(show_header=False, box=None, padding=(0, 2))
         tips_table.add_column("图标", width=3)
@@ -762,7 +1019,7 @@ class OutputFormatter:
 
     def interactive_help(self, commands: Dict[str, Dict]):
         """Interactive help browser."""
-        self.title("[BOOK] PPC9 交互式帮助浏览器")
+        self.title("[BOOK] PPC10 交互式帮助浏览器")
 
         command_list = list(commands.keys())
         current_idx = 0
@@ -800,9 +1057,9 @@ class OutputFormatter:
 
             console.clear()
             console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-            console.print(f"[bold white]  [BOOK] PPC9 交互式帮助浏览器[/bold white]")
+            console.print(f"[bold white]  [BOOK] PPC10 交互式帮助浏览器[/bold white]")
             console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-            console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC9 v{BrandAssets.VERSION} | 输入 / 搜索命令[/{BrandColors.TEXT_SECONDARY}]")
+            console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC10 v{BrandAssets.VERSION} | 输入 / 搜索命令[/{BrandColors.TEXT_SECONDARY}]")
             console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 56}[/{BrandColors.TEXT_SECONDARY}]")
 
             if search_filter:
@@ -940,7 +1197,7 @@ class OutputFormatter:
         """Show shortcut tips."""
         self.console.print()
         self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-        self.console.print(f"[bold white]  [GEAR] PPC9 快捷键参考[/bold white]")
+        self.console.print(f"[bold white]  [GEAR] PPC10 快捷键参考[/bold white]")
         self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
         self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 56}[/{BrandColors.TEXT_SECONDARY}]")
         self.console.print()
@@ -955,11 +1212,11 @@ class OutputFormatter:
         ]
 
         command_shortcuts = [
-            ("ppc9 --help", "显示帮助信息"),
-            ("ppc9 --version", "显示版本号"),
-            ("ppc9 -v", "详细输出模式"),
-            ("ppc9 convert -h", "convert 命令帮助"),
-            ("ppc9 config show", "显示当前配置"),
+            ("ppc10 --help", "显示帮助信息"),
+            ("ppc10 --version", "显示版本号"),
+            ("ppc10 -v", "详细输出模式"),
+            ("ppc10 convert -h", "convert 命令帮助"),
+            ("ppc10 config show", "显示当前配置"),
         ]
 
         interactive_shortcuts = [
@@ -1006,7 +1263,7 @@ class OutputFormatter:
     ):
         """Enhanced command help."""
         console.print(f"\n[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]")
-        console.print(f"[bold white]  [BOOK] ppc9 {command}[/bold white]")
+        console.print(f"[bold white]  [BOOK] ppc10 {command}[/bold white]")
         console.print("[bold cyan]═══════════════════════════════════════════════════════════════[/bold cyan]\n")
 
         desc_panel = Panel(
@@ -1069,9 +1326,9 @@ class OutputFormatter:
         """Show help index."""
         self.console.print()
         self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-        self.console.print(f"[bold white]  [BOOK] PPC9 命令索引[/bold white]")
+        self.console.print(f"[bold white]  [BOOK] PPC10 命令索引[/bold white]")
         self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-        self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC9 v{BrandAssets.VERSION} | 冰璃岩文本转语音工具[/{BrandColors.TEXT_SECONDARY}]")
+        self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC10 v{BrandAssets.VERSION} | 冰璃岩文本转语音工具[/{BrandColors.TEXT_SECONDARY}]")
         self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 56}[/{BrandColors.TEXT_SECONDARY}]")
         self.console.print()
 
@@ -1138,8 +1395,8 @@ class OutputFormatter:
 
         self.console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 56}[/{BrandColors.TEXT_SECONDARY}]")
         self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-        self.console.print(f"[dim]PPC9 v{BrandAssets.VERSION} | 使用 [bold]ppc9 <command> --help[/bold] 查看命令详细帮助[/dim]")
-        self.console.print(f"[dim]使用 [bold]ppc9 help[/bold] 进入交互式帮助浏览器[/dim]")
+        self.console.print(f"[dim]PPC10 v{BrandAssets.VERSION} | 使用 [bold]ppc10 <command> --help[/bold] 查看命令详细帮助[/dim]")
+        self.console.print(f"[dim]使用 [bold]ppc10 help[/bold] 进入交互式帮助浏览器[/dim]")
 
     def enhanced_stats_panel(self, stats: Dict[str, Any], title: str = "详细统计") -> Panel:
         """Create enhanced stats panel."""
@@ -1406,112 +1663,6 @@ class OutputFormatter:
             minutes = int((seconds % 3600) // 60)
             return f"{hours}h {minutes}m"
 
-    def animated_progress(self, total: int, description: str = "处理中", animation_style: str = "pulse") -> Progress:
-        """Create animated progress bar."""
-        effective_style = animation_style
-        if animation_style == "gradient":
-            try:
-                encoding = getattr(self.console.file, 'encoding', '') or ''
-                if not self.console.is_terminal or 'utf' not in encoding.lower():
-                    effective_style = "gradient_ascii"
-            except Exception:
-                effective_style = "gradient_ascii"
-        pattern = ProgressStyles.ANIMATION_PATTERNS.get(effective_style, ProgressStyles.ANIMATION_PATTERNS["pulse"])
-
-        class AnimatedSpinnerColumn(SpinnerColumn):
-            def __init__(self, pattern: List[str], *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self._pattern = pattern
-                self._frame = 0
-
-            def render(self, task):
-                if task.finished:
-                    return Text("+", style=BrandColors.SUCCESS)
-                frame = self._pattern[self._frame % len(self._pattern)]
-                self._frame += 1
-                return Text(frame, style=BrandColors.ACCENT)
-
-        progress = Progress(
-            AnimatedSpinnerColumn(pattern),
-            TextColumn(f"[{BrandColors.PRIMARY}]{{task.description}}[/{BrandColors.PRIMARY}]"),
-            BarColumn(
-                complete_style=BrandColors.SUCCESS,
-                finished_style=BrandColors.SUCCESS,
-                pulse_style=BrandColors.ACCENT
-            ),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=self.console
-        )
-
-        progress.add_task(description, total=total)
-        return progress
-
-    def dashboard(self, title: str, sections: Dict[str, Dict[str, Any]], refresh: bool = False) -> None:
-        """Show dashboard."""
-        if refresh:
-            self.console.print("\033[H\033[J", end="")
-
-        self.console.print(f"\n[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-        self.console.print(f"[bold white]  {Icons.CHART} {title}[/bold white]")
-        self.console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]\n")
-
-        panels = []
-
-        for section_name, section_data in sections.items():
-            panel_content = []
-
-            if section_name == "进度":
-                current = section_data.get("current", 0)
-                total = section_data.get("total", 100)
-                status = section_data.get("status", "pending")
-
-                percent = current / total if total > 0 else 0
-                bar = self._create_mini_progress_bar(current, total, 30)
-                panel_content.append(bar)
-
-                status_icons = {
-                    "pending": "[dim]o[/{BrandColors.TEXT_SECONDARY}]",
-                    "running": f"[{BrandColors.INFO}]◐ 运行中[/{BrandColors.INFO}]",
-                    "completed": f"[{BrandColors.SUCCESS}]+ 已完成[/{BrandColors.SUCCESS}]",
-                    "failed": f"[{BrandColors.ERROR}]- 失败[/{BrandColors.ERROR}]",
-                }
-                panel_content.append(status_icons.get(status, "未知状态"))
-
-            elif section_name == "统计":
-                success = section_data.get("success", 0)
-                failed = section_data.get("failed", 0)
-                speed = section_data.get("speed", "-")
-
-                panel_content.append(f"[{BrandColors.SUCCESS}]+ 成功:[/{BrandColors.SUCCESS}] {success}")
-                panel_content.append(f"[{BrandColors.ERROR}]- 失败:[/{BrandColors.ERROR}] {failed}")
-                panel_content.append(f"[{BrandColors.INFO}]P 速度:[/{BrandColors.INFO}] {speed}")
-
-            elif section_name == "资源":
-                cpu = section_data.get("cpu", "-")
-                memory = section_data.get("memory", "-")
-
-                panel_content.append(f"[{BrandColors.ACCENT}]CPU:[/{BrandColors.ACCENT}] {cpu}")
-                panel_content.append(f"[{BrandColors.ACCENT}]内存:[/{BrandColors.ACCENT}] {memory}")
-
-            else:
-                for key, value in section_data.items():
-                    panel_content.append(f"[bold]{key}:[/bold] {value}")
-
-            section_panel = Panel(
-                "\n".join(panel_content),
-                title=f"[bold]{section_name}[/bold]",
-                border_style=BrandColors.SECONDARY,
-                box=SIMPLE,
-                padding=(0, 1)
-            )
-            panels.append(section_panel)
-
-        columns = Columns(panels, equal=True, expand=True)
-        self.console.print(columns)
-        self.console.print(f"\n[bold {BrandColors.PRIMARY}]{'─' * 60}[/bold {BrandColors.PRIMARY}]")
-
     def decorate_status(self, status: str, text: str = None) -> str:
         """Decorate status text."""
         status_map = {
@@ -1530,106 +1681,6 @@ class OutputFormatter:
         if text:
             return f"[{color}]{icon}[/{color}] {text}"
         return f"[{color}]{icon}[/{color}]"
-
-    def table_enhanced(
-        self,
-        title: str,
-        columns: List[Dict],
-        rows: List[List],
-        alternate_rows: bool = True,
-        show_borders: bool = True,
-        style: str = "rounded"
-    ) -> None:
-        """Enhanced table display."""
-        box_styles = {
-            "rounded": ROUNDED,
-            "simple": SIMPLE,
-            "none": None,
-        }
-
-        box = box_styles.get(style, ROUNDED)
-
-        table = Table(
-            title=title,
-            box=box if show_borders else None,
-            show_header=True,
-            header_style="bold",
-            border_style=BrandColors.PRIMARY,
-            row_styles=["", "dim"] if alternate_rows else None,
-        )
-
-        for col in columns:
-            col_options = {}
-            if "style" in col:
-                col_options["style"] = col["style"]
-            if "width" in col:
-                col_options["width"] = col["width"]
-            if "justify" in col:
-                col_options["justify"] = col["justify"]
-            if "no_wrap" in col:
-                col_options["no_wrap"] = col["no_wrap"]
-            if "overflow" in col:
-                col_options["overflow"] = col["overflow"]
-
-            table.add_column(col["header"], **col_options)
-
-        for row in rows:
-            table.add_row(*[str(cell) if cell is not None else "" for cell in row])
-
-        console.print(table)
-
-    def responsive_table(self, title: str, columns: List[Dict], rows: List[List], min_width: int = 40) -> None:
-        """Responsive table."""
-        terminal_width = console.width
-        available_width = max(terminal_width - 10, min_width)
-
-        total_fixed_width = 0
-        flexible_columns = []
-
-        for col in columns:
-            if "width" in col:
-                total_fixed_width += col["width"]
-            else:
-                flexible_columns.append(col)
-
-        remaining_width = available_width - total_fixed_width - (len(columns) * 3)
-
-        if flexible_columns:
-            width_per_flex = max(remaining_width // len(flexible_columns), 10)
-            for col in flexible_columns:
-                col["width"] = width_per_flex
-
-        if terminal_width < 80:
-            self._render_compact_table(title, columns, rows)
-        else:
-            self.table_enhanced(
-                title=title,
-                columns=columns,
-                rows=rows,
-                alternate_rows=True,
-                show_borders=True,
-                style="rounded"
-            )
-
-    def _render_compact_table(self, title: str, columns: List[Dict], rows: List[List]) -> None:
-        """Render compact table for narrow terminals."""
-        console.print(f"\n[bold]{title}[/bold]")
-        console.print("[dim]" + "─" * 40 + "[/dim]")
-
-        for row_idx, row in enumerate(rows):
-            if row_idx > 0:
-                console.print("[dim]" + "─" * 40 + "[/dim]")
-
-            for col_idx, col in enumerate(columns):
-                if col_idx < len(row):
-                    header = col.get("header", "")
-                    style = col.get("style", None)
-                    value = row[col_idx]
-
-                    if style:
-                        console.print(f"  [bold]{header}:[/bold] [{style}]{value}[/{style}]")
-                    else:
-                        console.print(f"  [bold]{header}:[/bold] {value}")
 
     def check_result_enhanced(
         self,
@@ -1688,67 +1739,6 @@ class OutputFormatter:
                 )
                 console.print(summary)
 
-    def beautiful_list(self, items: List[Dict], style: str = "bullet") -> None:
-        """Beautiful list display."""
-        if style == "bullet":
-            self._render_bullet_list(items)
-        elif style == "numbered":
-            self._render_numbered_list(items)
-        elif style == "cards":
-            self._render_cards_list(items)
-        else:
-            self._render_bullet_list(items)
-
-    def _render_bullet_list(self, items: List[Dict]) -> None:
-        """Render bullet list."""
-        for item in items:
-            text = item.get("text", "")
-            item_style = item.get("style", None)
-            icon = item.get("icon", "•")
-            indent = item.get("indent", 0)
-
-            indent_str = "  " * indent
-
-            if item_style:
-                console.print(f"{indent_str}[{item_style}]{icon}[/{item_style}] {text}")
-            else:
-                console.print(f"{indent_str}{icon} {text}")
-
-    def _render_numbered_list(self, items: List[Dict]) -> None:
-        """Render numbered list."""
-        for idx, item in enumerate(items, 1):
-            text = item.get("text", "")
-            item_style = item.get("style", None)
-            indent = item.get("indent", 0)
-
-            indent_str = "  " * indent
-
-            if item_style:
-                console.print(f"{indent_str}[bold cyan]{idx}.[/bold cyan] [{item_style}]{text}[/{item_style}]")
-            else:
-                console.print(f"{indent_str}[bold cyan]{idx}.[/bold cyan] {text}")
-
-    def _render_cards_list(self, items: List[Dict]) -> None:
-        """Render cards list."""
-        for item in items:
-            text = item.get("text", "")
-            item_style = item.get("style", None)
-            icon = item.get("icon", "•")
-            detail = item.get("detail", None)
-
-            content = f"[bold]{icon} {text}[/bold]"
-            if detail:
-                content += f"\n[dim]{detail}[/dim]"
-
-            border_style = item_style if item_style else BrandColors.PRIMARY
-
-            panel = Panel(
-                content,
-                border_style=border_style,
-                box=SIMPLE,
-                padding=(0, 1),
-            )
-            console.print(panel)
 
 
 class ParallelProgress:
@@ -1873,7 +1863,7 @@ def setup_logging(verbose: bool = False):
         handlers=[RichHandler(console=console, rich_tracebacks=True)]
     )
 
-    return logging.getLogger("ppc9")
+    return logging.getLogger("ppc10")
 
 
 def config_wizard(console: Console = None, full: bool = False) -> Dict[str, Any]:
@@ -1900,9 +1890,9 @@ def config_wizard(console: Console = None, full: bool = False) -> Dict[str, Any]
 
     console.print()
     console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    console.print(f"[bold white]  {Icons.GEAR} PPC9 配置向导[/bold white]")
+    console.print(f"[bold white]  {Icons.GEAR} PPC10 配置向导[/bold white]")
     console.print(f"[bold {BrandColors.PRIMARY}]{'═' * 60}[/bold {BrandColors.PRIMARY}]")
-    console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC9 v{BrandAssets.VERSION} | 冰璃岩文本转语音工具[/{BrandColors.TEXT_SECONDARY}]")
+    console.print(f"  [{BrandColors.TEXT_SECONDARY}]PPC10 v{BrandAssets.VERSION} | 冰璃岩文本转语音工具[/{BrandColors.TEXT_SECONDARY}]")
     console.print(f"  [{BrandColors.TEXT_SECONDARY}]{'─' * 56}[/{BrandColors.TEXT_SECONDARY}]")
     console.print()
 

@@ -47,7 +47,7 @@ class SimpleProgressHandler:
         if self.ui and self.ui.config.mode == UIMode.CLASSIC:
             return
 
-        self._live = Live(console=console, refresh_per_second=2)
+        self._live = Live(console=console, refresh_per_second=4)
         self._live.start()
         self._update_display()
 
@@ -60,6 +60,27 @@ class SimpleProgressHandler:
     def register_task(self, task_id: str, name: str):
         """Register task."""
         self.task_infos[task_id] = SimpleTaskInfo(name=name)
+
+    def set_total_tasks(self, n: int) -> None:
+        """设置总任务数（用于 --one 模式预分段后设置段数）。"""
+        self.total_tasks = n
+        self._original_total = n
+        self._update_display()
+
+    def on_segment_complete(self, success: bool, error: Optional[str] = None) -> None:
+        """段级完成回调（不需 register_task，直接累加 completed/failed）。
+
+        用于 --one 模式下逐段汇报合成结果。
+        """
+        if success:
+            self.completed += 1
+        else:
+            self.failed += 1
+        if self.ui and self.ui.config.mode == UIMode.CLASSIC:
+            if not success:
+                short = (error or "未知错误")[:80]
+                console.print(f"[red]❌ 段合成失败: {short}[/red]")
+        self._update_display()
 
     def on_task_start(self, task_id: str):
         """Task start callback."""

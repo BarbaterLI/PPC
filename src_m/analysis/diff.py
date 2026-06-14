@@ -1,7 +1,7 @@
-"""Analysis comparison functionality for PPC9.
+"""Analysis comparison functionality for PPC10.
 
 Compares two HealthReport objects and produces a DiffResult that describes
-what changed between them — new issues, fixed issues, persistent issues,
+what changed between them —new issues, fixed issues, persistent issues,
 and the score delta.
 """
 

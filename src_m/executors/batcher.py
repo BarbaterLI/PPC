@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from ..config import ConfigManager, PPC9Config
+from ..config import ConfigManager, PPC10Config
 from ..reliability import (
     ExecutionResult,
     ExecutionMetrics,
@@ -40,7 +40,7 @@ class BatcherExecutor(BatchExecutor):
 
     def __init__(
         self,
-        config: Optional[PPC9Config] = None,
+        config: Optional[PPC10Config] = None,
         retry_config: Optional[RetryConfig] = None
     ):
         retry_policy = None
@@ -78,7 +78,7 @@ class BatcherExecutor(BatchExecutor):
 
         try:
             if not input_dir.exists():
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error=f"输入目录不存在: {input_dir}",
                     error_code="DIR_NOT_FOUND"
                 )
@@ -86,7 +86,7 @@ class BatcherExecutor(BatchExecutor):
             files = self._collect_files(input_dir, pattern)
 
             if not files:
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="未找到符合格式的文件",
                     error_code="NO_FILES"
                 )
@@ -106,11 +106,11 @@ class BatcherExecutor(BatchExecutor):
                 request_count=sum(b.total_size for b in batch_results)
             )
 
-            return ExecutionResult.success(batch_results, metrics)
+            return ExecutionResult.ok(batch_results, metrics)
 
         except Exception as e:
             logger.error(f"批处理执行失败: {e}")
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e),
                 error_code="BATCH_FAILED"
             )
@@ -231,7 +231,7 @@ class BatcherExecutor(BatchExecutor):
             files = list(input_dir.glob(pattern))
 
             if not files:
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="未找到文件",
                     error_code="NO_FILES"
                 )
@@ -285,11 +285,11 @@ class BatcherExecutor(BatchExecutor):
                 request_count=current_size
             )
 
-            return ExecutionResult.success(created_archives, metrics)
+            return ExecutionResult.ok(created_archives, metrics)
 
         except Exception as e:
             logger.error(f"创建归档失败: {e}")
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e),
                 error_code="ARCHIVE_FAILED"
             )
@@ -321,14 +321,14 @@ class BatcherExecutor(BatchExecutor):
         files = self._collect_files(input_dir, pattern)
 
         if not files:
-            return ExecutionResult.failure(
+            return ExecutionResult.fail(
                 error="未找到符合格式的文件",
                 error_code="NO_FILES"
             )
 
         batches = self._plan_batches(files)
 
-        return ExecutionResult.success(batches)
+        return ExecutionResult.ok(batches)
 
     def is_volume_structure(self, input_dir: Path) -> bool:
         """检测目录是否为卷-章结构（包含至少2个子目录，每个子目录有章节文件）"""
@@ -355,13 +355,13 @@ class BatcherExecutor(BatchExecutor):
 
         try:
             if not input_dir.exists():
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error=f"输入目录不存在: {input_dir}",
                     error_code="DIR_NOT_FOUND"
                 )
 
             if not self.is_volume_structure(input_dir):
-                return ExecutionResult.failure(
+                return ExecutionResult.fail(
                     error="未检测到卷-章结构，请使用普通批次归档",
                     error_code="NOT_VOLUME_STRUCTURE"
                 )
@@ -386,11 +386,11 @@ class BatcherExecutor(BatchExecutor):
                 request_count=len(created_archives)
             )
 
-            return ExecutionResult.success(created_archives, metrics)
+            return ExecutionResult.ok(created_archives, metrics)
 
         except Exception as e:
             logger.error(f"按卷归档失败: {e}")
-            return ExecutionResult.error(
+            return ExecutionResult.fail(
                 error=str(e),
                 error_code="GROUP_BY_VOLUME_FAILED"
             )
