@@ -4,7 +4,7 @@
 
 ![version](https://img.shields.io/badge/version-10.1.0-blue)
 ![python](https://img.shields.io/badge/python-%3E%3D3.10-green)
-![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![license](https://img.shields.io/badge/license-Apache%202.0-lightgrey)
 ![tts](https://img.shields.io/badge/TTS-edge--tts-orange)
 
 - **版本**: 10.1.0
