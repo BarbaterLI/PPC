@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`src_m.audio.processor`.
+"""Unit tests for :mod:`src.audio.processor`.
 
 聚焦 :class:`AudioProcessor` 的 WAV-only 基线实现：
 * ``merge`` / ``validate`` / ``get_duration`` / ``get_info``
@@ -17,13 +17,12 @@ from pathlib import Path
 
 import pytest
 
-# 故意走完整模块路径，避开 src_m.audio.__init__ 中损坏的导入
-from src_m.audio.processor import (
+# 故意走完整模块路径，避开 src.audio.__init__ 中损坏的导入
+from src.audio.processor import (
     AudioFingerprint,
     AudioProcessor,
     SilenceRegion,
 )
-
 
 PYDUB_AVAILABLE = False
 try:  # pragma: no cover - 仅在安装时为真
@@ -31,7 +30,7 @@ try:  # pragma: no cover - 仅在安装时为真
 
     PYDUB_AVAILABLE = True
 except ImportError:
-    pydUB_AVAILABLE = False
+    PYDUB_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +127,7 @@ class TestValidate:
         assert ok is False
         assert "太小" in (msg or "")
 
-    def test_validate_unsupported_format(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_validate_unsupported_format(self, processor: AudioProcessor, tmp_path: Path) -> None:
         p = tmp_path / "audio.flac"
         p.write_bytes(b"fLaC" + b"\x00" * 2048)
         ok, msg = processor.validate(p)
@@ -151,17 +148,13 @@ class TestValidate:
 
 
 class TestMerge:
-    def test_merge_single_file_copies(
-        self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path
-    ) -> None:
+    def test_merge_single_file_copies(self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path) -> None:
         out = tmp_path / "out.wav"
         assert processor.merge([silent_wav], out, silence_ms=0) is True
         assert out.exists()
         assert out.stat().st_size > 0
 
-    def test_merge_multiple_files(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_merge_multiple_files(self, processor: AudioProcessor, tmp_path: Path) -> None:
         a = tmp_path / "a.wav"
         b = tmp_path / "b.wav"
         c = tmp_path / "c.wav"
@@ -177,9 +170,7 @@ class TestMerge:
         assert processor.merge([], out) is False
         assert not out.exists()
 
-    def test_merge_silence_zero_means_no_gap(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_merge_silence_zero_means_no_gap(self, processor: AudioProcessor, tmp_path: Path) -> None:
         a = tmp_path / "a.wav"
         b = tmp_path / "b.wav"
         for p in (a, b):
@@ -198,9 +189,7 @@ class TestMerge:
         assert processor.merge([silent_wav, missing, silent_wav], out) is True
         assert out.exists()
 
-    def test_merge_creates_parent_dirs(
-        self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path
-    ) -> None:
+    def test_merge_creates_parent_dirs(self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path) -> None:
         out = tmp_path / "deep" / "dir" / "out.wav"
         assert processor.merge([silent_wav], out) is True
         assert out.exists()
@@ -257,24 +246,16 @@ class TestInfo:
 
 
 class TestSilence:
-    def test_detect_silence_on_silent_file(
-        self, processor: AudioProcessor, silent_wav: Path
-    ) -> None:
-        regions = processor.detect_silence_regions(
-            silent_wav, rms_threshold=2000, min_duration_ms=50
-        )
+    def test_detect_silence_on_silent_file(self, processor: AudioProcessor, silent_wav: Path) -> None:
+        regions = processor.detect_silence_regions(silent_wav, rms_threshold=2000, min_duration_ms=50)
         assert isinstance(regions, list)
         assert len(regions) >= 1
         assert isinstance(regions[0], SilenceRegion)
 
-    def test_detect_silence_missing(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_detect_silence_missing(self, processor: AudioProcessor, tmp_path: Path) -> None:
         assert processor.detect_silence_regions(tmp_path / "no.wav") == []
 
-    def test_trim_silence_writes_output(
-        self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path
-    ) -> None:
+    def test_trim_silence_writes_output(self, processor: AudioProcessor, silent_wav: Path, tmp_path: Path) -> None:
         out = tmp_path / "trimmed.wav"
         result = processor.trim_silence(silent_wav, out)
         assert result is True
@@ -287,9 +268,7 @@ class TestSilence:
 
 
 class TestLoudness:
-    def test_normalize_loudness_falls_back_to_rms(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_normalize_loudness_falls_back_to_rms(self, processor: AudioProcessor, tmp_path: Path) -> None:
         # pyloudnorm 不存在时应走 RMS 回退；使用带信号的 wav
         src = tmp_path / "in.wav"
         _write_tone_wav(src, duration_seconds=0.2, amplitude=1000)
@@ -304,16 +283,12 @@ class TestLoudness:
         # 静音 wav 的 rms=0，RMS 路径会返回 False
         assert processor.normalize_loudness(silent_wav, out) is False
 
-    def test_normalize_loudness_missing(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_normalize_loudness_missing(self, processor: AudioProcessor, tmp_path: Path) -> None:
         assert processor.normalize_loudness(tmp_path / "no.wav", tmp_path / "out.wav") is False
 
 
 class TestFingerprint:
-    def test_fingerprint_returns_fingerprint(
-        self, processor: AudioProcessor, tone_wav: Path
-    ) -> None:
+    def test_fingerprint_returns_fingerprint(self, processor: AudioProcessor, tone_wav: Path) -> None:
         fp = processor.fingerprint(tone_wav)
         assert isinstance(fp, AudioFingerprint)
         assert len(fp.hash_hex) == 64  # sha256 hex
@@ -321,14 +296,10 @@ class TestFingerprint:
         assert fp.channels == 1
         assert fp.sample_width == 2
 
-    def test_fingerprint_missing(
-        self, processor: AudioProcessor, tmp_path: Path
-    ) -> None:
+    def test_fingerprint_missing(self, processor: AudioProcessor, tmp_path: Path) -> None:
         assert processor.fingerprint(tmp_path / "no.wav") is None
 
-    def test_fingerprint_to_dict(
-        self, processor: AudioProcessor, tone_wav: Path
-    ) -> None:
+    def test_fingerprint_to_dict(self, processor: AudioProcessor, tone_wav: Path) -> None:
         fp = processor.fingerprint(tone_wav)
         d = fp.to_dict()
         assert "hash" in d
@@ -351,7 +322,7 @@ class TestFormatConverter:
 
     def test_is_supported_format(self) -> None:
         try:
-            from src_m.audio.processor import FormatConverter  # type: ignore
+            from src.audio.processor import FormatConverter  # type: ignore
 
             assert FormatConverter.is_supported_format("wav") is True
         except ImportError:
@@ -359,7 +330,7 @@ class TestFormatConverter:
 
     def test_get_extension(self) -> None:
         try:
-            from src_m.audio.processor import FormatConverter  # type: ignore
+            from src.audio.processor import FormatConverter  # type: ignore
 
             ext = FormatConverter.get_extension("wav")
             assert ext == ".wav"
@@ -368,7 +339,7 @@ class TestFormatConverter:
 
     def test_convert_format(self, tmp_path: Path) -> None:
         try:
-            from src_m.audio.processor import AudioFormatConverter  # type: ignore
+            from src.audio.processor import AudioFormatConverter  # type: ignore
 
             assert AudioFormatConverter.convert_format is not None
         except ImportError:

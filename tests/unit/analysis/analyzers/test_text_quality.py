@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
-import textwrap
 from pathlib import Path
 
-import pytest
-
-from src_m.analysis.analyzers.text_quality import (
+from src.analysis.analyzers.text_quality import (
     TextQualityAnalyzer,
     _is_cjk,
     _is_oov,
     _is_rare,
     _split_sentences,
 )
-from src_m.analysis.models import AnalysisCategory, Severity
 
 
 def _run(coro):
@@ -27,6 +21,7 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 # Helper tests
 # ---------------------------------------------------------------------------
+
 
 def test_split_sentences_chinese():
     text = "这是第一句。这是第二句！这是第三句？"
@@ -72,6 +67,7 @@ def test_is_oov_basic_chinese_safe():
 # Analyzer tests
 # ---------------------------------------------------------------------------
 
+
 def test_analyzer_empty_input_returns_info_issue():
     analyzer = TextQualityAnalyzer()
     issues = _run(analyzer.analyze())
@@ -81,11 +77,7 @@ def test_analyzer_empty_input_returns_info_issue():
 
 def test_analyzer_short_clean_text_scores_high():
     analyzer = TextQualityAnalyzer()
-    issues = _run(
-        analyzer.analyze(
-            context={"inline_texts": ["这是一段简单的中文句子，用于测试。"]}
-        )
-    )
+    issues = _run(analyzer.analyze(context={"inline_texts": ["这是一段简单的中文句子，用于测试。"]}))
     summary = next(i for i in issues if i.details.get("kind") == "summary")
     assert summary.details["overall"] >= 80
 
@@ -119,7 +111,7 @@ def test_analyzer_long_line_flagged(tmp_path: Path):
 def test_analyzer_oov_detected():
     # Use a bunch of math script characters (Mn) combined with random private-use
     # area characters that are not in our whitelist.
-    text = "hello" + "\uE000\uE001\uE002\uE003\uE004\uE005" * 30
+    text = "hello" + "\ue000\ue001\ue002\ue003\ue004\ue005" * 30
     analyzer = TextQualityAnalyzer()
     issues = _run(analyzer.analyze(context={"inline_texts": [text]}))
     kinds = [i.details.get("kind") for i in issues]

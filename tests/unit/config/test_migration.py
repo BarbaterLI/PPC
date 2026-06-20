@@ -1,20 +1,18 @@
-"""Unit tests for :mod:`src_m.config.migration`.
+"""Unit tests for :mod:`src.config.migration`.
 
 覆盖 PPC5/8 配置向 PPC10 迁移的能力。
 """
+
 from __future__ import annotations
 
 import configparser
 from pathlib import Path
 
-import pytest
-
-from src_m.config.migration import (
+from src.config.migration import (
     VERSION_MAPPING,
     ConfigMigrator,
     migrate_ppc5_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # v5 → v6 迁移

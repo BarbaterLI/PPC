@@ -1,11 +1,10 @@
 """convert --one 模式 CLI 解析。"""
-from pathlib import Path
+
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from src_m.cli.typer_app import app
-
+from src.cli.typer_app import app
 
 runner = CliRunner()
 
@@ -19,7 +18,7 @@ def test_convert_one_default_output_dir(tmp_path):
     in_file = tmp_path / "book.txt"
     in_file.write_text("hello", encoding="utf-8")
 
-    with patch("src_m.cli.commands.convert.handle_convert") as mock_handle:
+    with patch("src.cli.commands.convert.handle_convert") as mock_handle:
         result = runner.invoke(app, ["convert", str(in_file), "--one"])
 
     assert result.exit_code == 0, result.output
@@ -34,7 +33,7 @@ def test_convert_one_explicit_output_dir(tmp_path):
     in_file.write_text("hello", encoding="utf-8")
     out_dir = tmp_path / "out"
 
-    with patch("src_m.cli.commands.convert.handle_convert") as mock_handle:
+    with patch("src.cli.commands.convert.handle_convert") as mock_handle:
         result = runner.invoke(app, ["convert", str(in_file), str(out_dir), "--one"])
 
     assert result.exit_code == 0, result.output
@@ -49,8 +48,34 @@ def test_convert_batch_mode_one_false(tmp_path):
     in_dir.mkdir()
     out_dir = tmp_path / "out"
 
-    with patch("src_m.cli.commands.convert.handle_convert") as mock_handle:
+    with patch("src.cli.commands.convert.handle_convert") as mock_handle:
         result = runner.invoke(app, ["convert", str(in_dir), str(out_dir)])
 
     assert result.exit_code == 0
     assert mock_handle.call_args.kwargs.get("one") is False  # one=False (default)
+
+
+def test_convert_timeout_options_passed_to_handler(tmp_path):
+    """--timeout-mode 与 --timeout 应透传给 handle_convert。"""
+    in_dir = tmp_path / "txt"
+    in_dir.mkdir()
+    out_dir = tmp_path / "out"
+
+    with patch("src.cli.commands.convert.handle_convert") as mock_handle:
+        result = runner.invoke(
+            app,
+            [
+                "convert",
+                str(in_dir),
+                str(out_dir),
+                "--timeout-mode",
+                "fixed",
+                "--timeout",
+                "30",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    kwargs = mock_handle.call_args.kwargs
+    assert kwargs.get("timeout_mode") == "fixed"
+    assert kwargs.get("timeout") == 30

@@ -1,13 +1,10 @@
 """冒烟测试：验证 CLI 启动无异常。"""
+
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,9 +32,7 @@ class TestCLIBootstrap:
         """验证 ppc10.py 可作为模块导入而不抛异常。"""
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location(
-            "ppc10", str(REPO_ROOT / "ppc10.py")
-        )
+        spec = importlib.util.spec_from_file_location("ppc10", str(REPO_ROOT / "ppc10.py"))
         assert spec is not None
         # 不实际执行；只验证 spec 合法
         assert spec.name == "ppc10"

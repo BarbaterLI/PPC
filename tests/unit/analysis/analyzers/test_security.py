@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import re
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from src_m.analysis.analyzers.security import (
+from src.analysis.analyzers.security import (
     SecurityAnalyzer,
-    _shannon_entropy,
     _scan_string_literal,
+    _shannon_entropy,
 )
-from src_m.analysis.models import AnalysisCategory, Severity
+from src.analysis.models import AnalysisCategory, Severity
 
 
 def _run(coro):
@@ -32,6 +30,7 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 # Helper tests
 # ---------------------------------------------------------------------------
+
 
 def test_shannon_entropy_uniform_is_max():
     # "abcd" (4 chars) has entropy 2.0
@@ -68,8 +67,9 @@ def test_scan_string_literal_short_not_flagged():
 # Analyzer tests
 # ---------------------------------------------------------------------------
 
+
 def _build_analyzer(tmp_path: Path) -> SecurityAnalyzer:
-    # Use tmp_path as scan_root so the analyzer doesn't walk the full src_m
+    # Use tmp_path as scan_root so the analyzer doesn't walk the full src
     # tree (which may not contain secrets but adds latency).
     return SecurityAnalyzer(scan_root=str(tmp_path))
 
@@ -220,13 +220,7 @@ def test_analyzer_handles_missing_scan_root(tmp_path: Path):
 def test_analyzer_inline_sources(tmp_path: Path):
     analyzer = SecurityAnalyzer(scan_root=str(tmp_path / "nope"))
     issues = _run(
-        analyzer.analyze(
-            context={
-                "inline_sources": {
-                    "virtual.py": "password = 'hunter2-supersecret-12345'\n"
-                }
-            }
-        )
+        analyzer.analyze(context={"inline_sources": {"virtual.py": "password = 'hunter2-supersecret-12345'\n"}})
     )
     matches = [i for i in issues if i.details.get("pattern") == "password_assignment"]
     assert matches

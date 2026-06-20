@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`src_m.engines.chapter_engine`.
+"""Unit tests for :mod:`src.engines.chapter_engine`.
 
 覆盖：
 * :class:`ChapterInfo` / :class:`ChapterRuleSet` 数据结构
@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from src_m.config.presets import get_preset
-from src_m.core.result import ExecutionResult
-from src_m.engines.chapter_engine import (
+from src.config.presets import get_preset
+from src.core.result import ExecutionResult
+from src.engines.chapter_engine import (
     ChapterEngine,
     ChapterInfo,
     ChapterRuleSet,
@@ -121,9 +121,7 @@ class TestNormalizeChapterTitle:
         assert result == " a "
 
     def test_no_strip_no_collapse(self) -> None:
-        result = normalize_chapter_title(
-            "  a  ", strip=False, collapse_whitespace=False
-        )
+        result = normalize_chapter_title("  a  ", strip=False, collapse_whitespace=False)
         assert result == "  a  "
 
 
@@ -137,13 +135,7 @@ class TestChapterDetection:
         # 每章正文必须 >= min_chapter_length (balanced = 100)
         body1 = "这是第一章的正文内容。" * 20
         body2 = "这是第二章的正文内容。" * 20
-        content = (
-            "第一章 开始\n"
-            f"{body1}\n"
-            "\n"
-            "第二章 继续\n"
-            f"{body2}\n"
-        )
+        content = f"第一章 开始\n{body1}\n\n第二章 继续\n{body2}\n"
         result = _run(engine.split(content, tmp_path, "chapter"))
         assert isinstance(result, ExecutionResult)
         assert result.success is True
@@ -158,13 +150,7 @@ class TestChapterDetection:
     def test_english_chapters(self, english_engine: ChapterEngine, tmp_path: Path) -> None:
         body1 = "This is the first chapter body. " * 8
         body2 = "This is the second chapter body. " * 8
-        content = (
-            "Chapter 1: The Beginning\n"
-            f"{body1}\n"
-            "\n"
-            "Chapter 2: The End\n"
-            f"{body2}\n"
-        )
+        content = f"Chapter 1: The Beginning\n{body1}\n\nChapter 2: The End\n{body2}\n"
         result = _run(english_engine.split(content, tmp_path, "chapter"))
         assert result.success is True
         assert result.data is not None
@@ -176,9 +162,7 @@ class TestChapterDetection:
         assert result.success is False
         assert "未检测到章节" in (result.error or "")
 
-    def test_short_text_no_chapter(
-        self, engine: ChapterEngine, tmp_path: Path
-    ) -> None:
+    def test_short_text_no_chapter(self, engine: ChapterEngine, tmp_path: Path) -> None:
         # 内容长度 < min_chapter_length -> 无有效章节，但会回退为 "全文" 单章
         result = _run(engine.split("短文本", tmp_path, "chapter"))
         assert result.success is True
@@ -195,9 +179,7 @@ class TestChapterDetection:
 
 class TestRuleLoading:
     def test_load_from_dict(self, engine: ChapterEngine) -> None:
-        rs = engine.load_rules_from_dict(
-            "custom", [r"^第\d+章\s+(.*)$", r"^Chapter \d+(.*)$"]
-        )
+        rs = engine.load_rules_from_dict("custom", [r"^第\d+章\s+(.*)$", r"^Chapter \d+(.*)$"])
         assert rs.name == "custom"
         assert "custom" in engine.list_rule_sets()
         assert "custom" in engine._extra_rule_sets
@@ -236,8 +218,7 @@ class TestRuleLoading:
     def test_load_yaml_string_patterns(self, engine: ChapterEngine, tmp_path: Path) -> None:
         p = tmp_path / "str.yaml"
         p.write_text(
-            "name: solo\n"
-            "patterns: '^第\\d+章$'\n",
+            "name: solo\npatterns: '^第\\d+章$'\n",
             encoding="utf-8",
         )
         rs = engine.load_rules_from_file(p)
@@ -257,18 +238,10 @@ class TestEngineMisc:
         assert "rule_sets" in stats
         assert "chinese_novel" in stats["rule_sets"]
 
-    def test_split_creates_files(
-        self, engine: ChapterEngine, tmp_path: Path
-    ) -> None:
+    def test_split_creates_files(self, engine: ChapterEngine, tmp_path: Path) -> None:
         body1 = "开篇章节内容 " * 30
         body2 = "中段章节内容 " * 30
-        content = (
-            "第一章 开篇\n"
-            f"{body1}\n"
-            "\n"
-            "第二章 中段\n"
-            f"{body2}\n"
-        )
+        content = f"第一章 开篇\n{body1}\n\n第二章 中段\n{body2}\n"
         out_dir = tmp_path / "out"
         result = _run(engine.split(content, out_dir, "novel"))
         assert result.success is True
@@ -287,10 +260,7 @@ class TestEngineMisc:
 
     def test_split_file_success(self, engine: ChapterEngine, tmp_path: Path) -> None:
         body = "开篇章节内容 " * 30
-        content = (
-            "第一章 开篇\n"
-            f"{body}\n"
-        )
+        content = f"第一章 开篇\n{body}\n"
         src = tmp_path / "book.txt"
         src.write_text(content, encoding="utf-8")
         out_dir = tmp_path / "out"

@@ -1,17 +1,16 @@
-"""Unit tests for :mod:`src_m.analysis.analyzers.config`.
+"""Unit tests for :mod:`src.analysis.analyzers.config`.
 
 覆盖 ConfigAnalyzer 的配置冲突检测能力。
 """
+
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any, Dict
 
 import pytest
 
-from src_m.analysis.analyzers.config import ConfigAnalyzer
-from src_m.analysis.models import AnalysisCategory, AnalysisIssue
+from src.analysis.analyzers.config import ConfigAnalyzer
+from src.analysis.models import AnalysisCategory
 
 
 def _run(coro):
@@ -55,7 +54,7 @@ class TestConfigAnalyzerRun:
 
     def test_analyze_handles_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 模拟 config 加载失败 → 应至少返回一条 critical issue
-        from src_m.config import manager as mgr_mod
+        from src.config import manager as mgr_mod
 
         def _boom_config():
             raise RuntimeError("config broken")

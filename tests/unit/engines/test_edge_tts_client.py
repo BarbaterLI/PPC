@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`src_m.engines.edge_tts_client`."""
+"""Unit tests for :mod:`src.engines.edge_tts_client`."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import inspect
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict, List
 
 import pytest
 
+from src.engines.edge_tts_client import EdgeTTSHttpClient
 
 # ---------------------------------------------------------------------------
 # Fakes for the edge_tts library — stand-alone objects injected via the
@@ -28,7 +28,7 @@ class _FakeCommunicate:
         voice: str,
         rate: str = "+0%",
         volume: str = "+0%",
-        chunks: List[bytes] | None = None,
+        chunks: list[bytes] | None = None,
         fail_with: BaseException | None = None,
     ) -> None:
         self.text = text
@@ -57,34 +57,38 @@ class _FakeCommunicate:
 class _FakeVoicesManager:
     """List-like stand-in for ``edge_tts.VoicesManager``."""
 
-    def __init__(self, voices: List[Dict[str, str]]):
+    def __init__(self, voices: list[dict[str, str]]):
         self.voices = list(voices)
 
 
 def _make_client(
-    chunks: List[bytes] | None = None,
-    voices: List[Dict[str, str]] | None = None,
+    chunks: list[bytes] | None = None,
+    voices: list[dict[str, str]] | None = None,
     fail_with: BaseException | None = None,
-) -> "EdgeTTSHttpClient":
-    from src_m.engines.edge_tts_client import EdgeTTSHttpClient
+) -> EdgeTTSHttpClient:
+    from src.engines.edge_tts_client import EdgeTTSHttpClient
 
     chunks = chunks if chunks is not None else [b"FAKE-CHUNK-1", b"FAKE-CHUNK-2"]
-    voices = voices if voices is not None else [
-        {
-            "Name": "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)",
-            "ShortName": "zh-CN-XiaoxiaoNeural",
-            "Gender": "Female",
-            "Locale": "zh-CN",
-            "FriendlyName": "Microsoft Xiaoxiao",
-        },
-        {
-            "Name": "Microsoft Server Speech Text to Speech Voice (en-US, JennyNeural)",
-            "ShortName": "en-US-JennyNeural",
-            "Gender": "Female",
-            "Locale": "en-US",
-            "FriendlyName": "Microsoft Jenny",
-        },
-    ]
+    voices = (
+        voices
+        if voices is not None
+        else [
+            {
+                "Name": "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)",
+                "ShortName": "zh-CN-XiaoxiaoNeural",
+                "Gender": "Female",
+                "Locale": "zh-CN",
+                "FriendlyName": "Microsoft Xiaoxiao",
+            },
+            {
+                "Name": "Microsoft Server Speech Text to Speech Voice (en-US, JennyNeural)",
+                "ShortName": "en-US-JennyNeural",
+                "Gender": "Female",
+                "Locale": "en-US",
+                "FriendlyName": "Microsoft Jenny",
+            },
+        ]
+    )
 
     def communicate_factory(text, voice, rate, volume):
         return _FakeCommunicate(
@@ -110,9 +114,8 @@ def _make_client(
 
 class TestEdgeTTSProtocol:
     def test_protocol_is_runtime_checkable(self) -> None:
-        from src_m.engines.edge_tts_client import (
+        from src.engines.edge_tts_client import (
             EdgeTTSClient,
-            EdgeTTSHttpClient,
             EdgeTTSProtocol,
         )
 
@@ -125,25 +128,23 @@ class TestEdgeTTSProtocol:
             EdgeTTSClient()  # type: ignore[abstract]
 
     def test_protocol_exposes_required_methods(self) -> None:
-        from src_m.engines.edge_tts_client import EdgeTTSProtocol
+        from src.engines.edge_tts_client import EdgeTTSProtocol
 
         assert inspect.iscoroutinefunction(EdgeTTSProtocol.list_voices)
         # ``synthesize_stream`` is part of the protocol (it has an
         # ``AsyncIterator[TTSChunk]`` return type). Runtime-checkable
         # protocols don't keep annotations on the class, so we just
         # verify the attribute is reachable.
-        assert "synthesize_stream" in dir(EdgeTTSProtocol) or hasattr(
-            EdgeTTSProtocol, "synthesize_stream"
-        )
+        assert "synthesize_stream" in dir(EdgeTTSProtocol) or hasattr(EdgeTTSProtocol, "synthesize_stream")
 
 
 class TestEdgeTTSHttpClientStreaming:
     def test_streaming_yields_audio_chunks(self) -> None:
         client = _make_client(chunks=[b"AAAA", b"BBBB", b"CCCC"])
-        from src_m.engines.edge_tts_client import TTSChunk
+        from src.engines.edge_tts_client import TTSChunk
 
         gen = client.synthesize_stream("hello", "zh-CN-XiaoxiaoNeural")
-        chunks: List[TTSChunk] = []
+        chunks: list[TTSChunk] = []
 
         async def collect() -> None:
             async for chunk in gen:
@@ -164,7 +165,7 @@ class TestEdgeTTSHttpClientStreaming:
     def test_resume_skips_chunks_below_offset(self) -> None:
         client = _make_client(chunks=[b"AAAA", b"BBBB", b"CCCC"])
 
-        async def collect() -> List[bytes]:
+        async def collect() -> list[bytes]:
             gen = client.synthesize_stream(
                 "hello",
                 "zh-CN-XiaoxiaoNeural",
@@ -176,14 +177,12 @@ class TestEdgeTTSHttpClientStreaming:
         assert result == [b"BBBB", b"CCCC"]
 
     def test_negative_offset_raises_permanent(self) -> None:
-        from src_m.core.exceptions import PermanentError
+        from src.core.exceptions import PermanentError
 
         client = _make_client()
 
         async def drive() -> None:
-            gen = client.synthesize_stream(
-                "hi", "zh-CN-XiaoxiaoNeural", last_chunk_offset=-1
-            )
+            gen = client.synthesize_stream("hi", "zh-CN-XiaoxiaoNeural", last_chunk_offset=-1)
             async for _ in gen:
                 pass
 
@@ -191,12 +190,12 @@ class TestEdgeTTSHttpClientStreaming:
             asyncio.run(drive())
 
     def test_classifies_no_audio_as_transient(self) -> None:
-        from src_m.core.exceptions import TransientError
+        from src.core.exceptions import TransientError
 
-        class _NoAudioReceived(Exception):
+        class _NoAudioReceivedError(Exception):
             pass
 
-        client = _make_client(fail_with=_NoAudioReceived("nope"))
+        client = _make_client(fail_with=_NoAudioReceivedError("nope"))
 
         async def drive() -> None:
             gen = client.synthesize_stream("hi", "voice")
@@ -240,13 +239,13 @@ class TestErrorClassification:
         exc_factory,
         expected_type: str,
     ) -> None:
-        from src_m.core.exceptions import (
+        from src.core.exceptions import (
             NetworkError,
             PermanentError,
             QuotaError,
             TransientError,
         )
-        from src_m.engines.edge_tts_client import EdgeTTSClient
+        from src.engines.edge_tts_client import EdgeTTSClient
 
         type_map = {
             "TransientError": TransientError,
@@ -259,16 +258,16 @@ class TestErrorClassification:
         assert isinstance(classified, type_map[expected_type])
 
     def test_already_classified_passthrough(self) -> None:
-        from src_m.core.exceptions import PermanentError
-        from src_m.engines.edge_tts_client import EdgeTTSClient
+        from src.core.exceptions import PermanentError
+        from src.engines.edge_tts_client import EdgeTTSClient
 
         original = PermanentError("nope")
         assert EdgeTTSClient._classify_exception(original) is original
 
     def test_aiohttp_connector_classified_as_network(self, monkeypatch) -> None:
-        from src_m.core.exceptions import NetworkError
-        from src_m.engines.edge_tts_client import EdgeTTSClient
-        import src_m.engines.edge_tts_client as client_mod
+        import src.engines.edge_tts_client as client_mod
+        from src.core.exceptions import NetworkError
+        from src.engines.edge_tts_client import EdgeTTSClient
 
         class _FakeClientConnectorError(Exception):
             pass
@@ -310,7 +309,7 @@ class TestListVoices:
 
     def test_list_voices_handles_plain_list(self) -> None:
         """``edge_tts.list_voices`` returns a plain list in some versions."""
-        from src_m.engines.edge_tts_client import EdgeTTSHttpClient
+        from src.engines.edge_tts_client import EdgeTTSHttpClient
 
         voices = [
             {
@@ -334,9 +333,7 @@ class TestSynthesizeToFile:
     def test_synthesize_to_file_writes_bytes(self, tmp_path: Path) -> None:
         client = _make_client(chunks=[b"MP3FRAME1", b"MP3FRAME2"])
         out = tmp_path / "out.mp3"
-        written = asyncio.run(
-            client.synthesize_to_file("hello", out, "zh-CN-XiaoxiaoNeural")
-        )
+        written = asyncio.run(client.synthesize_to_file("hello", out, "zh-CN-XiaoxiaoNeural"))
         assert written == len(b"MP3FRAME1") + len(b"MP3FRAME2")
         assert out.read_bytes() == b"MP3FRAME1MP3FRAME2"
 
@@ -347,7 +344,7 @@ class TestSynthesizeToFile:
         therefore only verify the file is *not* truncated (existing
         content preserved) and the path is opened in append mode.
         """
-        from src_m.engines.edge_tts_client import EdgeTTSHttpClient
+        from src.engines.edge_tts_client import EdgeTTSHttpClient
 
         # Use a custom factory whose chunks start at the resume offset.
         existing_size = 9  # len(b"EXISTING-")
@@ -367,9 +364,8 @@ class TestSynthesizeToFile:
 
         # Hook to observe the mode used.
         from unittest.mock import patch as _patch
-        captured: Dict[str, str] = {}
 
-        original_open = EdgeTTSHttpClient.__module__  # placeholder
+        captured: dict[str, str] = {}
 
         real_open = Path.open
 
@@ -379,9 +375,7 @@ class TestSynthesizeToFile:
 
         async def drive() -> int:
             with _patch("pathlib.Path.open", _spy_open):
-                return await client.synthesize_to_file(
-                    "hi", out, "voice", last_chunk_offset=existing_size
-                )
+                return await client.synthesize_to_file("hi", out, "voice", last_chunk_offset=existing_size)
 
         written = asyncio.run(drive())
         # All chunks were skipped due to resume, so nothing new is written.

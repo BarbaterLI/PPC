@@ -1,8 +1,9 @@
 """TTSEngine.synthesize 透传 disable_timeout，跳过 asyncio.wait_for。"""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src_m.config.presets import get_preset
+from src.config.presets import get_preset
 
 
 def _run(coro):
@@ -13,7 +14,8 @@ def _make_engine():
     cfg = get_preset("balanced")
     cfg.tts.concurrency = 1
     cfg.tts.api_concurrency = 1
-    from src_m.engines.tts_engine import TTSEngine
+    from src.engines.tts_engine import TTSEngine
+
     return TTSEngine(cfg)
 
 
@@ -29,11 +31,13 @@ def test_synthesize_disables_wait_for_when_flag_set(tmp_path):
         call_log.append(("wait_for", timeout))
         return await awaitable
 
-    with patch.object(engine._text_normalizer, "normalize", side_effect=lambda x: x):
-        with patch.object(engine, "_cache_lookup", return_value=None):
-            with patch.object(engine, "_edge_client", fake_client):
-                with patch("src_m.engines.tts_engine.asyncio.wait_for", side_effect=fake_wait_for):
-                    _run(engine.synthesize("hello", tmp_path / "a.mp3", disable_timeout=True))
+    with (
+        patch.object(engine._text_normalizer, "normalize", side_effect=lambda x: x),
+        patch.object(engine, "_cache_lookup", return_value=None),
+        patch.object(engine, "_edge_client", fake_client),
+        patch("src.engines.tts_engine.asyncio.wait_for", side_effect=fake_wait_for),
+    ):
+        _run(engine.synthesize("hello", tmp_path / "a.mp3", disable_timeout=True))
 
     # disable_timeout=True 时，wait_for 要么不调用，要么 timeout=None
     if call_log:
@@ -49,10 +53,12 @@ def test_synthesize_uses_wait_for_by_default(tmp_path):
         call_log.append(("wait_for", timeout))
         return await awaitable
 
-    with patch.object(engine._text_normalizer, "normalize", side_effect=lambda x: x):
-        with patch.object(engine, "_cache_lookup", return_value=None):
-            with patch("src_m.engines.tts_engine.asyncio.wait_for", side_effect=fake_wait_for):
-                _run(engine.synthesize("hello", tmp_path / "a.mp3"))
+    with (
+        patch.object(engine._text_normalizer, "normalize", side_effect=lambda x: x),
+        patch.object(engine, "_cache_lookup", return_value=None),
+        patch("src.engines.tts_engine.asyncio.wait_for", side_effect=fake_wait_for),
+    ):
+        _run(engine.synthesize("hello", tmp_path / "a.mp3"))
 
     # 默认必须调用 wait_for 且带 timeout
     assert call_log, "默认应调用 asyncio.wait_for"

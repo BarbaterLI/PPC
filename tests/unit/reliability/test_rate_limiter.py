@@ -1,11 +1,8 @@
 """Unit tests for the two-tier rate limiter."""
 
 import asyncio
-import time
 
-import pytest
-
-from src_m.reliability.rate_limiter import (
+from src.reliability.rate_limiter import (
     AsyncSlidingWindow,
     AsyncTokenBucket,
     RateLimitStrategy,
@@ -87,31 +84,41 @@ class TestTwoTierRateLimiter:
             r3 = await lim.acquire("node-A")
             assert r3.allowed is False
             assert r3.scope == "node"
+
         asyncio.run(runner())
 
     def test_global_exhaustion_short_circuits(self):
         async def runner():
-            lim = TwoTierRateLimiter(self._config(
-                global_max_tokens=1, global_refill_rate=0.1,
-            ))
+            lim = TwoTierRateLimiter(
+                self._config(
+                    global_max_tokens=1,
+                    global_refill_rate=0.1,
+                )
+            )
             r1 = await lim.acquire("node-A")
             assert r1.allowed
             r2 = await lim.acquire("node-B")
             assert r2.allowed is False
             assert r2.scope == "global"
+
         asyncio.run(runner())
 
     def test_independent_per_node_buckets(self):
         async def runner():
-            lim = TwoTierRateLimiter(self._config(
-                global_max_tokens=10, global_refill_rate=10.0,
-                node_max_tokens=2, node_refill_rate=2.0,
-            ))
+            lim = TwoTierRateLimiter(
+                self._config(
+                    global_max_tokens=10,
+                    global_refill_rate=10.0,
+                    node_max_tokens=2,
+                    node_refill_rate=2.0,
+                )
+            )
             await lim.acquire("A")
             await lim.acquire("A")
             # A is exhausted but B is fresh
             r = await lim.acquire("B")
             assert r.allowed is True
+
         asyncio.run(runner())
 
     def test_get_stats_includes_both_tiers(self):
@@ -124,16 +131,19 @@ class TestTwoTierRateLimiter:
             assert "global" in stats
             assert "nodes" in stats
             assert "A" in stats["nodes"]
+
         asyncio.run(runner())
 
     def test_sliding_window_strategy(self):
         async def runner():
             cfg = TierRateLimiterConfig(
                 global_strategy=RateLimitStrategy.SLIDING_WINDOW,
-                global_max_requests=2, global_refill_rate=10.0,
+                global_max_requests=2,
+                global_refill_rate=10.0,
                 window_size=1.0,
                 node_strategy=RateLimitStrategy.SLIDING_WINDOW,
-                node_max_requests=2, node_refill_rate=10.0,
+                node_max_requests=2,
+                node_refill_rate=10.0,
                 node_window_size=1.0,
             )
             lim = TwoTierRateLimiter(cfg)
@@ -141,4 +151,5 @@ class TestTwoTierRateLimiter:
             assert (await lim.acquire("A")).allowed
             r = await lim.acquire("A")
             assert r.allowed is False
+
         asyncio.run(runner())

@@ -1,4 +1,4 @@
-"""PPC10 - 冰璃岩文本转语音工具 v10.0.0
+"""PPC10 - 冰璃岩文本转语音工具 v10.1.0
 
 冰璃岩项目开发组 (BLY Team) 出品
 
@@ -10,7 +10,7 @@ import sys
 import subprocess
 from pathlib import Path
 
-__version__ = "10.0.0"
+__version__ = "10.1.0"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -90,7 +90,7 @@ def run_webui(host=None, port=None, debug=False):
     if WEBUI_DIST.is_dir():
         os.environ["FLASK_STATIC_FOLDER"] = str(WEBUI_DIST)
 
-    from src_m.web.app import create_app
+    from src.web.app import create_app
     app = create_app("development" if debug else "production")
 
     print(f"[ppc10] WebUI 启动: http://{host}:{port} (debug={debug})")
@@ -104,7 +104,7 @@ def main():
         host, port, debug = _parse_webui_args(sys.argv)
         return run_webui(host=host, port=port, debug=debug)
 
-    from src_m.cli.typer_app import run as run_cli
+    from src.cli.typer_app import run as run_cli
     sys.argv = ["ppc10"] + sys.argv[1:]
     run_cli()
     return 0

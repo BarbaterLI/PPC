@@ -3,7 +3,7 @@
 This conftest is loaded automatically by ``pytest``. It does two things:
 
 * it ensures the local ``venv_local`` directory (used during development)
-  is on ``sys.path`` so that ``pytest`` resolves ``src_m`` correctly
+  is on ``sys.path`` so that ``pytest`` resolves ``src`` correctly
   when run from the repo root without an editable install;
 * it exposes a few domain-level fixtures shared by the Phase 1 unit
   tests (mock Edge TTS factories, in-memory caches, fake audio paths).
@@ -11,12 +11,9 @@ This conftest is loaded automatically by ``pytest``. It does two things:
 
 from __future__ import annotations
 
-import importlib
-import os
 import sys
-import types
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any
 
 import pytest
 
@@ -50,7 +47,7 @@ class _FakeCommunicate:
         voice: str,
         rate: str = "+0%",
         volume: str = "+0%",
-        chunks: List[bytes] | None = None,
+        chunks: list[bytes] | None = None,
         fail_with: Exception | None = None,
     ) -> None:
         self.text = text
@@ -59,7 +56,7 @@ class _FakeCommunicate:
         self.volume = volume
         self.chunks = chunks or [b"\x00" * 64]
         self.fail_with = fail_with
-        self.saved: List[bytes] = []
+        self.saved: list[bytes] = []
 
     async def stream(self):  # noqa: D401
         if self.fail_with is not None:
@@ -85,7 +82,7 @@ def fake_communicate_factory() -> Any:
     Tests can inject a custom list of ``chunks`` or a ``fail_with``
     exception by populating ``factory.kwargs`` before each call.
     """
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "chunks": [b"FAKE-MP3-CHUNK-1", b"FAKE-MP3-CHUNK-2"],
         "fail_with": None,
     }
@@ -105,7 +102,7 @@ def fake_communicate_factory() -> Any:
 
 
 @pytest.fixture
-def sample_voice_list() -> List[Dict[str, str]]:
+def sample_voice_list() -> list[dict[str, str]]:
     return [
         {
             "Name": "Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)",

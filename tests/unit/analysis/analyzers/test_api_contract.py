@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import textwrap
 from pathlib import Path
 
-import pytest
-
-from src_m.analysis.analyzers.api_contract import (
+from src.analysis.analyzers.api_contract import (
     APIContractAnalyzer,
-    DEFAULT_BASELINE_PATH,
     MethodSignature,
     _diff_signatures,
     _safe_import,
     _signature_dict,
     _snapshot_class,
 )
-from src_m.analysis.models import AnalysisCategory, Severity
+from src.analysis.models import Severity
 
 
 def _run(coro):
@@ -29,6 +25,7 @@ def _run(coro):
 # Helper tests
 # ---------------------------------------------------------------------------
 
+
 class _SampleV1:
     def synthesize(self, text, voice, rate="+0%", volume="+0%"):
         return None
@@ -37,7 +34,7 @@ class _SampleV1:
         return payload
 
 
-class _SampleV2_Broken:
+class _SampleV2Broken:
     """Drop the ``voice`` parameter; change sync -> async."""
 
     def synthesize(self, text, rate="+0%", volume="+0%"):
@@ -113,6 +110,7 @@ def test_safe_import_returns_none_for_missing():
 # Analyzer tests
 # ---------------------------------------------------------------------------
 
+
 def _build_baseline(path: Path, classes: dict) -> Path:
     payload = {"timestamp": "2024-01-01T00:00:00+00:00", "classes": classes}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,17 +133,13 @@ def test_analyzer_creates_baseline_when_missing(tmp_path: Path):
 
 def test_analyzer_returns_no_issues_when_unchanged(tmp_path: Path):
     # Use a real, stable class to build the baseline.
-    snapshot = {
-        "src_m.engines.tts_engine.TTSEngine": _snapshot_class(
-            "src_m.engines.tts_engine.TTSEngine", "engine"
-        )
-    }
+    snapshot = {"src.engines.tts_engine.TTSEngine": _snapshot_class("src.engines.tts_engine.TTSEngine", "engine")}
     baseline = tmp_path / "api_baseline.json"
     _build_baseline(baseline, snapshot)
 
     analyzer = APIContractAnalyzer(
         baseline_path=baseline,
-        targets=[("src_m.engines.tts_engine.TTSEngine", "engine")],
+        targets=[("src.engines.tts_engine.TTSEngine", "engine")],
     )
     issues = _run(analyzer.analyze())
     breaking = [i for i in issues if i.severity in {Severity.CRITICAL, Severity.HIGH}]
@@ -155,10 +149,10 @@ def test_analyzer_returns_no_issues_when_unchanged(tmp_path: Path):
 def test_analyzer_detects_breaking_change_in_baseline(tmp_path: Path):
     # Fake a baseline that includes a "removed" method.
     baseline_data = {
-        "src_m.engines.tts_engine.TTSEngine": {
-            "id": "src_m.engines.tts_engine.TTSEngine",
+        "src.engines.tts_engine.TTSEngine": {
+            "id": "src.engines.tts_engine.TTSEngine",
             "kind": "engine",
-            "module": "src_m.engines.tts_engine",
+            "module": "src.engines.tts_engine",
             "qualname": "TTSEngine",
             "found": True,
             "methods": {
@@ -176,7 +170,7 @@ def test_analyzer_detects_breaking_change_in_baseline(tmp_path: Path):
 
     analyzer = APIContractAnalyzer(
         baseline_path=baseline,
-        targets=[("src_m.engines.tts_engine.TTSEngine", "engine")],
+        targets=[("src.engines.tts_engine.TTSEngine", "engine")],
     )
     issues = _run(analyzer.analyze())
     removed = [i for i in issues if i.details.get("kind") == "method_removed"]
@@ -190,7 +184,7 @@ def test_analyzer_detects_new_class(tmp_path: Path):
 
     analyzer = APIContractAnalyzer(
         baseline_path=baseline,
-        targets=[("src_m.engines.tts_engine.TTSEngine", "engine")],
+        targets=[("src.engines.tts_engine.TTSEngine", "engine")],
     )
     issues = _run(analyzer.analyze())
     new = [i for i in issues if i.details.get("kind") == "new_class"]
@@ -201,7 +195,7 @@ def test_create_baseline_helper(tmp_path: Path):
     baseline = tmp_path / "api_baseline.json"
     analyzer = APIContractAnalyzer(
         baseline_path=baseline,
-        targets=[("src_m.engines.tts_engine.TTSEngine", "engine")],
+        targets=[("src.engines.tts_engine.TTSEngine", "engine")],
     )
     path = analyzer.create_baseline()
     assert path == baseline

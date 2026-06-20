@@ -1,4 +1,4 @@
-"""Unit tests for src_m.text.segmenter.Phase 1 升级."""
+"""Unit tests for src.text.segmenter.Phase 1 升级."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src_m.text.segmenter import (  # noqa: E402
+from src.text.segmenter import (  # noqa: E402
     BaseSegmentStrategy,
     ChapterAwareStrategy,
     HybridStrategy,
@@ -20,7 +20,6 @@ from src_m.text.segmenter import (  # noqa: E402
     SplitStrategy,
     TextSegmenter,
 )
-
 
 # ---------------------------------------------------------------------------
 # 策略

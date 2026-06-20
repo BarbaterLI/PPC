@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any
 
-import pytest
-
-from src_m.analysis.analyzers.scheduling_hotspot import (
-    HotspotSummary,
+from src.analysis.analyzers.scheduling_hotspot import (
     SchedulingHotspotAnalyzer,
     _coerce_metrics,
     _safe_get_metrics_collector,
@@ -23,8 +20,9 @@ def _run(coro):
 # Helper tests
 # ---------------------------------------------------------------------------
 
+
 def test_coerce_metrics_dict_passthrough():
-    raw: Dict[str, Dict[str, Any]] = {"a": {"total_requests": 1}}
+    raw: dict[str, dict[str, Any]] = {"a": {"total_requests": 1}}
     assert _coerce_metrics(raw) is raw
 
 
@@ -38,10 +36,10 @@ def test_coerce_metrics_none_returns_none():
 
 
 class _FakeCollector:
-    def __init__(self, mapping: Dict[str, Dict[str, Any]]):
+    def __init__(self, mapping: dict[str, dict[str, Any]]):
         self._mapping = mapping
 
-    def get_all_node_metrics(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_node_metrics(self) -> dict[str, dict[str, Any]]:
         return self._mapping
 
 
@@ -68,7 +66,8 @@ def test_safe_get_metrics_collector_does_not_raise():
 # Analyzer tests
 # ---------------------------------------------------------------------------
 
-def _make_mapping() -> Dict[str, Dict[str, Any]]:
+
+def _make_mapping() -> dict[str, dict[str, Any]]:
     return {
         "node-a": {
             "total_requests": 100,
@@ -173,13 +172,24 @@ def test_analyzer_with_collector_source():
 def test_analyzer_ignores_zero_data_nodes():
     """A node with no requests shouldn't be flagged as a hotspot."""
     mapping = {
-        "node-empty": {"total_requests": 0, "success_count": 0, "failure_count": 0,
-                       "avg_latency": 0, "p95_latency": 0, "throughput": 0.0},
-        "node-active": {"total_requests": 10, "success_count": 10, "failure_count": 0,
-                        "avg_latency": 0.05, "p95_latency": 0.1, "throughput": 5.0},
+        "node-empty": {
+            "total_requests": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "avg_latency": 0,
+            "p95_latency": 0,
+            "throughput": 0.0,
+        },
+        "node-active": {
+            "total_requests": 10,
+            "success_count": 10,
+            "failure_count": 0,
+            "avg_latency": 0.05,
+            "p95_latency": 0.1,
+            "throughput": 5.0,
+        },
     }
-    analyzer = SchedulingHotspotAnalyzer(top_n=2, failure_rate_threshold=0.99,
-                                         min_samples=10000, spike_ratio=100.0)
+    analyzer = SchedulingHotspotAnalyzer(top_n=2, failure_rate_threshold=0.99, min_samples=10000, spike_ratio=100.0)
     issues = _run(analyzer.analyze(context={"inline_metrics": mapping}))
     # Only the active node should be reported as a hotspot
     hotspots = [i for i in issues if i.details.get("kind") == "hotspot"]

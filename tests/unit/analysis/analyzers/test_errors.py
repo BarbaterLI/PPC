@@ -1,16 +1,17 @@
-"""Unit tests for :mod:`src_m.analysis.analyzers.errors`.
+"""Unit tests for :mod:`src.analysis.analyzers.errors`.
 
 覆盖 ErrorPatternAnalyzer 的熔断器状态检测能力。
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
-from src_m.analysis.analyzers.errors import ErrorPatternAnalyzer
-from src_m.analysis.models import AnalysisCategory
+from src.analysis.analyzers.errors import ErrorPatternAnalyzer
+from src.analysis.models import AnalysisCategory
 
 
 def _run(coro):
@@ -62,20 +63,16 @@ class TestErrorAnalyzerBasic:
 
 
 class TestErrorAnalyzerRun:
-    def test_no_breakers_returns_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_breakers_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 让 get_circuit_breakers 返回空 dict
-        import src_m.reliability as rel_mod
+        import src.reliability as rel_mod
 
         monkeypatch.setattr(rel_mod, "get_circuit_breakers", lambda: {})
         issues = _run(ErrorPatternAnalyzer().analyze())
         assert issues == []
 
-    def test_open_breaker_produces_critical(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import src_m.reliability as rel_mod
+    def test_open_breaker_produces_critical(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.reliability as rel_mod
 
         monkeypatch.setattr(
             rel_mod,
@@ -85,10 +82,8 @@ class TestErrorAnalyzerRun:
         issues = _run(ErrorPatternAnalyzer().analyze())
         assert any("OPEN" in (i.description or "").upper() for i in issues)
 
-    def test_closed_breaker_produces_no_issue(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import src_m.reliability as rel_mod
+    def test_closed_breaker_produces_no_issue(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.reliability as rel_mod
 
         monkeypatch.setattr(
             rel_mod,

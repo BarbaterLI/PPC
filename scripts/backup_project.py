@@ -8,6 +8,7 @@
     python scripts/backup_project.py
     python scripts/backup_project.py --root . --backup-dir backup
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,21 +17,37 @@ import hashlib
 import os
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Tuple
-
 
 # 排除目录
 EXCLUDE_DIRS = {
-    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
-    ".pytest_cache", ".mypy_cache", ".trae", ".idea", ".vscode",
-    "dist", "build", "target", "out", "bin", "obj", ".ruff_cache",
-    "webui/dist", "webui/node_modules",
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".trae",
+    ".idea",
+    ".vscode",
+    "dist",
+    "build",
+    "target",
+    "out",
+    "bin",
+    "obj",
+    ".ruff_cache",
+    "webui/dist",
+    "webui/node_modules",
 }
 
 # 排除文件
 EXCLUDE_FILES = {
-    ".DS_Store", "Thumbs.db",
+    ".DS_Store",
+    "Thumbs.db",
 }
 
 # 关键文件（必须出现在 CHECKSUMS.txt 中）
@@ -78,22 +95,22 @@ def _copy_tree(src_root: Path, dst_root: Path) -> int:
     return count
 
 
-def _gather_key_files(root: Path) -> List[Path]:
+def _gather_key_files(root: Path) -> list[Path]:
     """获取关键文件路径"""
     out = []
     for name in KEY_FILES:
         p = root / name
         if p.exists() and p.is_file():
             out.append(p)
-    # 把 src_m 下所有 .py 单独列出来（也属于关键文件）
-    src_m = root / "src_m"
-    if src_m.exists():
-        for py in sorted(src_m.rglob("*.py")):
+    # 把 src 下所有 .py 单独列出来（也属于关键文件）
+    src = root / "src"
+    if src.exists():
+        for py in sorted(src.rglob("*.py")):
             out.append(py)
     return out
 
 
-def _build_checksums(root: Path, files: List[Path]) -> str:
+def _build_checksums(root: Path, files: list[Path]) -> str:
     """生成 CHECKSUMS.txt 内容"""
     lines = ["# PPC10 Project Backup - File Checksums", ""]
     lines.append(f"# Generated: {_dt.datetime.utcnow().isoformat()}Z")
@@ -172,18 +189,16 @@ def main() -> int:
     n = _copy_tree(root, target)
     print(f"      已复制 {n} 个文件")
 
-    print(f"[2/4] 收集关键文件")
+    print("[2/4] 收集关键文件")
     key_files = _gather_key_files(root)
     print(f"      关键文件数: {len(key_files)}")
 
-    print(f"[3/4] 计算 SHA256 + SHA512")
+    print("[3/4] 计算 SHA256 + SHA512")
     checksums_txt = _build_checksums(root, key_files)
     (target / "CHECKSUMS.txt").write_text(checksums_txt, encoding="utf-8")
 
-    print(f"[4/4] 生成 CHANGELOG.md")
-    (target / "CHANGELOG.md").write_text(
-        _build_changelog(root, n, len(key_files)), encoding="utf-8"
-    )
+    print("[4/4] 生成 CHANGELOG.md")
+    (target / "CHANGELOG.md").write_text(_build_changelog(root, n, len(key_files)), encoding="utf-8")
 
     print()
     print("=" * 60)

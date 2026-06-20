@@ -3,15 +3,12 @@
 使用 mock Edge TTS 客户端模拟完整流程：
   文本 → 分段 → 规范化 → 合成 → 合并 → 输出文件
 """
+
 from __future__ import annotations
 
 import asyncio
-import os
-import time
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
-
-import pytest
+from typing import Any
 
 
 def _run(coro):
@@ -19,7 +16,6 @@ def _run(coro):
 
 
 def _write_silent_wav(path: Path, duration_ms: int = 80, framerate: int = 22050) -> None:
-    import struct
     import wave
 
     n_frames = int(framerate * duration_ms / 1000)
@@ -44,7 +40,7 @@ def _text_input(tmp_path: Path, content: str) -> Path:
 class TestTextEndToEnd:
     def test_short_text_passes_through(self, tmp_path: Path) -> None:
         """短文本应直接返回原样，不切分。"""
-        from src_m.text.segmenter import TextSegmenter
+        from src.text.segmenter import TextSegmenter
 
         seg = TextSegmenter(min_segment_length=200)
         text = "你好，世界。"
@@ -53,7 +49,7 @@ class TestTextEndToEnd:
         assert chunks[0] == text
 
     def test_long_text_is_split(self) -> None:
-        from src_m.text.segmenter import TextSegmenter
+        from src.text.segmenter import TextSegmenter
 
         seg = TextSegmenter(min_segment_length=20)
         long_text = "这是一句测试。" * 50
@@ -63,9 +59,9 @@ class TestTextEndToEnd:
         for c in chunks:
             assert len(c) <= 60  # 允许少量容差
 
-    def test_pipeline_normalize_then_split(self) -> None:
-        from src_m.text.segmenter import TextSegmenter
-        from src_m.text.normalizer import TextNormalizer
+    def test_normalize_then_split(self) -> None:
+        from src.text.normalizer import TextNormalizer
+        from src.text.segmenter import TextSegmenter
 
         raw = "  第一章\r\n\r\n\r\n这是内容。  "
         norm = TextNormalizer().normalize(raw)
@@ -80,21 +76,16 @@ class TestTextEndToEnd:
 # ---------------------------------------------------------------------------
 
 
-class TestFakeTTSPipeline:
+class TestFakeTTSEngine:
     def test_engine_synthesize_to_file(self, tmp_path: Path) -> None:
         """使用 FakeEdgeClient 驱动 TTSEngine 写入文件。"""
-        from src_m.engines.edge_tts_client import (
+        from src.config.presets import get_preset
+        from src.engines.edge_tts_client import (
             DEFAULT_RESUME_OFFSET,
             EdgeTTSClient,
-            NetworkError,
-            PermanentError,
-            QuotaError,
-            TTSChunk,
-            TransientError,
             VoiceInfo,
         )
-        from src_m.engines.tts_engine import TTSEngine
-        from src_m.config.presets import get_preset
+        from src.engines.tts_engine import TTSEngine
 
         class FakeClient(EdgeTTSClient):
             def __init__(self):
@@ -120,9 +111,7 @@ class TestFakeTTSPipeline:
                     yield None
                 return
 
-            async def _list_voices(
-                self, *, locale: Optional[str] = None, gender: Optional[str] = None
-            ) -> List[VoiceInfo]:
+            async def _list_voices(self, *, locale: str | None = None, gender: str | None = None) -> list[VoiceInfo]:
                 return []
 
         config = get_preset("balanced")
@@ -135,14 +124,12 @@ class TestFakeTTSPipeline:
 
     def test_engine_handles_quota_error(self, tmp_path: Path) -> None:
         """配额错误应快速失败，不重试。"""
-        from src_m.engines.edge_tts_client import (
-            DEFAULT_RESUME_OFFSET,
+        from src.config.presets import get_preset
+        from src.engines.edge_tts_client import (
             EdgeTTSClient,
             QuotaError,
-            VoiceInfo,
         )
-        from src_m.engines.tts_engine import TTSEngine
-        from src_m.config.presets import get_preset
+        from src.engines.tts_engine import TTSEngine
 
         class QuotaClient(EdgeTTSClient):
             def __init__(self):
@@ -176,14 +163,12 @@ class TestFakeTTSPipeline:
 
 class TestCacheIntegration:
     def test_repeat_synthesize_uses_cache(self, tmp_path: Path) -> None:
-        from src_m.engines.edge_tts_client import (
-            DEFAULT_RESUME_OFFSET,
+        from src.cache.multilevel_cache import MultiLevelCache
+        from src.config.presets import get_preset
+        from src.engines.edge_tts_client import (
             EdgeTTSClient,
-            VoiceInfo,
         )
-        from src_m.engines.tts_engine import TTSEngine
-        from src_m.cache.multilevel_cache import MultiLevelCache
-        from src_m.config.presets import get_preset
+        from src.engines.tts_engine import TTSEngine
 
         class CountingClient(EdgeTTSClient):
             def __init__(self):

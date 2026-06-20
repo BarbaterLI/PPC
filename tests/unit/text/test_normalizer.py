@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`src_m.text.normalizer`.
+"""Unit tests for :mod:`src.text.normalizer`.
 
 覆盖：
 * :class:`TextNormalizer` 的 `normalize` / `apply` 主入口及各类静态变换
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from src_m.text.normalizer import (
+from src.text.normalizer import (
     DateRule,
     EnglishAbbrevRule,
     NumberRule,
@@ -22,7 +22,6 @@ from src_m.text.normalizer import (
     UnitRule,
     register_rule,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -140,7 +139,7 @@ class TestCleanSsmlXml:
             ('<prosody rate="+0%">文本</prosody>', "文本"),
             ("<break time='500ms'/>", ""),
             ('<emphasis level="strong">重</emphasis>', "重"),
-            ('<p>段1</p><p>段2</p>', "段1段2"),
+            ("<p>段1</p><p>段2</p>", "段1段2"),
         ],
     )
     def test_clean_known_tags(self, raw: str, expected: str) -> None:

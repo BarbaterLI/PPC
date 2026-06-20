@@ -1,7 +1,8 @@
-"""Unit tests for :mod:`src_m.analysis.history`.
+"""Unit tests for :mod:`src.analysis.history`.
 
 覆盖 AnalysisHistoryManager 的持久化与查询能力。
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,9 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from src_m.analysis.history import AnalysisHistoryManager
-from src_m.analysis.models import AnalysisIssue, HealthReport, Severity
-
+from src.analysis.history import AnalysisHistoryManager
+from src.analysis.models import HealthReport
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -54,9 +54,7 @@ class TestSaveAndGet:
         assert got.score == 85
         assert got.summary == "hello"
 
-    def test_get_nonexistent_returns_none(
-        self, manager: AnalysisHistoryManager
-    ) -> None:
+    def test_get_nonexistent_returns_none(self, manager: AnalysisHistoryManager) -> None:
         assert manager.get_report("99999999_999999") is None
 
 
@@ -71,6 +69,7 @@ class TestList:
 
     def test_list_newest_first(self, manager: AnalysisHistoryManager) -> None:
         import time
+
         for s in (90, 80, 70):
             manager.save_report(_report(score=s))
             time.sleep(1.05)  # 保证 timestamp 不同 → id 不同

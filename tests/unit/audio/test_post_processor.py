@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`src_m.audio.post_processor`.
+"""Unit tests for :mod:`src.audio.post_processor`.
 
 覆盖 :class:`PostProcessor` 链式后处理：
 * ``AudioBuffer`` 数据类属性
@@ -15,19 +15,17 @@ from pathlib import Path
 
 import pytest
 
-from src_m.audio.post_processor import (
+from src.audio.post_processor import (
     AudioBuffer,
     DenoiseStep,
     FadeInStep,
     FadeOutStep,
     PostProcessChainResult,
-    PostProcessStep,
-    PostProcessStepResult,
-    PostProcessStepStatus,
     PostProcessor,
+    PostProcessStep,
+    PostProcessStepStatus,
     ResampleStep,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -257,7 +255,7 @@ class TestPostProcessor:
 class TestWavIO:
     def test_load_wav(self, tmp_path: Path) -> None:
         p = tmp_path / "x.wav"
-        _make_sine_buffer(duration_seconds=0.05).samples  # noqa: 用不到，仅供读者
+        _ = _make_sine_buffer(duration_seconds=0.05).samples  # noqa: F841
         # 写入一个标准 wav
         with wave.open(str(p), "wb") as wf:
             wf.setnchannels(1)

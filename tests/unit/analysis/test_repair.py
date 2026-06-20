@@ -1,17 +1,21 @@
-"""Unit tests for :mod:`src_m.analysis.repair`.
+"""Unit tests for :mod:`src.analysis.repair`.
 
 覆盖 RepairEngine 的策略注册、修复应用、备份与回滚能力。
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 import pytest
 
-from src_m.analysis.repair import (
+from src.analysis.models import (
+    RepairResult,
+    RepairSuggestion,
+    RiskLevel,
+)
+from src.analysis.repair import (
     BackupManager,
     CacheCleanupStrategy,
     NetworkRepairStrategy,
@@ -19,16 +23,6 @@ from src_m.analysis.repair import (
     ResourceAdjustmentStrategy,
     StrategyInfo,
 )
-from src_m.analysis.models import (
-    AnalysisIssue,
-    AnalysisCategory,
-    HealthReport,
-    RepairResult,
-    RepairSuggestion,
-    RiskLevel,
-    Severity,
-)
-
 
 # ---------------------------------------------------------------------------
 # 工具
@@ -39,7 +33,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _suggestion(action: str = "test", strategy: Optional[str] = None) -> RepairSuggestion:
+def _suggestion(action: str = "test", strategy: str | None = None) -> RepairSuggestion:
     return RepairSuggestion(
         action=action,
         risk_level=RiskLevel.MEDIUM,

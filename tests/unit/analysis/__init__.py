@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-# Make src_m importable
+# Make src importable
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

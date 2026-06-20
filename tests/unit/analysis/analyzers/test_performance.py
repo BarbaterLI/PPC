@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
 
-import pytest
-
-from src_m.analysis.analyzers.performance import (
+from src.analysis.analyzers.performance import (
     FlameGraphResult,
     PerformanceAnalyzer,
     _build_self_flamegraph,
     _detect_flamegraph_backend,
     capture_flamegraph,
 )
-from src_m.analysis.models import AnalysisCategory, Severity
+from src.analysis.models import AnalysisCategory
 
 
 def _run(coro):
@@ -24,6 +21,7 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 # Helper tests
 # ---------------------------------------------------------------------------
+
 
 def test_detect_backend_returns_string():
     backend = _detect_flamegraph_backend()
@@ -73,6 +71,7 @@ def test_build_self_flamegraph_ignores_non_stat_values():
 # Async capture tests
 # ---------------------------------------------------------------------------
 
+
 def test_capture_flamegraph_self_backend_returns_result():
     res = _run(capture_flamegraph(duration=0.1, backend="self"))
     assert isinstance(res, FlameGraphResult)
@@ -99,11 +98,12 @@ def test_capture_flamegraph_explicit_pyspy_when_unavailable_gracefully_handled()
 # Analyzer integration
 # ---------------------------------------------------------------------------
 
+
 def test_analyzer_emits_flamegraph_issue_when_requested():
     analyzer = PerformanceAnalyzer()
-    issues = _run(analyzer.analyze(context={"capture_flamegraph": True,
-                                            "flamegraph_duration": 0.1,
-                                            "flamegraph_backend": "self"}))
+    issues = _run(
+        analyzer.analyze(context={"capture_flamegraph": True, "flamegraph_duration": 0.1, "flamegraph_backend": "self"})
+    )
     kinds = [i.details.get("kind") for i in issues if isinstance(i.details, dict)]
     # Self backend always succeeds (even with no samples -> failure is
     # only emitted when no data is available; in this env the profiler

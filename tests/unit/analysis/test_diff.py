@@ -1,22 +1,19 @@
-"""Unit tests for :mod:`src_m.analysis.diff`.
+"""Unit tests for :mod:`src.analysis.diff`.
 
 覆盖 AnalysisDiffer 对 HealthReport 的多维比较。
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
 
-import pytest
-
-from src_m.analysis.diff import AnalysisDiffer, DiffResult, compute_diff
-from src_m.analysis.models import (
+from src.analysis.diff import AnalysisDiffer, DiffResult, compute_diff
+from src.analysis.models import (
     AnalysisCategory,
     AnalysisIssue,
     HealthReport,
     Severity,
 )
-
 
 # ---------------------------------------------------------------------------
 # 工具
@@ -25,7 +22,7 @@ from src_m.analysis.models import (
 
 def _report(
     score: int = 90,
-    issues: List[AnalysisIssue] = None,
+    issues: list[AnalysisIssue] = None,
     summary: str = "",
 ) -> HealthReport:
     return HealthReport(

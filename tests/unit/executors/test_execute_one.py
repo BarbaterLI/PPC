@@ -1,10 +1,10 @@
 """TTSExecutor.execute_one 单文件无限重试。"""
+
 import asyncio
-from pathlib import Path
 from unittest.mock import MagicMock
 
-from src_m.config.presets import get_preset
-from src_m.reliability import ExecutionResult, create_tts_retry_policy
+from src.config.presets import get_preset
+from src.reliability import ExecutionResult, create_tts_retry_policy
 
 
 def _run(coro):
@@ -21,7 +21,8 @@ def _make_executor():
         base_delay=0.1,
         max_delay=1.0,
     )
-    from src_m.executors import TTSExecutor
+    from src.executors import TTSExecutor
+
     executor = TTSExecutor(cfg, retry)
     return executor
 

@@ -8,12 +8,10 @@ Covers:
 """
 
 import asyncio
-import time
-from unittest.mock import patch
 
 import pytest
 
-from src_m.reliability.circuit import (
+from src.reliability.circuit import (
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitBreakerError,
@@ -22,7 +20,6 @@ from src_m.reliability.circuit import (
     SlidingWindowCounter,
     TripStrategy,
 )
-
 
 # -----------------------------------------------------------------------------
 # HalfOpenLimiter
@@ -116,13 +113,13 @@ def _run(coro):
 
 
 def _make_cb(**kwargs):
-    defaults = dict(
-        failure_threshold=3,
-        success_threshold=2,
-        timeout=0.1,
-        minimum_calls=3,
-        failure_rate_threshold=0.5,
-    )
+    defaults = {
+        "failure_threshold": 3,
+        "success_threshold": 2,
+        "timeout": 0.1,
+        "minimum_calls": 3,
+        "failure_rate_threshold": 0.5,
+    }
     defaults.update(kwargs)
     cfg = CircuitBreakerConfig(**defaults)
     return CircuitBreaker("test", cfg)
@@ -134,9 +131,9 @@ class TestCircuitBreaker:
         assert cb.state == CircuitState.CLOSED
 
     def test_consecutive_failure_strategy_trips(self):
-        cb = _make_cb(trip_strategy=TripStrategy.CONSECUTIVE_FAILURES,
-                      consecutive_failure_threshold=2,
-                      minimum_calls=100)  # high min so error_rate doesn't trigger
+        cb = _make_cb(
+            trip_strategy=TripStrategy.CONSECUTIVE_FAILURES, consecutive_failure_threshold=2, minimum_calls=100
+        )  # high min so error_rate doesn't trigger
 
         async def boom():
             raise ValueError("boom")
@@ -151,9 +148,12 @@ class TestCircuitBreaker:
             _run(cb.call(boom))
 
     def test_error_rate_strategy_trips(self):
-        cb = _make_cb(trip_strategy=TripStrategy.ERROR_RATE,
-                      minimum_calls=3, failure_rate_threshold=0.5,
-                      consecutive_failure_threshold=100)
+        cb = _make_cb(
+            trip_strategy=TripStrategy.ERROR_RATE,
+            minimum_calls=3,
+            failure_rate_threshold=0.5,
+            consecutive_failure_threshold=100,
+        )
 
         async def boom():
             raise ValueError("boom")
@@ -173,10 +173,12 @@ class TestCircuitBreaker:
         assert cb.state == CircuitState.OPEN
 
     def test_slow_call_rate_trips(self):
-        cb = _make_cb(trip_strategy=TripStrategy.SLOW_CALL_RATE,
-                      minimum_calls=3,
-                      slow_call_rate_threshold=0.5,
-                      slow_call_duration_threshold=0.05)
+        cb = _make_cb(
+            trip_strategy=TripStrategy.SLOW_CALL_RATE,
+            minimum_calls=3,
+            slow_call_rate_threshold=0.5,
+            slow_call_duration_threshold=0.05,
+        )
 
         async def fast():
             return "ok"
@@ -273,8 +275,10 @@ class TestCircuitBreaker:
             trip_strategy=TripStrategy.CONSECUTIVE_FAILURES,
             consecutive_failure_threshold=1,
         )
+
         async def boom():
             raise RuntimeError("boom")
+
         with pytest.raises(RuntimeError):
             _run(cb.call(boom))
         assert cb.state == CircuitState.OPEN
@@ -289,5 +293,6 @@ class TestCircuitBreaker:
 
 
 def test_simple_circuit_breaker_alias():
-    from src_m.reliability.circuit import SimpleCircuitBreaker
+    from src.reliability.circuit import SimpleCircuitBreaker
+
     assert SimpleCircuitBreaker is CircuitBreaker

@@ -10,11 +10,11 @@ Covers:
 
 import asyncio
 import time
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
-from src_m.reliability.retry import (
+from src.reliability.retry import (
     BackoffCurve,
     RetryConfig,
     _calculate_delay,
@@ -26,9 +26,9 @@ from src_m.reliability.retry import (
 
 class TestCalculateDelay:
     def test_exponential_curve(self):
-        cfg = RetryConfig(backoff_curve=BackoffCurve.EXPONENTIAL,
-                          base_delay=1.0, exponential_base=2.0,
-                          max_delay=60.0, jitter=False)
+        cfg = RetryConfig(
+            backoff_curve=BackoffCurve.EXPONENTIAL, base_delay=1.0, exponential_base=2.0, max_delay=60.0, jitter=False
+        )
         # exponential: base * 2^attempt
         assert _calculate_delay(cfg, 0) == 1.0
         assert _calculate_delay(cfg, 1) == 2.0
@@ -36,30 +36,30 @@ class TestCalculateDelay:
         assert _calculate_delay(cfg, 3) == 8.0
 
     def test_linear_curve(self):
-        cfg = RetryConfig(backoff_curve=BackoffCurve.LINEAR,
-                          base_delay=1.0, jitter=False, max_delay=100.0)
+        cfg = RetryConfig(backoff_curve=BackoffCurve.LINEAR, base_delay=1.0, jitter=False, max_delay=100.0)
         assert _calculate_delay(cfg, 0) == 1.0
         assert _calculate_delay(cfg, 1) == 2.0
         assert _calculate_delay(cfg, 4) == 5.0
 
     def test_fixed_curve(self):
-        cfg = RetryConfig(backoff_curve=BackoffCurve.FIXED,
-                          base_delay=2.5, jitter=False, max_delay=10.0)
+        cfg = RetryConfig(backoff_curve=BackoffCurve.FIXED, base_delay=2.5, jitter=False, max_delay=10.0)
         for attempt in range(5):
             assert _calculate_delay(cfg, attempt) == 2.5
 
     def test_jitter_is_within_range(self):
-        cfg = RetryConfig(backoff_curve=BackoffCurve.EXPONENTIAL,
-                          base_delay=1.0, exponential_base=2.0, max_delay=60.0,
-                          jitter=True)
+        cfg = RetryConfig(
+            backoff_curve=BackoffCurve.EXPONENTIAL, base_delay=1.0, exponential_base=2.0, max_delay=60.0, jitter=True
+        )
         for attempt in range(3):
             delay = _calculate_delay(cfg, attempt)
-            assert 1.0 <= delay <= max(1.0, 1.0 * (2.0 ** attempt))
+            assert 1.0 <= delay <= max(1.0, 1.0 * (2.0**attempt))
 
     def test_exception_specific_curve_override(self):
         cfg = RetryConfig(
             backoff_curve=BackoffCurve.EXPONENTIAL,
-            base_delay=1.0, max_delay=60.0, jitter=False,
+            base_delay=1.0,
+            max_delay=60.0,
+            jitter=False,
             exception_backoff_map={
                 ValueError: {"curve": "linear", "base_delay": 2.0, "max_delay": 10.0},
             },
@@ -72,9 +72,13 @@ class TestCalculateDelay:
         assert d2 == 6
 
     def test_retry_after_extractor(self):
-        cfg = RetryConfig(backoff_curve=BackoffCurve.EXPONENTIAL,
-                          base_delay=1.0, max_delay=60.0, jitter=False,
-                          retry_after_extractor=lambda exc: 5.0)
+        cfg = RetryConfig(
+            backoff_curve=BackoffCurve.EXPONENTIAL,
+            base_delay=1.0,
+            max_delay=60.0,
+            jitter=False,
+            retry_after_extractor=lambda exc: 5.0,
+        )
         d = _calculate_delay(cfg, 0, error=ValueError("x"))
         assert d == 5.0
 
@@ -124,7 +128,8 @@ class TestRetrySync:
     def test_eventual_success(self):
         fn, st = _flaky_sync(2)
         result = retry(
-            fn, config=RetryConfig(max_retries=3, base_delay=0.001, jitter=False),
+            fn,
+            config=RetryConfig(max_retries=3, base_delay=0.001, jitter=False),
         )
         assert result == "ok"
         assert st["calls"] == 3
@@ -133,7 +138,8 @@ class TestRetrySync:
         fn, st = _flaky_sync(10)
         with pytest.raises(_BoomError):
             retry(
-                fn, config=RetryConfig(max_retries=2, base_delay=0.001, jitter=False),
+                fn,
+                config=RetryConfig(max_retries=2, base_delay=0.001, jitter=False),
             )
         # 1 initial + 2 retries = 3 total
         assert st["calls"] == 3
@@ -144,7 +150,9 @@ class TestRetrySync:
             retry(
                 fn,
                 config=RetryConfig(
-                    max_retries=3, base_delay=0.001, jitter=False,
+                    max_retries=3,
+                    base_delay=0.001,
+                    jitter=False,
                     non_retryable_exceptions=(ValueError,),
                 ),
             )
@@ -185,8 +193,10 @@ class TestRetryAsync:
         async def runner():
             fn, st = _flaky_async(2)
             return await retry_async(
-                fn, config=RetryConfig(max_retries=3, base_delay=0.001, jitter=False),
+                fn,
+                config=RetryConfig(max_retries=3, base_delay=0.001, jitter=False),
             ), st
+
         result, st = asyncio.run(runner())
         assert result == "ok"
         assert st["calls"] == 3
@@ -195,6 +205,7 @@ class TestRetryAsync:
         async def runner():
             async def _slow_fail():
                 raise _BoomError("boom")
+
             with pytest.raises(_BoomError):
                 await retry_async(
                     _slow_fail,
@@ -206,6 +217,7 @@ class TestRetryAsync:
                         deadline=0.1,
                     ),
                 )
+
         asyncio.run(runner())
 
     def test_async_callback_called(self):
@@ -219,10 +231,13 @@ class TestRetryAsync:
             await retry_async(
                 fn,
                 config=RetryConfig(
-                    max_retries=3, base_delay=0.001, jitter=False,
+                    max_retries=3,
+                    base_delay=0.001,
+                    jitter=False,
                     before_retry=_before,
                 ),
             )
+
         asyncio.run(runner())
         # Two retries -> 2 before_retry calls
         assert called["n"] == 2

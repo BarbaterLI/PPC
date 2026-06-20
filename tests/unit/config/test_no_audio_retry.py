@@ -1,8 +1,9 @@
 """NoAudioRetryConfig 默认值与字段校验。"""
-from pydantic import ValidationError
-import pytest
 
-from src_m.config.schema import NoAudioRetryConfig, ReliabilityConfig
+import pytest
+from pydantic import ValidationError
+
+from src.config.schema import NoAudioRetryConfig, ReliabilityConfig
 
 
 def test_defaults():

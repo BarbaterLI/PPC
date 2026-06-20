@@ -1,25 +1,23 @@
-"""Unit tests for :mod:`src_m.analysis.html_report`.
+"""Unit tests for :mod:`src.analysis.html_report`.
 
 覆盖 HTMLReportGenerator 生成的 HTML 报告与 Markdown 导出能力。
 """
+
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import List
 
 import pytest
 
-from src_m.analysis.diff import AnalysisDiffer
-from src_m.analysis.html_report import HTMLReportGenerator
-from src_m.analysis.models import (
+from src.analysis.diff import AnalysisDiffer
+from src.analysis.html_report import HTMLReportGenerator
+from src.analysis.models import (
     AnalysisCategory,
     AnalysisIssue,
     HealthReport,
     Severity,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -60,18 +58,14 @@ def prev_report() -> HealthReport:
 
 
 class TestHTMLGenerate:
-    def test_generate_writes_file(
-        self, report: HealthReport, tmp_path: Path
-    ) -> None:
+    def test_generate_writes_file(self, report: HealthReport, tmp_path: Path) -> None:
         gen = HTMLReportGenerator()
         out = tmp_path / "report.html"
         path = gen.generate(report, out)
         assert path.exists()
         assert path.stat().st_size > 0
 
-    def test_html_contains_score(
-        self, report: HealthReport, tmp_path: Path
-    ) -> None:
+    def test_html_contains_score(self, report: HealthReport, tmp_path: Path) -> None:
         gen = HTMLReportGenerator()
         out = tmp_path / "report.html"
         gen.generate(report, out)
@@ -103,9 +97,7 @@ class TestHTMLGenerate:
 
 
 class TestHistoryTrend:
-    def test_generate_with_history(
-        self, report: HealthReport, tmp_path: Path
-    ) -> None:
+    def test_generate_with_history(self, report: HealthReport, tmp_path: Path) -> None:
         gen = HTMLReportGenerator()
         history = [
             {"score": 60, "timestamp": "2024-01-01T00:00:00"},
@@ -118,9 +110,7 @@ class TestHistoryTrend:
         # 应有 trend 渲染
         assert "trend" in content.lower() or "history" in content.lower()
 
-    def test_history_empty_omits_trend(
-        self, report: HealthReport, tmp_path: Path
-    ) -> None:
+    def test_history_empty_omits_trend(self, report: HealthReport, tmp_path: Path) -> None:
         gen = HTMLReportGenerator()
         out = tmp_path / "report.html"
         gen.generate(report, out, history=[])
