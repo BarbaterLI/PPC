@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from src.extensions.base import ExtensionMetadata, ExtensionPermission, ExtensionType
+from src.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class ExtensionManifest:
     extension_type: str = "tool_integration"
     entry: str = "extension.py"
     dependencies: list[str] = field(default_factory=list)
-    min_ppc_version: str = "11.0.0"
+    min_ppc_version: str = __version__
     tags: list[str] = field(default_factory=list)
     permissions: list[str] = field(default_factory=list)
     package_type: str = "python"
@@ -93,7 +94,7 @@ def _build_manifest(raw: dict) -> ExtensionManifest:
         extension_type=raw.get("extension_type", "tool_integration"),
         entry=raw.get("entry", "extension.py"),
         dependencies=raw.get("dependencies", []),
-        min_ppc_version=raw.get("min_ppc_version", "11.0.0"),
+        min_ppc_version=raw.get("min_ppc_version", __version__),
         tags=raw.get("tags", []),
         permissions=raw.get("permissions", []),
         package_type=raw.get("package_type", "python"),

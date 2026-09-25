@@ -28,10 +28,7 @@ def create_system_bp(task_manager: TaskManager) -> Blueprint:
     @bp.route("/status", methods=["GET"])
     def get_status():
         try:
-            try:
-                from src.version import __version__ as ppc_version
-            except Exception:
-                ppc_version = "11.0.0"
+            from src.version import __version__ as ppc_version
 
             resources = _get_system_resources()
             memory_percent = resources.get("memory_percent", 0)

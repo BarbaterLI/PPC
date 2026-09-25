@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from src.config.schemas import PPCConfig
 from src.text.segmenter import DEFAULT_PUNCTUATIONS
+from src.version import __version__
 
 PUNCTUATIONS = list(DEFAULT_PUNCTUATIONS)
 
@@ -21,7 +22,7 @@ def _render_template(template: str, **variables: str) -> str:
 
 
 def _load_template() -> str:
-    return _render_template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    return _render_template(_TEMPLATE_PATH.read_text(encoding="utf-8"), version=__version__)
 
 
 COMMENTED_YAML_TEMPLATE = _load_template()
@@ -29,7 +30,7 @@ COMMENTED_YAML_TEMPLATE = _load_template()
 
 def _v6_defaults(
     *,
-    version: str = "11.0.0",
+    version: str = __version__,
     tts_timeout: int = 120,
     retry_max_delay: float = 60.0,
     punctuations: list[str] | None = None,

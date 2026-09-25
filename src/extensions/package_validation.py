@@ -102,7 +102,7 @@ def _check_entry_file(names: list[str], manifest: dict) -> list[str]:
 
 def _check_version_compatible(manifest: dict) -> list[str]:
     """检查 min_ppc_version 与当前 PPC_NEXT 版本兼容。"""
-    min_ver = manifest.get("min_ppc_version", "11.0.0")
+    min_ver = manifest.get("min_ppc_version", ppc_version)
     try:
         current = pkg_version.parse(ppc_version)
         required = pkg_version.parse(min_ver)

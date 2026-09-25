@@ -18,6 +18,7 @@ from src.config.schemas.distributed import DistributedConfig
 from src.config.schemas.output import OutputConfig, RateLimitConfig, WebhookConfig
 from src.config.schemas.reliability import ReliabilityConfig
 from src.config.schemas.tts import TTSConfig
+from src.version import __version__
 
 
 class PPCConfig(BaseModel):
@@ -25,7 +26,7 @@ class PPCConfig(BaseModel):
 
     model_config = ConfigDict(use_enum_values=False)
 
-    version: str = Field(default="11.0.0", description="配置版本")
+    version: str = Field(default=__version__, description="配置版本")
     core: CoreConfig = Field(default_factory=CoreConfig, description="核心配置")
     tts: TTSConfig = Field(default_factory=TTSConfig, description="TTS 配置")
     split: SplitConfig = Field(default_factory=SplitConfig, description="分割配置")

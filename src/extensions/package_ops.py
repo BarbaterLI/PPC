@@ -20,6 +20,7 @@ import yaml
 
 from src.extensions.manifest import read_manifest
 from src.extensions.package_validation import validate_package
+from src.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ class ExtensionInstaller:
                 "extension_type": "tool_integration",
                 "entry": "extension.py",
                 "dependencies": [],
-                "min_ppc_version": "11.0.0",
+                "min_ppc_version": __version__,
                 "tags": [],
                 "permissions": [],
             },

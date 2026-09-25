@@ -43,6 +43,9 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.mypy]
 # 注：理想情况下应与 requires-python=">=3.10" 对齐为 "3.10"，
 # 但已安装的 numpy pyi stub 使用 PEP 695 `type` 语句（Python 3.12+），

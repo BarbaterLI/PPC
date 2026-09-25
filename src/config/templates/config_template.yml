@@ -1,5 +1,5 @@
 # PPC_NEXT 配置文件 - 终极文本转语音工具 / PPC_NEXT Config File - Ultimate Text-to-Speech Tool
-# 版本: 11.0.0 / Version: 11.0.0
+# 版本: {{version}} / Version: {{version}}
 # BarbaterLI开发组 (BLY Team) / Bing Li Yan Dev Group (BLY Team)
 # 说明: 所有配置项均带有注释，修改后保存即可生效 / Note: All config items are commented; edit and save to take effect
 # ============================================
@@ -418,4 +418,4 @@ rate_limit:
   cooldown_on_limit: 0.1
 
 # 配置版本（自动生成，勿修改）/ Config version (auto-generated, do not modify)
-version: 11.0.0
+version: {{version}}

@@ -1,4 +1,4 @@
-"""PPC_NEXT - BarbaterLI文本转语音工具 v11.0.0
+"""PPC_NEXT - BarbaterLI文本转语音工具（版本号唯一来源: ``src/version.py``）
 
 BarbaterLI项目开发组 (BLY Team) 出品
 

@@ -35,12 +35,13 @@ from src.config.manager_state import (
 from src.config.presets import get_preset, get_preset_names
 from src.config.schemas import PPCConfig
 from src.utils.paths import is_nuitka
+from src.version import __version__
 
 logger = logging.getLogger(__name__)
 
 
 class ConfigManager(ConfigStore):
-    CONFIG_VERSION = "11.0.0"
+    CONFIG_VERSION = __version__
     CONFIG_FILENAME = "config.yml"
     APP_NAME = "PPC_NEXT"
     logger = logging.getLogger(__name__)
