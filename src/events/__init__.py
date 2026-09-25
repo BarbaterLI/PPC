@@ -14,12 +14,10 @@ from .event_bus import (
     EventPriority,
     FormatConversionEvent,
     RetryEvent,
-    ScheduledTaskEvent,
     TaskCompletedEvent,
     TaskFailedEvent,
     TaskProgressEvent,
     TaskStartedEvent,
-    WebhookEvent,
     get_event_bus,
     reset_event_bus,
 )
@@ -39,8 +37,6 @@ __all__ = [
     "CircuitBreakerEvent",
     "FormatConversionEvent",
     "AudioProcessedEvent",
-    "ScheduledTaskEvent",
-    "WebhookEvent",
     "get_event_bus",
     "reset_event_bus",
 ]

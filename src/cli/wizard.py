@@ -19,7 +19,7 @@ class WizardMixin:
             self.warning("配置向导需要交互式终端，当前模式不支持")
             return None
 
-        total_steps = 8 if full else 2
+        total_steps = 7 if full else 2
         config: dict[str, Any] = {}
 
         self._wizard_welcome(full)
@@ -41,9 +41,7 @@ class WizardMixin:
             self._wizard_text_normalization(config)
             self._wizard_step(6, "章节分割配置", get_icon("folder"), total_steps)
             self._wizard_split(config)
-            self._wizard_step(7, "功能开关", get_icon("gear"), total_steps)
-            self._wizard_features(config)
-            self._wizard_step(8, "输出与网络", get_icon("gear"), total_steps)
+            self._wizard_step(7, "输出与网络", get_icon("gear"), total_steps)
             self._wizard_output_network(config)
 
         return self._wizard_preview_confirm(config)
@@ -386,28 +384,6 @@ class WizardMixin:
         )
         config["split.add_title_separator"] = add_sep
 
-    def _wizard_features(self, config: dict[str, Any]) -> None:
-        smart_detect = Confirm.ask(
-            "\n启用智能检测?",
-            default=True,
-            console=self.console,
-        )
-        config["features.smart_detection"] = smart_detect
-
-        merge_chapters = Confirm.ask(
-            "启用合并短章节?",
-            default=True,
-            console=self.console,
-        )
-        config["features.merge_short_chapters"] = merge_chapters
-
-        auto_retry = Confirm.ask(
-            "启用自动重试?",
-            default=True,
-            console=self.console,
-        )
-        config["features.auto_retry"] = auto_retry
-
     def _wizard_preview_confirm(self, config: dict[str, Any]) -> dict[str, Any] | None:
         self.print_panel("配置预览", title="配置预览", style="primary")
 
@@ -438,9 +414,6 @@ class WizardMixin:
             "split.preset": "章节预设",
             "split.min_chapter_length": "最小章节长度",
             "split.add_title_separator": "章节名分隔符",
-            "features.smart_detection": "智能检测",
-            "features.merge_short_chapters": "合并短章节",
-            "features.auto_retry": "自动重试",
         }
 
         preview_layout = layouts.ConfigPreviewLayout(config=config, labels=config_labels)

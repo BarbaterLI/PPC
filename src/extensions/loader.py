@@ -794,3 +794,57 @@ class ExtensionLoader:
             return False
         register_fn(app)
         return True
+
+
+# ---------------------------------------------------------------------------
+# 配置接线（config.extensions 段）
+# ---------------------------------------------------------------------------
+
+
+def configured_extension_dirs() -> list[Path]:
+    """按 ``config.extensions.extension_dirs`` 解析扩展目录（相对路径基于项目根）。
+
+    配置不可用（如尚未初始化）时返回空列表，交由 loader 默认目录逻辑处理。
+    """
+    try:
+        from src.config import get_default_manager
+
+        dirs = get_default_manager().get_config().extensions.extension_dirs
+    except Exception:
+        return []
+
+    from src.utils.paths import get_project_root
+
+    root = get_project_root()
+    resolved: list[Path] = []
+    for d in dirs or []:
+        p = Path(d).expanduser()
+        resolved.append(p if p.is_absolute() else root / p)
+    return resolved
+
+
+def extensions_enabled_by_config() -> bool:
+    """``config.extensions.enabled`` 总开关（读取失败时默认启用）。"""
+    try:
+        from src.config import get_default_manager
+
+        return bool(get_default_manager().get_config().extensions.enabled)
+    except Exception:
+        return True
+
+
+def extension_auto_load_by_config() -> bool:
+    """``config.extensions.auto_load``：是否在 CLI 启动路径自动加载扩展。"""
+    try:
+        from src.config import get_default_manager
+
+        return bool(get_default_manager().get_config().extensions.auto_load)
+    except Exception:
+        return True
+
+
+def build_loader_from_config() -> ExtensionLoader | None:
+    """依据当前配置构造 loader；``enabled=False`` 时返回 None 表示扩展系统关闭。"""
+    if not extensions_enabled_by_config():
+        return None
+    return ExtensionLoader(extension_dirs=configured_extension_dirs())

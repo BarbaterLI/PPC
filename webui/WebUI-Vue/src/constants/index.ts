@@ -19,14 +19,11 @@ export const CONFIG_CATEGORY_LABELS: Record<string, string> = {
   batch: '批量',
   performance: '性能',
   network: '网络',
-  features: '功能开关',
   reliability: '可靠性',
   distributed: '分布式',
   extension: '扩展',
   fanqie: '番茄小说',
   output: '输出',
-  webhook: 'Webhook',
-  rate_limit: '限流',
 }
 
 export const CONFIG_CATEGORY_ORDER = [

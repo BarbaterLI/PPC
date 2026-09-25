@@ -485,12 +485,18 @@ class ChapterWriter:
         return sanitize_filename(filename, max_length=self.config.split.max_filename_length)
 
     def generate_output_name(self, output_dir: Path, index: int, title: str, fallback_prefix: str = "chapter") -> Path:
-        """生成输出文件名"""
+        """生成输出文件名（序号段由 ``split.chapter_file_prefix`` 控制）"""
         safe_title = self.sanitize_filename(title)
         if not safe_title:
             safe_title = f"{fallback_prefix}_{index:03d}"
 
-        return output_dir / f"{index:03d}_{safe_title}.txt"
+        fmt: str = self.config.split.chapter_file_prefix or "{index:03d}"
+        try:
+            prefix = fmt.format(index=index)
+        except (KeyError, IndexError, ValueError):
+            prefix = f"{index:03d}"
+
+        return output_dir / f"{prefix}_{safe_title}.txt"
 
     def format_volume_dir(self, volume_title: str, volume_index: int) -> str:
         """格式化卷目录名"""

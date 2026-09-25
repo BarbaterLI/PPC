@@ -9,13 +9,12 @@ from src.config.schemas.core import (
     CoreConfig,
     ExtensionConfig,
     FanqieConfig,
-    FeaturesConfig,
     NetworkConfig,
     PerformanceConfig,
     SplitConfig,
 )
 from src.config.schemas.distributed import DistributedConfig
-from src.config.schemas.output import OutputConfig, RateLimitConfig, WebhookConfig
+from src.config.schemas.output import OutputConfig
 from src.config.schemas.reliability import ReliabilityConfig
 from src.config.schemas.tts import TTSConfig
 from src.version import __version__
@@ -33,14 +32,11 @@ class PPCConfig(BaseModel):
     batch: BatchConfig = Field(default_factory=BatchConfig, description="批量处理配置")
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig, description="性能配置")
     network: NetworkConfig = Field(default_factory=NetworkConfig, description="网络配置")
-    features: FeaturesConfig = Field(default_factory=FeaturesConfig, description="功能开关")
     reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig, description="可靠性配置")
     distributed: DistributedConfig = Field(default_factory=DistributedConfig, description="分布式配置")
     extensions: ExtensionConfig = Field(default_factory=ExtensionConfig, description="用户自定义扩展配置")
     fanqie: FanqieConfig = Field(default_factory=FanqieConfig, description="番茄小说下载器（fanqie）扩展配置")
     output: OutputConfig = Field(default_factory=OutputConfig, description="输出格式配置")
-    webhook: WebhookConfig = Field(default_factory=WebhookConfig, description="Webhook 回调配置")
-    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig, description="限流器配置")
 
     @model_validator(mode="before")
     @classmethod
@@ -49,4 +45,14 @@ class PPCConfig(BaseModel):
         if isinstance(data, dict) and "arch" in data:
             data = dict(data)
             data.pop("arch", None)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_legacy_dropped_sections(cls, data: Any) -> Any:
+        """12.0.0 移除的 features / webhook / rate_limit 段静默忽略（含嵌套键）。"""
+        if isinstance(data, dict):
+            dropped = {"features", "webhook", "rate_limit"} & data.keys()
+            if dropped:
+                data = {k: v for k, v in data.items() if k not in dropped}
         return data

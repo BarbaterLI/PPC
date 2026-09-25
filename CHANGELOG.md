@@ -16,6 +16,14 @@
 ### 删除
 - `tests/unit/extensions/supersplit/`（8 个模块）与 `tests/unit/extensions/cloud_gradio/`（1 个模块）：
   所测试的扩展早已被移除，导致整个测试套件无法收集（ModuleNotFoundError）。
+- 根目录 `fanqie/` 陈旧源码副本（运行时绝对导入已指向不存在的模块）；
+  `extensions/fanqie/` 为唯一事实源，`fanqie.ppcext.zip` 改由
+  `scripts/build_ext_zip.py` 从其重建。
+- 零生产消费者的死模块：`src/tracing/`（823 行，无任何调用方）、
+  `src/scheduler/`（359 行，无调用方）、`src/audio/post_processor.py`、
+  `src/executors/registry.py`、`src/web/config.py`（PPC_WEB_* 环境变量半成品，
+  CLI 参数已覆盖同能力），含对应测试。新增 `scripts/find_dead_modules.py` 守护。
+- 依赖：`croniter`、`markdown`（源码从未导入）。
 
 ## [11.0.0] - 2026-09
 
@@ -33,7 +41,7 @@
 - 扩展体系升级：`package_type: executable` 原生扩展（命名管道 IPC + 资源监控 +
   sha256 校验），`.ppcext` 安装/卸载/列表/信息全链路（`ppc ext` 子命令、WebUI 扩展页）。
 - 沙箱增强：受限文件系统/socket/subprocess 代理，AST 级静态安全扫描。
-- 定时调度器 `src/scheduler/task_scheduler.py`（cron，依赖可选 `croniter`）。
+- 后台任务调度器 `src/scheduler/task_scheduler.py`（12.0.0 因无消费者而移除）。
 - 分布式：HTTP master/node 服务、健康检查、自适应负载均衡与故障任务迁移。
 - 可靠性：NoAudioReceived 专项静默重试、UA 池健康过滤与轮换、MUID 持久化、
   熔断半开冷却感知的重试退避、隔离区到期自动重入队。

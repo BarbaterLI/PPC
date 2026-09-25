@@ -103,17 +103,12 @@ class ConfigMigrator:
         if "performance" in config:
             perf = config["performance"]
             result["performance"] = {
-                "memory_limit_mb": perf.getint("memory_limit_mb", 768),
                 "max_file_cache_size": perf.getint("max_file_cache_size", 100),
             }
 
         if "network" in config:
             network = config["network"]
             result["network"] = {
-                "probe_hosts": [
-                    h.strip() for h in network.get("probe_hosts", "azure.microsoft.com,cloudflare.com").split(",")
-                ],
-                "probe_interval": network.getint("probe_interval", 45),
                 "timeout": network.getint("timeout", 5),
             }
 
@@ -127,7 +122,6 @@ class ConfigMigrator:
             retry_max_delay=30.0,
             punctuations=["，", "。", "！", "？", "；", "：", "……", "——", ".", "!", "?", ";", ",", "\n"],
         )
-        v6_config["core"]["temp_dir"] = str(source_path.parent / ".cache" / "ppc6")
         v6_config["tts"]["voice"] = self._get_nested(v5_config, "tts.voice", "zh-CN-XiaoxiaoNeural")
         v6_config["tts"]["concurrency"] = self._get_nested(v5_config, "tts.concurrency", 8)
         v6_config["tts"]["retries"] = self._get_nested(v5_config, "tts.retries", 3)
@@ -137,14 +131,9 @@ class ConfigMigrator:
         v6_config["split"]["encoding_fallback"] = self._get_nested(
             v5_config, "split.encoding_fallback", ["utf-8", "gbk", "gb2312"]
         )
-        v6_config["performance"]["memory_limit_mb"] = self._get_nested(v5_config, "performance.memory_limit_mb", 768)
         v6_config["performance"]["max_file_cache_size"] = self._get_nested(
             v5_config, "performance.max_file_cache_size", 100
         )
-        v6_config["network"]["probe_hosts"] = self._get_nested(
-            v5_config, "network.probe_hosts", ["azure.microsoft.com", "cloudflare.com"]
-        )
-        v6_config["network"]["probe_interval"] = self._get_nested(v5_config, "network.probe_interval", 45)
         v6_config["network"]["timeout"] = self._get_nested(v5_config, "network.timeout", 5)
         v6_config["_migrated_from"] = {
             "source": str(source_path),

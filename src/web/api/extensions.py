@@ -33,15 +33,18 @@ def get_loader(ensure_loaded: bool = False) -> "ExtensionLoader":
     """
     global _loader, _loader_loaded
     if _loader is None:
-        from src.extensions.loader import ExtensionLoader
+        from src.extensions.loader import ExtensionLoader, build_loader_from_config
 
-        _loader = ExtensionLoader()
+        _loader = build_loader_from_config() or ExtensionLoader()
     if ensure_loaded and not _loader_loaded:
+        from src.extensions.loader import extensions_enabled_by_config
 
-        async def _load_all():
-            await _loader.load_all_extensions()
+        if extensions_enabled_by_config():
 
-        run_async(_load_all())
+            async def _load_all():
+                await _loader.load_all_extensions()
+
+            run_async(_load_all())
         _loader_loaded = True
     return _loader
 

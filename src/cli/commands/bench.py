@@ -399,7 +399,7 @@ def _render_report(results: dict[str, Any]) -> None:
         if mg.get("skipped"):
             _c.print(f"  [bold]merge[/bold]: skipped - {mg['skipped']}")
         else:
-            _c.print(f"  [bold]merge[/bold]:")
+            _c.print("  [bold]merge[/bold]:")
             for route in ("pydub", "fast_join"):
                 r = mg.get(route)
                 if not r:

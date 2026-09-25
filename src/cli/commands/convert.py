@@ -364,14 +364,18 @@ def _run_convert_batch(
     def _warn_interrupt():
         output_formatter.warning("\n用户中断")
 
-    run_cli_async(
-        run_convert(),
-        failure_message="存在失败任务,请查看上方重试/错误明细",
-        failure_hint="使用 --verbose 查看详细错误信息,或调整 --timeout-multiplier / 减少并发",
-        interrupt_message="用户中断 (Ctrl+C)",
-        on_interrupt=_warn_interrupt,
-        catch_io_errors=True,
-    )
+    # 长时间合成期间阻止系统休眠（失败时工具内部自动降级为无操作）
+    from ...utils.keep_awake import keep_awake_context
+
+    with keep_awake_context():
+        run_cli_async(
+            run_convert(),
+            failure_message="存在失败任务,请查看上方重试/错误明细",
+            failure_hint="使用 --verbose 查看详细错误信息,或调整 --timeout-multiplier / 减少并发",
+            interrupt_message="用户中断 (Ctrl+C)",
+            on_interrupt=_warn_interrupt,
+            catch_io_errors=True,
+        )
 
 
 def handle_convert(

@@ -263,19 +263,33 @@ class AudioMerger:
 def merge_audio_files(
     audio_files: list[Path],
     output_path: Path,
-    silence_ms: int = 500,
-    bitrate: str = "48k",
+    silence_ms: int | None = None,
+    bitrate: str | None = None,
 ) -> MergeResult:
-    """便捷函数：合并音频文件
+    """便捷函数：合并音频文件（章节级）。
 
     Args:
         audio_files: 音频文件路径列表
         output_path: 输出文件路径
-        silence_ms: 静音间隔（毫秒）
-        bitrate: 输出 MP3 比特率，默认 "48k"
+        silence_ms: 静音间隔（毫秒）；缺省读 ``config.output.silence_between_chapters_ms``
+        bitrate: 输出 MP3 比特率；缺省读 ``config.tts.segment_bitrate``
 
     Returns:
         MergeResult 对象
     """
+    if silence_ms is None or bitrate is None:
+        try:
+            from src.config import get_default_manager
+
+            cfg = get_default_manager().get_config()
+            if silence_ms is None:
+                silence_ms = int(cfg.output.silence_between_chapters_ms)
+            if bitrate is None:
+                bitrate = str(cfg.tts.segment_bitrate)
+        except Exception:
+            if silence_ms is None:
+                silence_ms = 500
+            if bitrate is None:
+                bitrate = "48k"
     merger = AudioMerger(silence_ms=silence_ms, bitrate=bitrate)
     return merger.merge(audio_files, output_path)

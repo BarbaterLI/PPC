@@ -58,10 +58,6 @@ class AntiRiskControlConfig(BaseModel):
         default=2, ge=0, le=10,
         description="单次合成 WebSocket 连接重试次数 / WebSocket connect retries per synthesis (independent of business retries)",
     )
-    health_check_interval_seconds: float = Field(
-        default=0.0, ge=0.0, le=3600.0,
-        description="后端健康检查间隔（秒，0 禁用）/ Backend health check interval (seconds, 0 disables)",
-    )
     request_timeout_seconds: float = Field(
         default=30.0, ge=1.0, le=300.0,
         description="单次 HTTP/WS 请求超时（秒）/ Single HTTP/WS request timeout (seconds)",
@@ -151,15 +147,11 @@ class TTSConfig(BaseModel):
         default="48k",
         description="合并输出 MP3 比特率（默认 48k 与 Edge TTS 源音频一致，如 64k/96k/128k）",
     )
-    segment_filename_format: str = Field(default="{stem}_seg_{index:03d}{suffix}", description="分段文件名格式")
     buffer_size: int = Field(default=32, description="缓冲区大小")
     rate_limit: int = Field(default=100, description="每秒请求限制")
     rate: str = Field(default="+0%", description="音频播放速度（如 +10%, -10%, +0%），范围 -100% 到 +100%")
     ema_alpha: float = Field(default=0.3, ge=0.0, le=1.0, description="EMA 平滑因子")
-    fast_fail_threshold: int = Field(default=3, ge=1, le=10, description="快速降速失败次数阈值")
-    rate_recovery_delay: float = Field(default=30.0, ge=0.0, le=300.0, description="速率恢复延迟 (秒)")
     quarantine_delay: float = Field(default=300.0, ge=0.0, le=3600.0, description="隔离任务重试延迟 (秒)")
-    timeout_percentile: float = Field(default=0.95, ge=0.5, le=1.0, description="超时计算百分位")
     timeout_history_size: int = Field(default=100, ge=10, le=1000, description="TTS 超时历史记录保留条数")
     timeout_multiplier: float = Field(default=1.0, ge=0.1, le=5.0, description="超时时间倍率")
     # --- 超时算法参数（单一实现 src/timeout/calculator.py，与引擎/模板默认值一致）---

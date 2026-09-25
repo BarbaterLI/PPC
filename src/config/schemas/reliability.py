@@ -74,10 +74,6 @@ class ReliabilityConfig(BaseModel):
         description="网络重试策略",
     )
     tts_circuit: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig, description="TTS熔断器配置")
-    network_circuit: CircuitBreakerConfig = Field(
-        default_factory=lambda: CircuitBreakerConfig(failure_threshold=3, timeout_seconds=30.0),
-        description="网络熔断器配置",
-    )
     tts_no_audio: NoAudioRetryConfig = Field(
         default_factory=NoAudioRetryConfig, description="NoAudioReceived 静默重试配置"
     )

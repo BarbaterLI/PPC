@@ -1,12 +1,12 @@
 """配置 Schema 子包 - 按域拆分的 Pydantic v2 模型
 
 域划分：
-- core: 应用级配置段（core/split/batch/performance/network/features/extensions）
+- core: 应用级配置段（core/split/batch/performance/network/extensions）
 - tts: TTS 域（TTSConfig/AntiRiskControlConfig/TextNormalizationConfig）
 - rules: 自定义分割规则域（CustomRule 及其四个字段分组子模型）
 - reliability: 可靠性域（重试/熔断/NoAudioReceived 静默重试）
-- distributed: 分布式域（节点/负载均衡/容错迁移）
-- output: 输出/Webhook/限流域
+- distributed: 分布式域（节点列表与默认并发）
+- output: 输出域
 - base: PPCConfig 主模型
 """
 
@@ -16,25 +16,18 @@ from src.config.schemas.core import (
     CoreConfig,
     ExtensionConfig,
     FanqieConfig,
-    FeaturesConfig,
     LogLevel,
     NetworkConfig,
     PerformanceConfig,
     SplitConfig,
 )
 from src.config.schemas.distributed import (
-    AdaptiveLoadBalanceConfig,
     DistributedConfig,
     DistributedNodeConfig,
-    FaultToleranceConfig,
 )
 from src.config.schemas.output import (
     AudioFormat,
-    AudioQuality,
     OutputConfig,
-    RateLimitConfig,
-    WebhookConfig,
-    WebhookEventType,
 )
 from src.config.schemas.reliability import (
     CircuitBreakerConfig,
@@ -67,7 +60,6 @@ __all__ = [
     "BatchConfig",
     "PerformanceConfig",
     "NetworkConfig",
-    "FeaturesConfig",
     "ExtensionConfig",
     "FanqieConfig",
     "ReliabilityConfig",
@@ -85,14 +77,8 @@ __all__ = [
     "VolumePatternType",
     "DistributedConfig",
     "DistributedNodeConfig",
-    "AdaptiveLoadBalanceConfig",
-    "FaultToleranceConfig",
     "OutputConfig",
-    "WebhookConfig",
-    "RateLimitConfig",
     "AudioFormat",
-    "AudioQuality",
-    "WebhookEventType",
     "LogLevel",
     "TextNormalizationConfig",
     "AntiRiskControlConfig",

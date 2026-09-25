@@ -89,7 +89,7 @@ class ConfigHistoryStore:
             log_level = log_level.value
 
         return {
-            "mode": config.core.mode,
+            "preset": config.tts.preset,
             "concurrency": config.tts.concurrency,
             "timeout": config.tts.timeout,
             "voice": config.tts.voice,

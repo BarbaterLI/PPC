@@ -81,8 +81,6 @@ class RuleBasic(BaseModel):
 class RuleMatchConditions(BaseModel):
     """规则匹配条件：行特征检查、前置条件、多行与行号范围约束"""
 
-    check_indentation: bool = Field(default=False, description="检查缩进")
-    check_empty_line: bool = Field(default=False, description="检查空行")
     check_title_length: bool = Field(default=False, description="检查标题长度")
     max_title_length: int | None = Field(default=None, ge=1, le=200, description="最大标题长度")
     min_title_length: int | None = Field(default=None, ge=1, le=100, description="最小标题长度")
@@ -92,9 +90,6 @@ class RuleMatchConditions(BaseModel):
     conditions: list[RuleCondition] = Field(default_factory=list, description="前置条件列表")
     stop_on_match: bool = Field(default=False, description="匹配后是否停止后续规则")
     excluded_patterns: list[str] = Field(default_factory=list, description="排除模式列表")
-
-    # 条件组合
-    condition_logic: str = Field(default="and", description="条件组合逻辑: and | or")
 
     # 多行匹配
     multiline: bool = Field(default=False, description="启用多行匹配")

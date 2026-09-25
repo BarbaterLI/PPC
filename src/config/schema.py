@@ -5,10 +5,8 @@
 """
 
 from src.config.schemas import (
-    AdaptiveLoadBalanceConfig,
     AntiRiskControlConfig,
     AudioFormat,
-    AudioQuality,
     BatchConfig,
     CircuitBreakerConfig,
     ConditionType,
@@ -18,15 +16,12 @@ from src.config.schemas import (
     DistributedNodeConfig,
     ExtensionConfig,
     FanqieConfig,
-    FaultToleranceConfig,
-    FeaturesConfig,
     LogLevel,
     NetworkConfig,
     NoAudioRetryConfig,
     OutputConfig,
     PerformanceConfig,
     PPCConfig,
-    RateLimitConfig,
     ReliabilityConfig,
     RetryStrategyConfig,
     RuleActions,
@@ -39,8 +34,6 @@ from src.config.schemas import (
     TextNormalizationConfig,
     TTSConfig,
     VolumePatternType,
-    WebhookConfig,
-    WebhookEventType,
 )
 
 __all__ = [
@@ -51,7 +44,6 @@ __all__ = [
     "BatchConfig",
     "PerformanceConfig",
     "NetworkConfig",
-    "FeaturesConfig",
     "ExtensionConfig",
     "FanqieConfig",
     "ReliabilityConfig",
@@ -69,14 +61,8 @@ __all__ = [
     "VolumePatternType",
     "DistributedConfig",
     "DistributedNodeConfig",
-    "AdaptiveLoadBalanceConfig",
-    "FaultToleranceConfig",
     "OutputConfig",
-    "WebhookConfig",
-    "RateLimitConfig",
     "AudioFormat",
-    "AudioQuality",
-    "WebhookEventType",
     "LogLevel",
     "TextNormalizationConfig",
     "AntiRiskControlConfig",

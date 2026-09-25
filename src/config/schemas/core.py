@@ -22,9 +22,7 @@ class CoreConfig(BaseModel):
 
     model_config = ConfigDict(use_enum_values=False)
 
-    mode: str = Field(default="parametric", description="运行模式: parametric | interactive")
     log_level: LogLevel = Field(default=LogLevel.INFO, description="日志级别")
-    temp_dir: str = Field(default="~/.cache/ppc", description="临时文件目录")
     progress_interval: int = Field(default=10, ge=1, le=100, description="进度回调触发频率(每N个)")
 
 
@@ -40,7 +38,9 @@ class SplitConfig(BaseModel):
     add_title_separator: bool = Field(default=True, description="是否在章节名后添加等于号分隔符")
     hierarchical_split: bool = Field(default=False, description="启用卷章体层级分割")
     volume_dir_prefix: str = Field(default="{volume}", description="卷目录名前缀格式")
-    chapter_file_prefix: str = Field(default="{index:03d}", description="章节文件名格式")
+    chapter_file_prefix: str = Field(
+        default="{index:03d}", description="章节文件名序号格式（可含 {index} 占位符）"
+    )
 
 
 class BatchConfig(BaseModel):
@@ -48,45 +48,29 @@ class BatchConfig(BaseModel):
 
     max_size_mb: int = Field(default=95, ge=1, description="单批次最大大小(MB)")
     max_files_per_batch: int = Field(default=500, ge=1, description="每批次最大文件数")
-    preserve_order: bool = Field(default=True, description="是否保持顺序")
 
 
 class PerformanceConfig(BaseModel):
     """性能配置"""
 
-    memory_limit_mb: int = Field(default=768, ge=128, description="内存限制(MB)")
     max_file_cache_size: int = Field(default=100, description="最大文件缓存数")
-    stream_flush_threshold: int = Field(default=1048576, ge=1024, description="流式刷新阈值(字节)")
+    stream_flush_threshold: int = Field(default=10, ge=1, description="进度流刷新阈值(每N个任务)")
 
 
 class NetworkConfig(BaseModel):
     """网络配置"""
 
-    probe_hosts: list[str] = Field(
-        default_factory=lambda: ["azure.microsoft.com", "cloudflare.com"], description="探测主机列表"
-    )
-    probe_interval: int = Field(default=45, description="探测间隔(秒)")
     timeout: int = Field(default=5, description="超时时间(秒)")
-
-
-class FeaturesConfig(BaseModel):
-    """功能开关配置"""
-
-    smart_detection: bool = Field(default=True, description="智能检测")
-    merge_short_chapters: bool = Field(default=True, description="合并短章节")
-    auto_retry: bool = Field(default=True, description="自动重试")
-    keep_awake: bool = Field(default=False, description="保持屏幕常亮")
 
 
 class ExtensionConfig(BaseModel):
     """用户自定义扩展配置"""
 
-    enabled: bool = Field(default=True, description="启用用户自定义扩展")
+    enabled: bool = Field(default=True, description="启用扩展系统（false 时不加载任何扩展）")
     extension_dirs: list[str] = Field(
         default_factory=lambda: ["extensions"], description="扩展目录列表（相对路径或绝对路径）"
     )
-    auto_load: bool = Field(default=True, description="启动时自动加载扩展")
-    strict_validation: bool = Field(default=True, description="严格验证扩展接口兼容性")
+    auto_load: bool = Field(default=True, description="CLI 启动时自动加载扩展")
 
     @model_validator(mode="before")
     @classmethod

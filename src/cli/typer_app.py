@@ -56,27 +56,33 @@ def get_output() -> OutputFormatter:
 def get_extension_loader() -> ExtensionLoader:
     """Get extension loader, initializing on first access.
 
-    Loads built-in extensions (fanqie) from src/extensions/.
+    依据 ``config.extensions`` 段构造：enabled=false 时返回不加载任何扩展的
+    空 loader；auto_load=false 时仅构造不自动执行加载。
     """
     global _extension_loader
     if _extension_loader is None:
-        from src.extensions.loader import ExtensionLoader
+        from src.extensions.loader import ExtensionLoader, build_loader_from_config, extension_auto_load_by_config
 
-        loader = ExtensionLoader()
-        try:
-            import asyncio
-
+        loader = build_loader_from_config()
+        if loader is None:
+            # 扩展系统被配置禁用：提供空 loader，CLI 不注册任何扩展命令
+            _extension_loader = ExtensionLoader()
+            return _extension_loader
+        if extension_auto_load_by_config():
             try:
-                asyncio.get_running_loop()
-                # A loop is running - skip extension loading in async context
-                import warnings
+                import asyncio
 
-                warnings.warn("Extension loading skipped in async context", RuntimeWarning, stacklevel=2)
-            except RuntimeError:
-                # No running loop, safe to use asyncio.run()
-                asyncio.run(loader.load_all_extensions())
-        except Exception as e:
-            logger.warning("Failed to load extensions: %s", e)
+                try:
+                    asyncio.get_running_loop()
+                    # A loop is running - skip extension loading in async context
+                    import warnings
+
+                    warnings.warn("Extension loading skipped in async context", RuntimeWarning, stacklevel=2)
+                except RuntimeError:
+                    # No running loop, safe to use asyncio.run()
+                    asyncio.run(loader.load_all_extensions())
+            except Exception as e:
+                logger.warning("Failed to load extensions: %s", e)
         _extension_loader = loader
     return _extension_loader
 
@@ -153,6 +159,16 @@ def main(
         no_emoji=no_emoji,
         timestamps=timestamps,
     )
+
+    # 应用 config.core.log_level（仅当用户未显式 -v/-q 时生效）
+    if not verbose and not quiet:
+        try:
+            from src.config import get_default_manager
+
+            raw_level = get_default_manager().get_config().core.log_level
+            output.apply_config_log_level(raw_level)
+        except Exception:
+            pass
 
     if version:
         output.print_version_card()

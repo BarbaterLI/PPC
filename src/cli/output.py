@@ -165,6 +165,12 @@ class OutputFormatter(BrandingMixin, PanelsMixin, WizardMixin, HelpBrowserMixin)
         _tokens_set_no_color(self.no_color)
         _tokens_set_no_emoji(self.no_emoji)
 
+    def apply_config_log_level(self, raw_level: object) -> None:
+        """应用 ``config.core.log_level``（pydantic LogLevel 或字符串）。"""
+        value = getattr(raw_level, "value", raw_level)
+        if isinstance(value, str) and value:
+            set_root_log_level(value)
+
     def set_verbose(self, verbose: bool):
         """Set verbose mode."""
         self.verbose = bool(verbose)
@@ -794,3 +800,16 @@ def setup_logging(verbose: bool = False, quiet: bool = False, json_mode: bool = 
     logger = logging.getLogger("ppc")
     logger.setLevel(level)
     return logger
+
+
+def set_root_log_level(name: str) -> None:
+    """按名称（debug/info/warning/error）调整根与 ppc logger 级别。
+
+    用于应用 ``config.core.log_level``：仅在用户未显式传入 -v/-q 时调用。
+    """
+    level = getattr(logging, str(name).strip().upper(), None)
+    if not isinstance(level, int):
+        return
+    logging.getLogger().setLevel(level)
+    for lg_name in ("ppc", "ppc.web", "src"):
+        logging.getLogger(lg_name).setLevel(level)

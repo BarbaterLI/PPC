@@ -35,13 +35,11 @@ def _v6_defaults(
     retry_max_delay: float = 60.0,
     punctuations: list[str] | None = None,
 ) -> dict[str, Any]:
-    """v6 基线默认配置字典，预设工厂与 PPC5 迁移链共享。"""
+    """基线默认配置字典，预设工厂与 PPC5 迁移链共享。"""
     return {
         "version": version,
         "core": {
-            "mode": "parametric",
             "log_level": "info",
-            "temp_dir": "~/.cache/ppc",
             "progress_interval": 10,
         },
         "tts": {
@@ -55,7 +53,6 @@ def _v6_defaults(
             "enable_segmentation": True,
             "punctuations": list(punctuations) if punctuations is not None else list(PUNCTUATIONS),
             "segment_silence_ms": 100,
-            "segment_filename_format": "{stem}_seg_{index:03d}{suffix}",
             "buffer_size": 32,
             "rate_limit": 100,
         },
@@ -69,23 +66,13 @@ def _v6_defaults(
         "batch": {
             "max_size_mb": 95,
             "max_files_per_batch": 500,
-            "preserve_order": True,
         },
         "performance": {
-            "memory_limit_mb": 768,
             "max_file_cache_size": 100,
-            "stream_flush_threshold": 1048576,
+            "stream_flush_threshold": 10,
         },
         "network": {
-            "probe_hosts": ["azure.microsoft.com", "cloudflare.com"],
-            "probe_interval": 45,
             "timeout": 5,
-        },
-        "features": {
-            "smart_detection": True,
-            "merge_short_chapters": True,
-            "auto_retry": True,
-            "keep_awake": False,
         },
         "reliability": {
             "tts_retry": {
@@ -109,19 +96,12 @@ def _v6_defaults(
                 "half_open_max_calls": 3,
                 "window_seconds": 60.0,
             },
-            "network_circuit": {
-                "failure_threshold": 3,
-                "success_threshold": 2,
-                "timeout_seconds": 30.0,
-                "half_open_max_calls": 3,
-                "window_seconds": 60.0,
-            },
         },
     }
 
 
 class PresetBuilder:
-    """预设工厂基类：v6 基线默认值 + 各预设按段的字段覆盖 → PPCConfig。"""
+    """预设工厂基类：基线默认值 + 各预设按段的字段覆盖 → PPCConfig。"""
 
     name: ClassVar[str]
     description: ClassVar[str]
@@ -150,24 +130,19 @@ class SpeedPresetBuilder(PresetBuilder):
             "segment_silence_ms": 50,
             "rate_limit": 150,
             "ema_alpha": 0.4,
-            "rate_recovery_delay": 20.0,
             "anti_risk_control": {
                 "backend": "auto",
                 "max_connect_retries": 1,
                 "request_timeout_seconds": 20.0,
-                "health_check_interval_seconds": 0.0,
                 "voice_fallbacks": [],
             },
         },
         "split": {"encoding_detect_buffer": 512},
-        "batch": {"preserve_order": False},
-        "performance": {"stream_flush_threshold": 2097152},
-        "network": {"probe_hosts": ["azure.microsoft.com"], "probe_interval": 60, "timeout": 3},
-        "features": {"auto_retry": False},
+        "performance": {"stream_flush_threshold": 20},
+        "network": {"timeout": 3},
         "reliability": {
             "tts_retry": {"max_retries": 2, "base_delay": 1.0, "max_delay": 20.0},
             "network_retry": {"max_retries": 3, "base_delay": 0.5, "max_delay": 15.0},
-            "network_circuit": {"failure_threshold": 3, "success_threshold": 2, "timeout_seconds": 30.0},
         },
     }
 
@@ -197,29 +172,20 @@ class QualityPresetBuilder(PresetBuilder):
             "buffer_size": 64,
             "rate_limit": 50,
             "ema_alpha": 0.2,
-            "fast_fail_threshold": 5,
-            "rate_recovery_delay": 45.0,
             "anti_risk_control": {
                 "backend": "auto",
                 "max_connect_retries": 3,
                 "request_timeout_seconds": 60.0,
-                "health_check_interval_seconds": 0.0,
                 "voice_fallbacks": ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural"],
             },
         },
         "split": {"min_chapter_length": 200, "encoding_detect_buffer": 2048},
         "batch": {"max_files_per_batch": 100},
         "performance": {
-            "memory_limit_mb": 1024,
             "max_file_cache_size": 50,
-            "stream_flush_threshold": 524288,
+            "stream_flush_threshold": 5,
         },
-        "network": {
-            "probe_hosts": ["azure.microsoft.com", "cloudflare.com", "google.com"],
-            "probe_interval": 30,
-            "timeout": 10,
-        },
-        "features": {"merge_short_chapters": False},
+        "network": {"timeout": 10},
         "reliability": {
             "tts_retry": {
                 "max_retries": 5,
@@ -241,13 +207,6 @@ class QualityPresetBuilder(PresetBuilder):
                 "timeout_seconds": 120.0,
                 "half_open_max_calls": 2,
                 "window_seconds": 120.0,
-            },
-            "network_circuit": {
-                "failure_threshold": 3,
-                "success_threshold": 2,
-                "timeout_seconds": 60.0,
-                "half_open_max_calls": 2,
-                "window_seconds": 60.0,
             },
         },
     }
@@ -284,10 +243,10 @@ def get_preset(name: str) -> PPCConfig:
     """获取预设配置，未知预设名抛出 ValueError。"""
     factory = PRESETS.get(name)
     if factory is None:
-        raise ValueError(f"未知的预设: {name}，可用预设: {', '.join(PRESETS.keys())}")
+        raise ValueError(f"未知的预设: {name}，可用预设: {', '.join(PRESETS)}")
     return factory()
 
 
-def get_preset_names() -> list:
+def get_preset_names() -> list[str]:
     """获取所有预设名称"""
     return list(PRESETS.keys())

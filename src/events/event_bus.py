@@ -158,29 +158,6 @@ class AudioProcessedEvent(Event):
 
 
 @dataclass
-class ScheduledTaskEvent(Event):
-    """Scheduled task event"""
-
-    task_id: str = ""
-    task_type: str = ""
-    scheduled_time: datetime | None = None
-    action: str = ""
-
-
-@dataclass
-class WebhookEvent(Event):
-    """Webhook callback event"""
-
-    url: str = ""
-    event_type: str = ""
-    payload: dict[str, Any] = field(default_factory=dict)
-    status: str = "pending"
-    response_code: int | None = None
-    response_body: str | None = None
-    error: str | None = None
-
-
-@dataclass
 class ExtensionEvent(Event):
     """扩展事件"""
 

@@ -6,14 +6,10 @@
 # 核心配置 / Core Configuration
 # ============================================
 core:
-  # 运行模式: parametric | interactive / Run mode: parametric | interactive
-  mode: parametric
   # 日志级别: debug | info | warning | error / Log level: debug | info | warning | error
   log_level: info
   # 进度条更新频率（每N个项目更新一次）/ Progress bar update frequency (every N items)
   progress_interval: 10
-  # 临时文件目录 / Temporary file directory
-  temp_dir: ~/.cache/ppc
 
 # ============================================
 # TTS 语音合成配置 / TTS Synthesis Configuration
@@ -38,8 +34,6 @@ tts:
   timeout_min: 50
   # 最大超时时间（秒）/ Maximum timeout (seconds)
   timeout_max: 720
-  # 超时百分位 / Timeout percentile
-  timeout_percentile: 0.95
   # 超时历史记录条数 / Timeout history size
   timeout_history_size: 100
   # 超时倍率 / Timeout multiplier
@@ -75,18 +69,12 @@ tts:
   segment_silence_ms: 100
   # 合并输出 MP3 比特率（默认 48k 与 Edge TTS 源音频一致）/ Merged MP3 bitrate (default 48k, matches Edge TTS source)
   segment_bitrate: 48k
-  # 分段文件名格式（{stem}文件名 {index}序号 {suffix}后缀）/ Segment filename format ({stem} filename {index} index {suffix} suffix)
-  segment_filename_format: '{stem}_seg_{index:03d}{suffix}'
   # 缓冲区大小 / Buffer size
   buffer_size: 32
   # 每秒请求数限制 / Requests per second limit
   rate_limit: 100
   # EMA平滑因子（0.0-1.0）/ EMA smoothing factor (0.0-1.0)
   ema_alpha: 0.3
-  # 快速失败阈值 / Fast-fail threshold
-  fast_fail_threshold: 3
-  # 速率恢复延迟（秒）/ Rate recovery delay (seconds)
-  rate_recovery_delay: 30.0
   # 隔离区延迟（秒）/ Quarantine delay (seconds)
   quarantine_delay: 300.0
   # API并发数（None表示自动推导）/ API concurrency (None means auto-derived)
@@ -127,8 +115,6 @@ tts:
     voice_fallbacks: []
     # 单次合成 WebSocket 连接重试次数 / WebSocket connect retries per synthesis
     max_connect_retries: 2
-    # 后端健康检查间隔（秒，0 禁用）/ Backend health check interval (seconds, 0 disables)
-    health_check_interval_seconds: 0.0
     # 单次 HTTP/WS 请求超时（秒）/ Single HTTP/WS request timeout (seconds)
     request_timeout_seconds: 30.0
 
@@ -204,60 +190,20 @@ batch:
   max_size_mb: 95
   # 每批次最大文件数 / Max files per batch
   max_files_per_batch: 500
-  # 是否保持文件顺序 / Whether to preserve file order
-  preserve_order: true
-
-# ============================================
-# UI 界面配置 / UI Configuration
-# ============================================
-ui:
-  # UI模式: simple | classic | debug / UI mode: simple | classic | debug
-  mode: simple
-  # 详细输出 / Verbose output
-  verbose: true
-  # 禁用颜色 / Disable color
-  no_color: false
-  # 显示进度条 / Show progress bar
-  show_progress: true
-  # 显示时间戳 / Show timestamps
-  show_timestamps: false
-  # 日志文件路径（null表示不输出到文件）/ Log file path (null = no file output)
-  log_file: null
-
-# ============================================
-# 功能开关 / Feature Toggles
-# ============================================
-features:
-  # 智能检测 / Smart detection
-  smart_detection: true
-  # 合并短章节 / Merge short chapters
-  merge_short_chapters: true
-  # 自动重试 / Auto retry
-  auto_retry: true
-  # 保持唤醒 / Keep awake
-  keep_awake: false
 
 # ============================================
 # 性能配置 / Performance Configuration
 # ============================================
 performance:
-  # 内存限制（MB）/ Memory limit (MB)
-  memory_limit_mb: 768
   # 最大文件缓存数 / Max file cache count
   max_file_cache_size: 100
-  # 流刷新阈值（字节）/ Stream flush threshold (bytes)
-  stream_flush_threshold: 1048576
+  # 进度流刷新阈值（每N个任务刷新一次）/ Progress stream flush threshold (every N tasks)
+  stream_flush_threshold: 10
 
 # ============================================
 # 网络配置 / Network Configuration
 # ============================================
 network:
-  # 探测主机列表 / Probe host list
-  probe_hosts:
-  - azure.microsoft.com
-  - cloudflare.com
-  # 探测间隔（秒）/ Probe interval (seconds)
-  probe_interval: 45
   # 超时时间（秒）/ Timeout (seconds)
   timeout: 5
 
@@ -306,34 +252,12 @@ reliability:
 # 分布式配置 / Distributed Configuration
 # ============================================
 # --- 分布式配置 / Distributed Configuration ---
+# 主控/节点运行方式见 `ppc dist --help`；策略与健康检查等为运行时参数。
 distributed:
-  enabled: false
-  adaptive_load_balance:
-    decay_factor: 0.9
-    enabled: false
-    history_weight: 0.5
-    history_window_size: 100
-    long_text_threshold: 2000
-    task_feature_weight: 0.5
-  fault_tolerance:
-    degradation_threshold: 3
-    enable_degradation: true
-    enable_task_migration: true
-    enabled: true
-    migration_delay: 5.0
-    recovery_check_interval: 60
-  health_check_interval: 30
-  health_check_timeout: 5
-  load_balance_strategy: round_robin
-  local_execution: true
-  master_max_concurrency: 8
-  max_retries: 3
-  mode: master
-  node_host: 0.0.0.0
+  # 添加节点时的默认最大并发数 / Default max concurrency when adding nodes
   node_max_concurrency: 4
-  node_port: 8000
+  # 远程节点列表（ppc dist add-node 维护）/ Remote node list (maintained by `ppc dist add-node`)
   nodes: []
-  task_timeout: 300
 
 # ============================================
 # 番茄小说下载器（fanqie 扩展）配置 / Fanqie Extension Configuration
@@ -354,11 +278,13 @@ fanqie:
 # 扩展配置 / Extensions Configuration
 # ============================================
 extensions:
-  auto_load: true
+  # 扩展系统总开关 / Master switch for the extension system
   enabled: true
+  # 启动时自动加载扩展 / Auto-load extensions on CLI startup
+  auto_load: true
+  # 扩展目录列表 / Extension directories
   extension_dirs:
   - extensions
-  strict_validation: true
 
 # ============================================
 # 输出格式配置 / Output Format Configuration
@@ -367,55 +293,10 @@ extensions:
 output:
   # 默认音频格式: mp3 | wav | ogg | aac / Default audio format: mp3 | wav | ogg | aac
   default_format: mp3
-  # 音频质量: low | medium | high | lossless / Audio quality: low | medium | high | lossless
-  audio_quality: high
-  # 后处理管道（如 reverb, compression, equalizer）/ Post-processing pipeline (e.g. reverb, compression, equalizer)
-  post_processing: []
-  # 是否嵌入章节元数据 / Whether to embed chapter metadata
+  # 是否嵌入章节元数据（ID3 TIT2/TPE1 与 --book 章节信息）/ Whether to embed chapter metadata
   metadata_embed: true
-  # 章节间静音时长（毫秒）/ Silence between chapters (ms)
+  # 章节间静音时长（毫秒），merge 命令默认值 / Silence between chapters (ms), default for `ppc merge`
   silence_between_chapters_ms: 500
-  # 输出文件名格式 / Output filename format
-  output_naming: '{stem}'
-
-# ============================================
-# Webhook 回调配置 / Webhook Callback Configuration
-# ============================================
-# --- Webhook 回调配置 / Webhook Callback Configuration ---
-webhook:
-  # 是否启用 Webhook / Enable Webhook
-  enabled: false
-  # Webhook URL / Webhook URL
-  url: ''
-  # 触发事件: started | completed | failed | progress / Trigger events: started | completed | failed | progress
-  events:
-  - completed
-  # 请求超时时间（秒）/ Request timeout (seconds)
-  timeout: 30
-  # 重试次数 / Retry count
-  retry_count: 3
-  # 重试延迟（秒）/ Retry delay (seconds)
-  retry_delay: 1.0
-  # 签名密钥（用于 HMAC 签名验证，null表示不签名）/ Signing secret (HMAC verification; null = no signing)
-  secret: null
-  # 自定义 HTTP 请求头 / Custom HTTP headers
-  headers: {}
-
-# ============================================
-# 限流器配置 / Rate Limiter Configuration
-# ============================================
-# --- 限流器配置 / Rate Limiter Configuration ---
-rate_limit:
-  # 是否启用限流 / Enable rate limiting
-  enabled: true
-  # 最大每秒请求数 / Max requests per second
-  max_requests_per_second: 100
-  # 突发容量 / Burst capacity
-  burst_size: 150
-  # 限流策略: token_bucket | sliding_window / Rate-limit strategy: token_bucket | sliding_window
-  strategy: token_bucket
-  # 触发限流后的冷却时间（秒）/ Cooldown after rate limit triggered (seconds)
-  cooldown_on_limit: 0.1
 
 # 配置版本（自动生成，勿修改）/ Config version (auto-generated, do not modify)
 version: {{version}}

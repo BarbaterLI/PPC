@@ -13,7 +13,7 @@ where = ["."]
 include = ["src*"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
@@ -47,10 +47,6 @@ convention = "google"
 testpaths = ["tests"]
 
 [tool.mypy]
-# 注：理想情况下应与 requires-python=">=3.10" 对齐为 "3.10"，
-# 但已安装的 numpy pyi stub 使用 PEP 695 `type` 语句（Python 3.12+），
-# 在 python_version="3.10" 下会导致 mypy 解析失败。
-# 改由 ruff target-version="py310" 在 lint 阶段捕获 3.10 不兼容语法。
 python_version = "3.12"
 files = ["src"]
 ignore_missing_imports = true
