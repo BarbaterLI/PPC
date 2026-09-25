@@ -514,10 +514,28 @@ class ExtensionLoader:
 
         self._loaded_extensions[ext_name] = extension
         self._extension_modules[ext_name] = module_name
+        self._register_extension_backend(extension)
         logger.info(f"Extension loaded successfully: {ext_name}")
         self._audit_logger.log_event(
             ext_name, "EXTENSION_LOAD", ext_name, AuditResult.SUCCESS
         )
+
+    def _register_extension_backend(self, extension: Extension) -> None:
+        """TTS_BACKEND 型扩展自动注册进 ``ppc.tts.v1`` 后端注册表。
+
+        注册名取 ``extension.get_name()``（缺省回退扩展元数据名）；注册失败
+        仅记 debug 日志，不影响扩展加载结果。
+        """
+        if extension.metadata.extension_type != ExtensionType.TTS_BACKEND:
+            return
+        try:
+            from src.engines.tts_protocol import backend_registry
+
+            name = str(getattr(extension, "get_name", lambda: extension.metadata.name)() or extension.metadata.name)
+            backend_registry.register(name, extension, source="extensions")
+            extension._ppc_backend_name = name  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            logger.debug("TTS 后端自动注册失败 / backend auto-register failed: %s", extension.metadata.name, exc_info=True)
 
     async def _handle_load_error(
         self,
@@ -762,6 +780,12 @@ class ExtensionLoader:
         self._loaded_extensions.clear()
         self._failed_extensions.clear()
         self._extension_modules.clear()
+        try:
+            from src.engines.tts_protocol import backend_registry
+
+            backend_registry.unregister_source("extensions")
+        except Exception:  # noqa: BLE001
+            pass
 
         # 清理扫描结果与缓存，保证后续重载能重新扫描和解析最新文件内容
         self._scan_coordinator.reset()

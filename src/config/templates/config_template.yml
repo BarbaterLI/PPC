@@ -81,6 +81,10 @@ tts:
   api_concurrency: 8
   # 音频速率（如 +40%, -10%）/ Audio rate (e.g. +40%, -10%)
   rate: +0%
+  # ppc.tts.v1 合成后端（空=本地 edge_tts 默认路径）/ ppc.tts.v1 synthesis backend (empty = local edge_tts)
+  # 内置: openai_http（OpenAI 兼容 /audio/speech 服务，配置见环境变量 PPC_TTS_OPENAI_HTTP_BASE_URL / _API_KEY / _MODEL）
+  # Built-in: openai_http; 扩展后端经 .ppcext 注册后按名称填入 / extension backends resolve by registered name
+  backend_plugin: ""
 
   # --- 风控规避配置 / Anti-Risk-Control ---
   anti_risk_control:

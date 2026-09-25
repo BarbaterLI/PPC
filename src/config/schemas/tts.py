@@ -123,6 +123,11 @@ class TTSConfig(BaseModel):
 
     preset: str = Field(default="balanced", description="配置预设：speed | balanced | quality | custom")
     voice: str = Field(default="zh-CN-XiaoxiaoNeural", description="语音模型")
+    backend_plugin: str = Field(
+        default="",
+        description="ppc.tts.v1 合成后端名（空=本地 edge_tts 默认路径；内置 openai_http，"
+                    "扩展注册后端亦可按名称选用）/ ppc.tts.v1 backend name; empty = local edge_tts",
+    )
     concurrency: int = Field(default=8, ge=1, le=64, description="并发数")
     retries: int = Field(default=3, ge=0, le=10, description="重试次数")
     timeout: int = Field(default=120, ge=0, description="超时时间 (秒)，0 表示自动推导")

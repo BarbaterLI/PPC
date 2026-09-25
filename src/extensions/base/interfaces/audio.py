@@ -42,10 +42,12 @@ class AudioConverter(ABC):
 
 
 class TTSBackend(ABC):
-    """TTS 合成后端提供者接口。
+    """TTS 合成后端提供者接口（``ppc.tts.v1`` 协议）。
 
-    用户可实现此接口来提供替代的合成后端（如部署在云端的 edge-tts-gradio-ui
-    服务），从而替代默认的本地 edge_tts 库。
+    必选面是 ``get_name`` / ``is_available`` / ``synthesize``；下面的
+    ``protocol_version`` / ``capabilities`` / ``list_voices`` / ``probe``
+    为协议 v1 的可选能力面，均带安全默认实现——早期扩展无需改动即可通过
+    协商（视为 v1 基线、无可选能力）。
     """
 
     @abstractmethod
@@ -89,3 +91,28 @@ class TTSBackend(ABC):
     def get_name(self) -> str:
         """返回后端名称。"""
         pass
+
+    # ---- ppc.tts.v1 可选能力面（默认实现保证向后兼容） ----------------------
+
+    def protocol_version(self) -> str:
+        """本后端遵循的协议版本；默认声明 v1。"""
+        return "ppc.tts.v1"
+
+    def capabilities(self) -> dict[str, Any]:
+        """能力声明（``voices`` 可枚举语音、``probe`` 可健康探测）。
+
+        默认按子类是否真正覆盖 ``list_voices`` / ``probe`` 如实上报，
+        避免基类空实现被宿主误判为具备能力。
+        """
+        return {
+            "voices": type(self).list_voices is not TTSBackend.list_voices,
+            "probe": type(self).probe is not TTSBackend.probe,
+        }
+
+    async def list_voices(self) -> list[dict[str, Any]]:
+        """枚举可用语音（VoiceInfo 兼容 dict 列表）；默认不支持。"""
+        return []
+
+    async def probe(self) -> tuple[bool, str]:
+        """轻量健康探测，返回 ``(可用, 说明)``；默认等价于 ``is_available``。"""
+        return bool(self.is_available()), ""

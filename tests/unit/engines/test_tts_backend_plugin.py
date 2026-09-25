@@ -106,3 +106,58 @@ def test_backend_plugin_unavailable_falls_back(tmp_path):
 
     assert resolved is None
     assert not backend.called
+
+
+# ---------------------------------------------------------------- 注册表回退（ppc.tts.v1）
+
+
+def test_registry_fallback_routes_synthesis(tmp_path):
+    """注入列表未命中时应回落到全局注册表并按 ppc.tts.v1 协商。"""
+    from src.engines.tts_protocol import backend_registry
+
+    backend = _FakeBackend(name="reg-fallback-backend")
+    backend_registry.register("reg-fallback-backend", backend, source="test")
+    try:
+        client = _make_client(plugins=[], backend_plugin="reg-fallback-backend")
+        out = tmp_path / "via-registry.mp3"
+
+        async def run():
+            return await client.synthesize_to_file("hi", out, "v")
+
+        n = asyncio.run(run())
+        assert backend.called and n > 0 and out.exists()
+    finally:
+        backend_registry.unregister("reg-fallback-backend")
+
+
+def test_list_voices_routes_to_plugin_with_voices_capability():
+    """后端声明 voices 能力时，list_voices 走后端而非 edge 服务。"""
+    from src.engines.tts_protocol import backend_registry
+
+    class _VoicesBackend(_FakeBackend):
+        def capabilities(self):
+            return {"voices": True, "probe": False}
+
+        async def list_voices(self):
+            return [
+                {"name": "af_bella", "short_name": "af_bella", "gender": "Female", "locale": "en", "friendly_name": "Bella"},
+                {"name": "am_adam", "short_name": "am_adam", "gender": "Male", "locale": "en", "friendly_name": "Adam"},
+            ]
+
+    backend = _VoicesBackend(name="voices-backend")
+    backend_registry.register("voices-backend", backend, source="test")
+    try:
+        client = _make_client(backend_plugin="voices-backend")
+        voices = asyncio.run(client.list_voices(gender="female"))
+        assert [v.short_name for v in voices] == ["af_bella"]
+        assert voices[0].friendly_name == "Bella"
+    finally:
+        backend_registry.unregister("voices-backend")
+
+
+def test_config_backend_plugin_field():
+    """TTSConfig.backend_plugin 默认空串且可赋值（旧配置文件无此键可正常加载）。"""
+    from src.config.schemas.tts import TTSConfig
+
+    assert TTSConfig().backend_plugin == ""
+    assert TTSConfig(backend_plugin="openai_http").backend_plugin == "openai_http"

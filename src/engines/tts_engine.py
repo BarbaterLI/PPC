@@ -253,6 +253,7 @@ class TTSEngine(BaseEngine[str, Path]):
             self._edge_client = EdgeTTSHttpClient(
                 anti_risk_config=anti_risk_config,
                 ua_health_filter=ua_health_filter,
+                backend_plugin=(getattr(self.tts_config, "backend_plugin", "") or None),
             )
 
         # 多级缓存（默认使用全局实例）

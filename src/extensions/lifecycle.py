@@ -140,6 +140,14 @@ class ExtensionLifecycle:
             if module_name is not None:
                 sys.modules.pop(module_name, None)
             self._loaded_extensions.pop(name, None)
+            backend_name = getattr(ext, "_ppc_backend_name", None)
+            if backend_name:
+                try:
+                    from src.engines.tts_protocol import backend_registry
+
+                    backend_registry.unregister(backend_name)
+                except Exception:  # noqa: BLE001
+                    pass
 
             logger.info(f"Extension unloaded: {name}")
             self._audit_logger.log_event(

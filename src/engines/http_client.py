@@ -208,14 +208,11 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         return self._shared_connector
 
     def _resolve_tts_backend(self, backend_name: str | None) -> Any | None:
-        """在注入的 TTS 后端插件中按名称解析可用插件。
+        """按名称解析 ``ppc.tts.v1`` 后端。
 
-        参数:
-            backend_name: 目标后端插件名称；为 None 或未匹配到可用插件时返回
-                          None，调用方将回退到默认的本地 edge_tts 路径。
-
-        返回:
-            匹配且 ``is_available()`` 的插件实例；否则返回 None。
+        优先命中注入的插件列表（测试/宿主显式传入），其次回落到全局后端
+        注册表（内置后端与扩展加载器注册的后端）。两路都要求通过协议协商
+        且 ``is_available()``；否则返回 None，调用方回退到本地 edge_tts 路径。
         """
         if not backend_name:
             return None
@@ -225,7 +222,10 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                     return plugin
             except Exception:  # noqa: BLE001
                 logger.debug("TTS 后端插件解析失败 / plugin resolve failed: %r", plugin)
-        return None
+        from .tts_protocol import backend_registry, ensure_builtin_backends
+
+        ensure_builtin_backends()
+        return backend_registry.resolve(backend_name)
 
     def _make_communicate(self, text: str, voice: str, rate: str, volume: str) -> Any:
         # Test hook has highest priority
@@ -572,6 +572,36 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         locale: str | None,
         gender: str | None,
     ) -> list[VoiceInfo]:
+        # ppc.tts.v1 后端若声明 voices 能力，语音枚举同样路由给后端
+        # （ppc voices / WebUI 下拉在插件后端下不再是空列表或 edge 列表）。
+        plugin = self._resolve_tts_backend(self._backend_plugin_name)
+        if plugin is not None:
+            from .tts_protocol import capabilities_of
+
+            if capabilities_of(plugin).voices:
+                raw = await plugin.list_voices()
+                voices: list[VoiceInfo] = []
+                for entry in raw or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    short = str(entry.get("short_name") or entry.get("name") or "")
+                    if not short:
+                        continue
+                    g = str(entry.get("gender") or "")
+                    if locale and not short.startswith(locale):
+                        continue
+                    if gender and g.lower() != gender.lower():
+                        continue
+                    voices.append(
+                        VoiceInfo(
+                            name=str(entry.get("name") or short),
+                            short_name=short,
+                            gender=g,
+                            locale=str(entry.get("locale") or ""),
+                            friendly_name=str(entry.get("friendly_name") or short),
+                        )
+                    )
+                return voices
         if self._list_voices_factory is not None:
             manager = await self._list_voices_factory()
         else:
