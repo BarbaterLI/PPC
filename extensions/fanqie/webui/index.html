@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>番茄小说下载器 - 控制台</title>
+<style>
+  :root {
+    --bg: #f3f3f3;
+    --card: #ffffff;
+    --card-border: #e5e5e5;
+    --text: #111111;
+    --text-secondary: #616161;
+    --accent: #005fb8;
+    --accent-hover: #00467f;
+    --danger: #c42b1c;
+    --danger-hover: #8f1f14;
+    --success: #107c10;
+    --warning: #9d5d00;
+    --muted: #f7f7f7;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #202020;
+      --card: #2b2b2b;
+      --card-border: #3a3a3a;
+      --text: #ffffff;
+      --text-secondary: #9b9b9b;
+      --accent: #60cdff;
+      --accent-hover: #8ee0ff;
+      --danger: #ff8080;
+      --danger-hover: #ffb0b0;
+      --success: #6ccb5f;
+      --warning: #fce100;
+      --muted: #333333;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    line-height: 1.5;
+  }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .sub { color: var(--text-secondary); font-size: 12px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .badge {
+    display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600;
+  }
+  .badge.ok { background: rgba(16, 124, 16, 0.15); color: var(--success); }
+  .badge.warn { background: rgba(157, 93, 0, 0.15); color: var(--warning); }
+  .badge.err { background: rgba(196, 43, 28, 0.15); color: var(--danger); }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .row label, .field label { font-size: 13px; color: var(--text-secondary); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field input[type="text"], .field input[type="number"], .field input[type="password"], .field textarea {
+    min-width: 220px; padding: 6px 10px; border: 1px solid var(--card-border); border-radius: 4px;
+    background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+  }
+  .field input:focus, .field textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  .check input { accent-color: var(--accent); }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer;
+    background: var(--accent); color: #ffffff; font-weight: 600;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--card-border); }
+  button.secondary:hover { background: var(--muted); }
+  button.danger { background: var(--danger); }
+  button.danger:hover { background: var(--danger-hover); }
+  .progress-wrap { display: none; margin-top: 10px; }
+  .progress-wrap.active { display: block; }
+  .progress-bar { height: 6px; border-radius: 3px; background: var(--muted); overflow: hidden; }
+  .progress-bar > div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+  .progress-text { font-size: 12px; color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
+  #kv-stats, #status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px 16px; font-size: 13px; }
+  #kv-stats div, #status-grid div { padding: 6px 0; border-bottom: 1px solid var(--card-border); }
+  #kv-stats .k, #status-grid .k { color: var(--text-secondary); }
+  #kv-stats .v, #status-grid .v { font-weight: 600; word-break: break-all; }
+  pre#cfg-view { background: var(--muted); border-radius: 4px; padding: 10px; font-size: 12px; overflow: auto; max-height: 240px; white-space: pre-wrap; }
+  .note { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .error-text { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  .success-text { color: var(--success); font-size: 13px; margin-top: 8px; }
+  .spacer { flex: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>番茄小说下载器</h1>
+  <span class="sub" id="ext-note">Extension: ext:fanqie</span>
+  <span class="spacer"></span>
+  <button class="secondary" id="btn-refresh">刷新状态</button>
+</header>
+
+<div id="msg"></div>
+
+<section class="card">
+  <h2>📊 状态</h2>
+  <div id="status-grid"></div>
+</section>
+
+<section class="card">
+  <h2>⬇️ 安装与更新</h2>
+  <div class="row">
+    <label class="check"><input type="checkbox" id="use-mirror" checked /> 使用镜像源</label>
+    <div class="field">
+      <label>镜像地址</label>
+      <input type="text" id="mirror-host" value="gh.llkk.cc" />
+    </div>
+    <label class="check"><input type="checkbox" id="prefer-musl" /> 优先 musl 版本（NAS/软路由）</label>
+    <label class="check"><input type="checkbox" id="force-update" /> 强制更新</label>
+  </div>
+  <div class="row">
+    <button id="btn-install">安装</button>
+    <button class="secondary" id="btn-update">更新</button>
+  </div>
+  <div class="progress-wrap" id="dl-progress">
+    <div class="progress-bar"><div id="dl-bar"></div></div>
+    <div class="progress-text" id="dl-text"></div>
+  </div>
+  <div class="note">对应 CLI：<code>ppc ext call fanqie install|update --mirror/--no-mirror --mirror-host &lt;host&gt; [--musl] [--force]</code></div>
+</section>
+
+<section class="card">
+  <h2>🚀 启动</h2>
+  <div class="row">
+    <div class="field"><label>监听地址</label><input type="text" id="server-host" value="127.0.0.1" /></div>
+    <div class="field"><label>监听端口</label><input type="number" id="server-port" value="18423" /></div>
+    <div class="field"><label>访问密码（可选）</label><input type="password" id="server-password" placeholder="留空则不设置" /></div>
+    <div class="field"><label>数据目录（可选）</label><input type="text" id="server-data-dir" placeholder="默认: 项目 fanqie/ 目录" /></div>
+  </div>
+  <div class="row">
+    <button id="btn-server-start">启动 Web 服务</button>
+    <button class="secondary" id="btn-server-stop">停止 Web 服务</button>
+    <button id="btn-tui">启动 TUI</button>
+    <span id="server-link"></span>
+  </div>
+  <div class="note">对应 CLI：<code>ppc ext call fanqie server --host &lt;host&gt; --port &lt;port&gt; [--password &lt;pwd&gt; -d &lt;data-dir&gt;]</code> / <code>ppc ext call fanqie tui [-d &lt;data-dir&gt;]</code></div>
+</section>
+
+<section class="card">
+  <h2>⚙️ 配置</h2>
+  <div class="row">
+    <div class="field"><label>配置项 Key</label><input type="text" id="cfg-key" placeholder="如 save_path" /></div>
+    <div class="field"><label>配置值 Value</label><input type="text" id="cfg-value" placeholder="配置值" /></div>
+    <button class="secondary" id="btn-cfg-set" style="margin-top:20px;">设置</button>
+    <button class="secondary" id="btn-cfg-reload" style="margin-top:20px;">重新加载</button>
+  </div>
+  <pre id="cfg-view">加载中...</pre>
+  <div class="note">对应 CLI：<code>ppc ext call fanqie config show|get|set|path</code>（edit 为本地编辑器操作，Web 场景用键值设置代替）</div>
+</section>
+
+<section class="card">
+  <h2>🗑️ 卸载</h2>
+  <div class="row">
+    <button class="danger" id="btn-uninstall">卸载番茄小说下载器</button>
+  </div>
+  <div class="note">对应 CLI：<code>ppc ext call fanqie uninstall [--yes]</code></div>
+</section>
+
+<script>
+(function () {
+  "use strict";
+
+  var $msg = document.getElementById("msg");
+
+  function showMsg(text, kind) {
+    $msg.innerHTML = "";
+    var div = document.createElement("div");
+    div.className = kind === "error" ? "error-text" : "success-text";
+    div.textContent = text;
+    $msg.appendChild(div);
+  }
+
+  function qs(id) { return document.getElementById(id); }
+
+  function api(path, options) {
+    var opts = options || {};
+    return fetch("/api/fanqie" + path, {
+      method: opts.method || "GET",
+      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    }).then(function (resp) {
+      return resp.json().catch(function () { return {}; }).then(function (body) {
+        if (body.success === false) {
+          var err = body.error || {};
+          var e = new Error((err.message || "请求失败") + (err.code ? " (" + err.code + ")" : ""));
+          e.status = resp.status;
+          e.code = err.code;
+          throw e;
+        }
+        if (resp.status >= 400) {
+          var e2 = new Error("HTTP " + resp.status);
+          e2.status = resp.status;
+          throw e2;
+        }
+        return body;
+      });
+    });
+  }
+
+  function apiData(path, options) {
+    return api(path, options).then(function (body) { return body.data; });
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // ---------------------------------------------------------------- 状态
+  function renderStatus(status) {
+    var grid = document.getElementById("status-grid");
+    var items = [
+      ["安装状态", status.installed ? '<span class="badge ok">已安装</span>' : '<span class="badge warn">未安装</span>'],
+      ["当前版本", status.version || "—"],
+      ["最新版本", status.latest_version || "—"],
+      ["更新可用", status.update_available === true ? '<span class="badge warn">有更新</span>'
+        : status.update_available === false ? '<span class="badge ok">已最新</span>' : "未知"],
+      ["Web 服务运行中", status.server_running ? '<span class="badge ok">运行中</span>' : '<span class="badge warn">未运行</span>'],
+      ["可执行文件", status.exe_path || "—"],
+      ["安装目录", status.base_dir || "—"],
+      ["数据目录", status.data_dir || "—"],
+      ["配置文件", status.config_path || "—"],
+    ];
+    grid.innerHTML = items.map(function (it) {
+      return '<div><div class="k">' + esc(it[0]) + "</div><div class=\"v\">" + it[1] + "</div></div>";
+    }).join("");
+
+    var link = document.getElementById("server-link");
+    if (status.server_running) {
+      var host = (status.server_host) || "127.0.0.1";
+      var port = status.server_port || 18423;
+      link.innerHTML = '<a href="http://' + esc(host) + ":" + esc(port) + '" target="_blank" rel="noopener">打开 Web UI</a>';
+    } else {
+      link.innerHTML = "";
+    }
+  }
+
+  function loadStatus() {
+    return apiData("/status").then(function (status) {
+      renderStatus(status);
+      return status;
+    }).catch(function (e) {
+      document.getElementById("status-grid").innerHTML =
+        '<div class="error-text">获取状态失败: ' + esc(e.message) + "</div>";
+    });
+  }
+
+  // ------------------------------------------------------------ 进度 / SSE
+  var activeTasks = {};
+
+  function subscribeTask(taskId) {
+    if (activeTasks[taskId]) return;
+    activeTasks[taskId] = true;
+    var wrap = document.getElementById("dl-progress");
+    var bar = document.getElementById("dl-bar");
+    var text = document.getElementById("dl-text");
+    wrap.classList.add("active");
+    bar.style.width = "0%";
+
+    function setProgress(p, m) {
+      bar.style.width = (isFinite(p) ? Math.max(0, Math.min(100, p)) : 0) + "%";
+      text.textContent = m || "";
+    }
+    function finish(m, ok) {
+      wrap.classList.remove("active");
+      delete activeTasks[taskId];
+      showMsg(m, ok ? "ok" : "error");
+      loadStatus();
+      if (ok) loadConfig();
+    }
+
+    var es = new EventSource("/api/tasks/" + encodeURIComponent(taskId) + "/stream");
+    es.addEventListener("progress", function (ev) {
+      var d = JSON.parse(ev.data);
+      setProgress(d.progress, d.message);
+    });
+    es.addEventListener("complete", function (ev) {
+      var d = JSON.parse(ev.data);
+      es.close();
+      finish(d && d.message ? (d.message + " (版本: " + (d.version || "未知") + ")") : "操作完成", true);
+    });
+    es.addEventListener("error", function () { es.close(); finish("操作失败", false); es.close(); });
+    es.addEventListener("task_error", function (ev) {
+      var d = JSON.parse(ev.data);
+      es.close();
+      finish(d.message || "操作失败", false);
+    });
+    es.onerror = function () { es.close(); delete activeTasks[taskId]; };
+  }
+
+  function startTask(path, body, label) {
+    showMsg("正在提交任务…", "ok");
+    return apiData(path, { method: "POST", body: body }).then(function (d) {
+      subscribeTask(d.task_id);
+    }).catch(function (e) { showMsg(label + "失败: " + e.message, "error"); });
+  }
+
+  document.getElementById("btn-install").addEventListener("click", function () {
+    startTask("/install", {
+      use_mirror: document.getElementById("use-mirror").checked,
+      mirror: document.getElementById("mirror-host").value.trim() || "gh.llkk.cc",
+      prefer_musl: document.getElementById("prefer-musl").checked,
+    }, "安装");
+  });
+
+  document.getElementById("btn-update").addEventListener("click", function () {
+    startTask("/update", {
+      use_mirror: document.getElementById("use-mirror").checked,
+      mirror: document.getElementById("mirror-host").value.trim() || "gh.llkk.cc",
+      prefer_musl: document.getElementById("prefer-musl").checked,
+      force: document.getElementById("force-update").checked,
+    }, "更新");
+  });
+
+  // ---------------------------------------------------------------- 启动
+  function readLaunchParams() {
+    return {
+      host: document.getElementById("server-host").value.trim() || "127.0.0.1",
+      port: parseInt(document.getElementById("server-port").value, 10) || 18423,
+      password: document.getElementById("server-password").value || undefined,
+      data_dir: document.getElementById("server-data-dir").value.trim() || undefined,
+    };
+  }
+
+  document.getElementById("btn-server-start").addEventListener("click", function () {
+    var p = readLaunchParams();
+    apiData("/launch-server", { method: "POST", body: p }).then(function (d) {
+      showMsg("Web 服务已启动: http://" + p.host + ":" + p.port, "ok");
+      loadStatus();
+    }).catch(function (e) { showMsg("启动失败: " + e.message, "error"); });
+  });
+
+  document.getElementById("btn-server-stop").addEventListener("click", function () {
+    apiData("/stop-server", { method: "POST" }).then(function () {
+      showMsg("Web 服务已停止", "ok");
+      loadStatus();
+    }).catch(function (e) { showMsg("停止失败: " + e.message, "error"); });
+  });
+
+  document.getElementById("btn-tui").addEventListener("click", function () {
+    var dataDir = document.getElementById("server-data-dir").value.trim() || undefined;
+    apiData("/launch-tui", { method: "POST", body: { data_dir: dataDir } }).then(function (d) {
+      showMsg("TUI 已启动 (PID: " + d.pid + ")。请在服务端终端中查看界面。", "ok");
+    }).catch(function (e) { showMsg("启动 TUI 失败: " + e.message, "error"); });
+  });
+
+  // ---------------------------------------------------------------- 配置
+  function loadConfig() {
+    apiData("/config").then(function (d) {
+      var pre = document.getElementById("cfg-view");
+      if (!d.exists) {
+        pre.textContent = "配置文件不存在（首次启动下载器后自动生成），可通过下方键值设置创建。";
+      } else {
+        var obj = d.config || {};
+        try {
+          pre.textContent = JSON.stringify(obj, null, 2);
+        } catch (e) {
+          pre.textContent = String(obj);
+        }
+      }
+    }).catch(function (e) {
+      document.getElementById("cfg-view").textContent = "读取配置失败: " + e.message;
+    });
+  }
+
+  document.getElementById("btn-cfg-set").addEventListener("click", function () {
+    var key = document.getElementById("cfg-key").value.trim();
+    var value = document.getElementById("cfg-value").value;
+    if (!key) { showMsg("请填写配置项 Key", "error"); return; }
+    apiData("/config", { method: "PUT", body: { key: key, value: value } }).then(function () {
+      showMsg("已设置 " + key + " = " + value, "ok");
+      loadConfig();
+    }).catch(function (e) { showMsg("设置失败: " + e.message, "error"); });
+  });
+
+  document.getElementById("btn-cfg-reload").addEventListener("click", loadConfig);
+
+  // ---------------------------------------------------------------- 卸载
+  document.getElementById("btn-uninstall").addEventListener("click", function () {
+    if (!window.confirm("确定要卸载番茄小说下载器吗？此操作不可撤销。")) return;
+    apiData("/uninstall", { method: "POST" }).then(function () {
+      showMsg("已卸载", "ok");
+      loadStatus();
+      loadConfig();
+    }).catch(function (e) { showMsg("卸载失败: " + e.message, "error"); });
+  });
+
+  document.getElementById("btn-refresh").addEventListener("click", function () {
+    loadStatus();
+    loadConfig();
+  });
+
+  // ---------------------------------------------------------------- init
+  loadStatus();
+  loadConfig();
+})();
+</script>
+</body>
+</html>

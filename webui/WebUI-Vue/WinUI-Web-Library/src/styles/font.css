@@ -1,0 +1,8 @@
+/* WinUI-on-Web icon font (Segoe MDL2 Assets / Fluent glyphs). */
+@font-face {
+  font-family: 'WinUIOnWebIcons';
+  src: url('../assets/fonts/SEGOEICONS.TTF') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}

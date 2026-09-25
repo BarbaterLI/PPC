@@ -1,0 +1,591 @@
+{
+  "help": {
+    "category": "其他",
+    "desc": "进入 PPC_NEXT 交互式帮助浏览器",
+    "usage": "ppc help [options]",
+    "examples": [],
+    "options": [
+      {
+        "name": "--json",
+        "desc": "非交互模式：输出命令索引 JSON 后退出"
+      }
+    ],
+    "see_also": []
+  },
+  "webui": {
+    "category": "其他",
+    "desc": "启动 WebUI（Flask + 前端静态资源）",
+    "usage": "ppc webui [options]",
+    "examples": [],
+    "options": [
+      {
+        "name": "--host",
+        "desc": "监听地址（默认 0.0.0.0）"
+      },
+      {
+        "name": "--port, -p",
+        "desc": "监听端口（默认 5000）"
+      },
+      {
+        "name": "--debug",
+        "desc": "Flask 调试模式（启用时 threaded=False）"
+      },
+      {
+        "name": "--api-token",
+        "desc": "API Bearer Token（未设置且绑定非回环地址时输出安全警告）"
+      }
+    ],
+    "see_also": []
+  },
+  "convert": {
+    "category": "转换",
+    "desc": "批量 TTS 转换。把 input 下的 .txt 文件批量转换为 .mp3 音频，输出到 output。",
+    "usage": "ppc convert <input> [output] [options]",
+    "examples": [
+      {
+        "desc": "批量转换目录",
+        "cmd": "ppc convert ./txt ./out"
+      },
+      {
+        "desc": "指定语音模型与并发",
+        "cmd": "ppc convert ./txt ./out --voice zh-CN-XiaoxiaoNeural -c 8"
+      },
+      {
+        "desc": "调整语速并断点续传",
+        "cmd": "ppc convert ./txt ./out --rate +10% -r -t 1.5"
+      },
+      {
+        "desc": "并发预热",
+        "cmd": "ppc convert ./txt ./out --resume --ramp-up 30"
+      },
+      {
+        "desc": "单文件模式",
+        "cmd": "ppc convert ./book.txt --one"
+      }
+    ],
+    "options": [
+      {
+        "name": "--voice",
+        "desc": "语音模型(默认使用配置文件)"
+      },
+      {
+        "name": "--concurrency, -c",
+        "desc": "并发数(默认使用配置文件)"
+      },
+      {
+        "name": "--preset, -p",
+        "desc": "配置预设"
+      },
+      {
+        "name": "--resume, -r",
+        "desc": "从上次中断处继续(断点续传)"
+      },
+      {
+        "name": "--checkpoint",
+        "desc": "检查点文件路径(默认: 输出目录/.ppc_checkpoint.json)"
+      },
+      {
+        "name": "--timeout-multiplier, -t",
+        "desc": "超时倍率(0.5-2.0,默认使用配置文件)"
+      },
+      {
+        "name": "--timeout-mode",
+        "desc": "超时模式(fixed|auto|adaptive|synthetic,默认使用配置文件)"
+      },
+      {
+        "name": "--timeout",
+        "desc": "固定超时时间(秒)，仅 timeout_mode=fixed 时生效"
+      },
+      {
+        "name": "--rate",
+        "desc": "音频播放速度(如 +10%, -10%, +0%,范围 -100% 到 +100%)"
+      },
+      {
+        "name": "--recursive, -R",
+        "desc": "递归处理子目录,保持目录结构"
+      },
+      {
+        "name": "--ramp-up",
+        "desc": "并发预热时间(秒),从1并发逐步增加到设定并发,规避风控(如 30 表示30秒内完成预热)"
+      },
+      {
+        "name": "--one",
+        "desc": "单文件模式：单次无超时、无限重试，缺省输出与输入同目录"
+      },
+      {
+        "name": "--tts-backend",
+        "desc": "覆盖 config.yml 的 tts.anti_risk_control.backend（优先级：CLI > 配置文件 > 默认值）/ Override tts.anti_risk_control.backend (priority: CLI > config > default)"
+      },
+      {
+        "name": "--tts-proxy",
+        "desc": "覆盖 config.yml 的 tts.anti_risk_control.proxy / Override tts.anti_risk_control.proxy"
+      }
+    ],
+    "see_also": [
+      "split",
+      "batch",
+      "voices",
+      "resume"
+    ]
+  },
+  "resume": {
+    "category": "转换",
+    "desc": "从已有的 .cache 分段重建断点续传检查点，再使用 convert --resume 继续转换。",
+    "usage": "ppc resume <input_dir> <output_dir> [options]",
+    "examples": [
+      {
+        "desc": "重建检查点",
+        "cmd": "ppc resume ./txt ./out"
+      },
+      {
+        "desc": "指定语音模型",
+        "cmd": "ppc resume ./txt ./out --voice zh-CN-XiaoxiaoNeural"
+      },
+      {
+        "desc": "指定检查点路径",
+        "cmd": "ppc resume ./txt ./out --checkpoint ./ckpt.json"
+      }
+    ],
+    "options": [
+      {
+        "name": "--voice",
+        "desc": "语音模型(默认使用配置文件)"
+      },
+      {
+        "name": "--checkpoint",
+        "desc": "检查点文件路径(默认: 输出目录/.ppc_checkpoint.json)"
+      }
+    ],
+    "see_also": [
+      "convert"
+    ]
+  },
+  "split": {
+    "category": "转换",
+    "desc": "章节分割。按预设或自定义规则把整本小说文本切分为若干章节，输出到 output_dir。",
+    "usage": "ppc split <input_file> [options]",
+    "examples": [
+      {
+        "desc": "默认分割小说",
+        "cmd": "ppc split novel.txt"
+      },
+      {
+        "desc": "指定输出目录与预设",
+        "cmd": "ppc split novel.txt -o ./chapters -p chinese_novel"
+      },
+      {
+        "desc": "启用卷章体层级分割",
+        "cmd": "ppc split novel.txt -H --add-title-separator"
+      },
+      {
+        "desc": "使用自定义规则",
+        "cmd": "ppc split novel.txt -r rules.json"
+      }
+    ],
+    "options": [
+      {
+        "name": "--output, -o",
+        "desc": "输出目录（默认：<文件名>_chapters）"
+      },
+      {
+        "name": "--preset, -p",
+        "desc": "章节预设"
+      },
+      {
+        "name": "--custom-rules, -r",
+        "desc": "自定义规则JSON字符串或文件路径"
+      },
+      {
+        "name": "--add-title-separator",
+        "desc": "是否在章节名后添加等于号分隔符"
+      },
+      {
+        "name": "--hierarchical, -H",
+        "desc": "启用卷章体层级分割"
+      }
+    ],
+    "see_also": [
+      "convert",
+      "batch"
+    ]
+  },
+  "batch": {
+    "category": "转换",
+    "desc": "批量归档。按批次或按卷把源目录中的 .txt 文件分批归档，支持预览模式。",
+    "usage": "ppc batch <source_dir> [options]",
+    "examples": [
+      {
+        "desc": "按批次归档",
+        "cmd": "ppc batch ./txt -b 50"
+      },
+      {
+        "desc": "预览并按卷归档",
+        "cmd": "ppc batch ./txt --dry-run --group-by-volume"
+      },
+      {
+        "desc": "按卷归档指定批次大小",
+        "cmd": "ppc batch ./txt -g -b 100"
+      }
+    ],
+    "options": [
+      {
+        "name": "--batch-size, -b",
+        "desc": "每批次文件数"
+      },
+      {
+        "name": "--dry-run, -d",
+        "desc": "预览模式"
+      },
+      {
+        "name": "--group-by-volume, -g",
+        "desc": "按卷归档"
+      }
+    ],
+    "see_also": [
+      "convert",
+      "split"
+    ]
+  },
+  "config": {
+    "category": "配置",
+    "desc": "配置管理。管理 PPC_NEXT 配置文件，支持 show/get/set/reset/export/import/init/path/wizard 等操作。",
+    "usage": "ppc config <action> [options]",
+    "examples": [
+      {
+        "desc": "显示完整配置",
+        "cmd": "ppc config show"
+      },
+      {
+        "desc": "获取配置项",
+        "cmd": "ppc config get --key tts.voice"
+      },
+      {
+        "desc": "设置配置项",
+        "cmd": "ppc config set --key tts.voice --value zh-CN-XiaoxiaoNeural"
+      },
+      {
+        "desc": "交互式配置向导",
+        "cmd": "ppc config wizard"
+      }
+    ],
+    "options": [
+      {
+        "name": "--key, -k",
+        "desc": "配置键"
+      },
+      {
+        "name": "--value, -v",
+        "desc": "配置值"
+      },
+      {
+        "name": "--preset, -p",
+        "desc": "预设"
+      },
+      {
+        "name": "--temp",
+        "desc": "临时设置"
+      },
+      {
+        "name": "--export, -e",
+        "desc": "导出路径"
+      },
+      {
+        "name": "--import, -i",
+        "desc": "导入路径"
+      },
+      {
+        "name": "--full, -f",
+        "desc": "完整配置模式(wizard 专用)"
+      },
+      {
+        "name": "--factory",
+        "desc": "出厂重置(reset 专用): 重新写入完整带注释模板"
+      }
+    ],
+    "see_also": []
+  },
+  "voices": {
+    "category": "工具",
+    "desc": "列出可用语音。列出 Edge TTS 服务提供的所有可用语音，中文语音优先。",
+    "usage": "ppc voices [options]",
+    "examples": [
+      {
+        "desc": "列出语音",
+        "cmd": "ppc voices"
+      },
+      {
+        "desc": "JSON 输出",
+        "cmd": "ppc --json voices"
+      }
+    ],
+    "options": [],
+    "see_also": [
+      "convert"
+    ]
+  },
+  "dist node": {
+    "category": "高级",
+    "desc": "启动 TTS 节点服务。启动一个 TTS worker 节点，接收主控的 convert 任务并执行。",
+    "usage": "ppc dist node [options]",
+    "examples": [
+      {
+        "desc": "默认启动节点",
+        "cmd": "ppc dist node"
+      },
+      {
+        "desc": "指定监听地址与端口",
+        "cmd": "ppc dist node --host 0.0.0.0 --port 8000 -c 4"
+      }
+    ],
+    "options": [
+      {
+        "name": "--host, -h",
+        "desc": "节点监听地址"
+      },
+      {
+        "name": "--port, -p",
+        "desc": "节点监听端口"
+      },
+      {
+        "name": "--concurrency, -c",
+        "desc": "节点最大并发数"
+      },
+      {
+        "name": "--config, -C",
+        "desc": "配置文件路径"
+      }
+    ],
+    "see_also": [
+      "dist master",
+      "dist status"
+    ]
+  },
+  "dist master": {
+    "category": "高级",
+    "desc": "启动 PPC_NEXT 分布式主控服务。主控把 convert 任务按策略分发给已注册的 worker 节点。",
+    "usage": "ppc dist master [options]",
+    "examples": [
+      {
+        "desc": "默认启动主控",
+        "cmd": "ppc dist master"
+      },
+      {
+        "desc": "注册 worker 节点",
+        "cmd": "ppc dist master --add-worker 10.0.0.1:8000 --add-worker 10.0.0.2:8000"
+      },
+      {
+        "desc": "本地兜底",
+        "cmd": "ppc dist master --local-fallback"
+      }
+    ],
+    "options": [
+      {
+        "name": "--host, -h",
+        "desc": "主控监听地址"
+      },
+      {
+        "name": "--port, -p",
+        "desc": "主控监听端口"
+      },
+      {
+        "name": "--concurrency, -c",
+        "desc": "主控最大并发数(仅本地兜底使用)"
+      },
+      {
+        "name": "--config, -C",
+        "desc": "配置文件路径"
+      },
+      {
+        "name": "--add-worker",
+        "desc": "注册 worker 地址,格式为 host:port 或 http://host:port,可多次传入"
+      },
+      {
+        "name": "--local-fallback",
+        "desc": "在没有 worker 时,本地兜底执行 TTS"
+      }
+    ],
+    "see_also": [
+      "dist node",
+      "dist status",
+      "dist convert"
+    ]
+  },
+  "dist status": {
+    "category": "高级",
+    "desc": "查看分布式系统状态。默认以单行 JSON 输出，--human 切换为表格输出。",
+    "usage": "ppc dist status [options]",
+    "examples": [
+      {
+        "desc": "默认 JSON 输出",
+        "cmd": "ppc dist status"
+      },
+      {
+        "desc": "表格输出",
+        "cmd": "ppc dist status --human"
+      },
+      {
+        "desc": "导出状态",
+        "cmd": "ppc dist status --export status.json"
+      }
+    ],
+    "options": [
+      {
+        "name": "--config, -C",
+        "desc": "配置文件路径"
+      },
+      {
+        "name": "--export, -e",
+        "desc": "导出状态为 JSON"
+      },
+      {
+        "name": "--human",
+        "desc": "人类可读表格输出(默认 JSON)"
+      }
+    ],
+    "see_also": [
+      "dist node",
+      "dist master"
+    ]
+  },
+  "dist add-node": {
+    "category": "高级",
+    "desc": "添加分布式节点。把指定 host:port 注册为分布式集群的 worker 节点。",
+    "usage": "ppc dist add-node <host> <port> [options]",
+    "examples": [
+      {
+        "desc": "添加节点",
+        "cmd": "ppc dist add-node 10.0.0.1 8000"
+      },
+      {
+        "desc": "指定并发且不保存",
+        "cmd": "ppc dist add-node 10.0.0.1 8000 -c 8 --no-save"
+      }
+    ],
+    "options": [
+      {
+        "name": "--concurrency, -c",
+        "desc": "节点最大并发数"
+      },
+      {
+        "name": "--config, -C",
+        "desc": "配置文件路径"
+      },
+      {
+        "name": "--save",
+        "desc": "是否保存到配置文件"
+      }
+    ],
+    "see_also": [
+      "dist master",
+      "dist status"
+    ]
+  },
+  "dist convert": {
+    "category": "高级",
+    "desc": "把 convert 任务提交到远端主控节点。等价于 ppc convert 的参数，但实际执行发生在主控端。",
+    "usage": "ppc dist convert <input_dir> <output_dir> [options]",
+    "examples": [
+      {
+        "desc": "提交到本地主控",
+        "cmd": "ppc dist convert ./txt ./out"
+      },
+      {
+        "desc": "指定远端主控",
+        "cmd": "ppc dist convert ./txt ./out --master http://10.0.0.1:9000"
+      },
+      {
+        "desc": "指定语音与并发",
+        "cmd": "ppc dist convert ./txt ./out -V zh-CN-YunxiNeural -c 16"
+      }
+    ],
+    "options": [
+      {
+        "name": "--master, -m",
+        "desc": "主控端点(host:port 或 http://host:port)"
+      },
+      {
+        "name": "--config, -C",
+        "desc": "配置文件路径"
+      },
+      {
+        "name": "--voice",
+        "desc": "语音模型(默认使用配置文件)"
+      },
+      {
+        "name": "--rate",
+        "desc": "音频播放速度"
+      },
+      {
+        "name": "--concurrency, -c",
+        "desc": "并发数"
+      },
+      {
+        "name": "--local-fallback",
+        "desc": "当主控无可用 worker 时允许本地兜底"
+      },
+      {
+        "name": "--timeout",
+        "desc": "HTTP 请求超时(秒)"
+      }
+    ],
+    "see_also": [
+      "convert",
+      "dist master"
+    ]
+  },
+  "ext install": {
+    "category": "扩展",
+    "desc": "安装扩展包",
+    "usage": "ppc ext install <zip_path> [options]",
+    "examples": [],
+    "options": [
+      {
+        "name": "--force, -f",
+        "desc": "强制覆盖安装"
+      }
+    ],
+    "see_also": []
+  },
+  "ext uninstall": {
+    "category": "扩展",
+    "desc": "卸载扩展包",
+    "usage": "ppc ext uninstall <name> [options]",
+    "examples": [],
+    "options": [
+      {
+        "name": "--force, -f",
+        "desc": "强制卸载（忽略依赖警告）"
+      }
+    ],
+    "see_also": []
+  },
+  "ext list": {
+    "category": "扩展",
+    "desc": "列出已安装的扩展包和已加载的内置扩展",
+    "usage": "ppc ext list [options]",
+    "examples": [],
+    "options": [],
+    "see_also": []
+  },
+  "ext info": {
+    "category": "扩展",
+    "desc": "查看扩展详细信息",
+    "usage": "ppc ext info <name> [options]",
+    "examples": [],
+    "options": [],
+    "see_also": []
+  },
+  "ext create": {
+    "category": "扩展",
+    "desc": "创建扩展包模板",
+    "usage": "ppc ext create <name> [options]",
+    "examples": [],
+    "options": [
+      {
+        "name": "--output, -o",
+        "desc": "输出目录（默认当前目录）"
+      }
+    ],
+    "see_also": []
+  }
+}

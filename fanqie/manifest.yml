@@ -1,0 +1,20 @@
+name: fanqie
+version: 1.0.0
+description: 番茄小说下载器集成 - 安装/更新/启动 TUI/Server
+author: PPC_NEXT Extension
+extension_type: tool_integration
+package_type: python
+entry: "extension.py"
+entry_point: "extension:FanqieExtension"
+tags:
+  - fanqie
+  - novel
+  - downloader
+  - tui
+  - server
+permissions:
+  - network
+  - subprocess
+  - filesystem_read
+  - filesystem_write
+  - filesystem_delete

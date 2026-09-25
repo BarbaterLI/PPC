@@ -1,0 +1,58 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+*.so
+.python-version
+
+# ===== PPC 运行时产物 =====
+# 检查点断点续传文件
+*.ppc_checkpoint.json
+# 日志目录
+logs/
+*.log
+# 隔离队列 / 临时输出
+quarantine/
+tmp/
+
+# ===== 前端 (webui) =====
+node_modules/
+webui/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.local
+
+# ===== 测试与覆盖率 =====
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 编辑器 / 系统 =====
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== 环境 / 密钥 =====
+.env
+.env.*
+*.pem
+*.key

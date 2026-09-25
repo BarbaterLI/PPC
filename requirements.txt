@@ -1,0 +1,67 @@
+# 核心 Web 框架
+Flask==3.1.3
+Flask-CORS==6.0.2
+# Werkzeug: Flask 依赖，但 src/web/app.py 直接使用 HTTPException，需显式声明
+werkzeug>=3.0.0
+
+# 异步 HTTP 客户端 / 服务端
+# edge-tts 与 src/distributed/ 均直接使用 aiohttp，不可依赖传递引入
+aiohttp>=3.9.0
+# SSL 证书包，src/engines/edge_tts/ 直接引用
+certifi>=2024.2.2
+
+# TTS 引擎
+# 可选 fallback 依赖 / Optional fallback dependency (customized copy lives in src/engines/edge_tts/)
+edge-tts>=7.2.8
+# 定制 edge_tts 副本中使用 Literal/NotRequired/Unpack，需显式声明
+typing_extensions>=4.10.0
+
+# 音频处理
+pydub==0.25.1
+
+# 系统监控
+psutil==7.2.2
+
+# HTML/XML 解析
+beautifulsoup4==4.14.3
+lxml==6.1.0
+
+# CLI 命令行框架
+typer==0.25.0
+# Click: Typer 依赖，但 src/cli/typer_app.py 直接使用 click.Choice，需显式声明
+click>=8.1.0
+rich==15.0.0
+
+# 配置管理/数据验证
+pydantic==2.13.3
+PyYAML==6.0.3
+# YAML 往返序列化（保留 config.yml 注释）/ Round-trip YAML (preserves config.yml comments)
+# 注意: Nuitka 打包时需加 --include-package=ruamel.yaml，否则运行时回退到 yaml.dump 丢失注释
+ruamel.yaml>=0.18.0
+
+# 番茄小说下载器集成
+requests>=2.31.0
+packaging>=23.0
+
+# 仅在 Python >= 3.13 时安装 (替代已移除的 audioop 模块)
+audioop-lts>=0.2.0; python_version >= "3.13"
+
+# ============================================
+# 可选依赖 / Optional Dependencies
+# 以下包在代码中通过 try/except 优雅降级，未安装时对应功能自动禁用
+# ============================================
+
+# Windows 命名管道 IPC 传输（不可用时回退到 socket 传输）
+pywin32>=305; sys_platform == "win32"
+
+# 响度标准化（不可用时回退到 RMS 标准化；会附带安装 numpy、soundfile）
+pyloudnorm>=0.1.0
+
+# Markdown 文件解析（不可用时回退到正则解析）
+markdown>=3.5
+
+# Cron 表达式调度（不可用时 cron 调度功能禁用）
+croniter>=1.4
+
+# 云端 gradio TTS 后端（cloud_gradio 扩展；不可用时该扩展自动禁用）
+gradio_client>=2.6.0

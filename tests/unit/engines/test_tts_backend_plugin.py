@@ -1,0 +1,108 @@
+"""TTS_BACKEND 插件后端选择测试。
+
+验证 EdgeTTSHttpClient 在配置了 backend_plugin 且注入可用插件时走插件合成，
+否则走默认路径。
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+
+class _FakeBackend:
+    """假 TTSBackend：is_available 恒 True，synthesize 写假音频并记录调用。"""
+
+    def __init__(self, name: str = "fake_backend"):
+        self.name = name
+        self.called = False
+        self.last_text = None
+
+    def get_name(self) -> str:
+        return self.name
+
+    def is_available(self) -> bool:
+        return True
+
+    async def synthesize(self, text, voice, *, rate="+0%", volume="+0%", pitch="+0Hz", output_path=None, **kwargs):
+        self.called = True
+        self.last_text = text
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"ID3\x03\x00\x00\x00")
+            return output_path
+        return b"ID3\x03\x00\x00\x00"
+
+
+class _UnavailableBackend:
+    """不可用后端：is_available 恒 False。"""
+
+    def __init__(self, name: str = "unavailable"):
+        self.name = name
+        self.called = False
+
+    def get_name(self) -> str:
+        return self.name
+
+    def is_available(self) -> bool:
+        return False
+
+    async def synthesize(self, text, voice, *, rate="+0%", volume="+0%", pitch="+0Hz", output_path=None, **kwargs):
+        self.called = True
+        return None
+
+
+def _make_client(plugins=None, backend_plugin=None):
+    from src.engines.http_client import EdgeTTSHttpClient
+
+    return EdgeTTSHttpClient(
+        tts_backend_plugins=plugins or [],
+        backend_plugin=backend_plugin,
+    )
+
+
+def test_backend_plugin_called_when_selected(tmp_path):
+    """指定 backend_plugin 且存在可用插件时，synthesize_to_file 应走插件路径。"""
+    backend = _FakeBackend()
+    client = _make_client(plugins=[backend], backend_plugin="fake_backend")
+    out = tmp_path / "out.mp3"
+
+    async def run():
+        return await client.synthesize_to_file("hello", out, "voice")
+
+    n = asyncio.run(run())
+
+    assert backend.called, "指定 backend_plugin 时应调用插件 synthesize"
+    assert backend.last_text == "hello"
+    assert out.exists()
+    assert n > 0
+
+
+def test_backend_plugin_not_called_when_not_selected(tmp_path):
+    """未指定 backend_plugin 时走默认路径，不调用插件。"""
+    backend = _FakeBackend()
+    client = _make_client(plugins=[backend], backend_plugin=None)
+    out = tmp_path / "out.mp3"
+
+    async def run():
+        return await client.synthesize_to_file("hello", out, "voice")
+
+    # 默认路径会尝试真实网络/本地 edge_tts；这里只验证插件未被调用。
+    # 用 monkeypatch 掉默认路径，或直接断言插件未被调用。
+    try:
+        asyncio.run(run())
+    except Exception:
+        # 默认路径连不上网络属预期；关键是插件未参与。
+        pass
+
+    assert not backend.called, "未指定 backend_plugin 时不应调用插件"
+
+
+def test_backend_plugin_unavailable_falls_back(tmp_path):
+    """指定后端不可用时，_resolve_tts_backend 返回 None（走默认路径），插件不被调用。"""
+    backend = _UnavailableBackend()
+    client = _make_client(plugins=[backend], backend_plugin="unavailable")
+
+    resolved = client._resolve_tts_backend("unavailable")
+
+    assert resolved is None
+    assert not backend.called
