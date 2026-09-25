@@ -24,6 +24,10 @@ _SYMBOL_MAP: dict[str, str] = {
     "detect_encoding": "core",
     "memory_efficient": "core",
     "sanitize_filename": "core",
+    # .files
+    "quick_probe": "files",
+    "read_text_auto": "files",
+    "safe_extract_zip": "files",
     # .elevation
     "ERROR_ACCESS_DENIED": "elevation",
     "ERROR_NO_SUCH_PRIVILEGE": "elevation",

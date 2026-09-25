@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from ..reliability import (
     RetryPolicy,
     TaskResult,
 )
-from ..utils.files import detect_encoding
+from ..utils.files import read_text_auto
 from .base import BaseExecutor
 from .checkpoint import CheckpointManager
 from .quarantine import QuarantineQueue
@@ -104,6 +105,15 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         # 音频转换后处理器列表（默认空，便于测试注入；未注册时行为完全不变）
         self._audio_converters: list = []
 
+        # 单遍 IO 文本复用缓存（12.0.0 W2-B）：入队阶段已全量解码出的文本，
+        # execute() 直接复用，省掉执行阶段的第二次全读。容量与并发数挂钩
+        # （initialize 内设定），逐出最旧条目——最坏情况也只是回退磁盘重读，
+        # 语义不变。
+        self._text_cache: OrderedDict[str, str] = OrderedDict()
+        self._text_cache_bytes = 0
+        # 64MB 解码文本上界（≈6400 万字节的章节缓冲），逐出最旧防止无界增长
+        self._text_cache_cap_bytes = 64 * 1024 * 1024
+
         anti_risk = self.config.tts.anti_risk_control
         if anti_risk.enabled and anti_risk.user_agents:
             from src.engines.ua_health_filter import UAHealthFilter
@@ -123,6 +133,8 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         self._initialized = True
         self._is_running = False
         self._tasks = {}
+        self._text_cache.clear()
+        self._text_cache_bytes = 0
         self.total_retries = 0
         self._tasks_since_checkpoint = 0
 
@@ -173,6 +185,8 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         self._is_running = False
         self._initialized = False
         self._tasks.clear()
+        self._text_cache.clear()
+        self._text_cache_bytes = 0
         if self._worker_pool is not None:
             self._worker_pool.clear_workers()
 
@@ -183,14 +197,40 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                 logger.warning("清理 TTS 引擎失败 / Failed to cleanup engine: %s", e)
             self._engine = None
 
+    def _remember_text(self, key: str, text: str) -> None:
+        """入队阶段缓存已解码文本供 execute 复用；按总字节封顶逐出最旧。
+
+        音频章节通常数十 KB，一个批次全缓存也远小于 ``_text_cache_bytes``，
+        故正常批次 execute 命中率≈100%（每文件仅一次全量读）。仅当累计体积
+        超上限（病态超大文件/超长批次）才逐出，最坏回退到磁盘重读，语义不变。
+        """
+        self._text_cache[key] = text
+        self._text_cache.move_to_end(key)
+        self._text_cache_bytes += len(text)
+        while self._text_cache_bytes > self._text_cache_cap_bytes and len(self._text_cache) > 1:
+            _k, evicted = self._text_cache.popitem(last=False)
+            self._text_cache_bytes -= len(evicted)
+
+    def _take_text(self, key: str) -> str | None:
+        """取出（并移除）预读文本；未命中返回 None。"""
+        text = self._text_cache.pop(key, None)
+        if text is not None:
+            self._text_cache_bytes -= len(text)
+        return text
+
     async def execute(
         self,
         input_path: Path,
         output_path: Path,
         disable_timeout: bool = False,
         progress_handler: Any | None = None,
+        text: str | None = None,
     ) -> ExecutionResult:
-        """执行单个 TTS 任务：读取文本文件并调用引擎合成语音"""
+        """执行单个 TTS 任务：读取文本文件并调用引擎合成语音
+
+        ``text`` 显式传入，或命中入队阶段的预读缓存时，跳过磁盘全读
+        （单遍 IO 快路径）；否则用 :func:`read_text_auto` 一次探测+读取。
+        """
         self._check_initialized()
         self._disable_timeout = disable_timeout
         start_time = time.time()
@@ -201,8 +241,10 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                     error_code="FILE_NOT_FOUND",
                 )
 
-            encoding = detect_encoding(input_path)
-            text = await asyncio.to_thread(input_path.read_text, encoding=encoding or "utf-8")
+            if text is None:
+                text = self._take_text(str(input_path))
+            if text is None:
+                text, _encoding = await asyncio.to_thread(read_text_auto, input_path)
 
             if not text or not text.strip():
                 return ExecutionResult.fail(
@@ -288,11 +330,13 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         input_path: Path,
         output_path: Path,
         progress_handler: Any | None = None,
+        text: str | None = None,
     ) -> bool:
         """--one 模式：单文件无限重试，单次无超时。
 
         - 失败后固定退避 N 秒（默认复用 no_audio.delay_seconds）后继续
         - Ctrl+C 立即抛出 KeyboardInterrupt
+        - ``text``：调用方已预读的文本（如 CLI 预分段计数），首次尝试直接复用
         """
         self._check_initialized()
         attempt = 0
@@ -311,7 +355,9 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                     output_path,
                     disable_timeout=True,
                     progress_handler=progress_handler,
+                    text=text,
                 )
+                text = None  # 重试时重读文件，反映磁盘最新内容
                 if result.success:
                     if progress_handler:
                         progress_handler.on_task_complete(task_id, True)
@@ -522,10 +568,13 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             if task_id in self._tasks:
                 continue
 
-            file_encoding = detect_encoding(txt_file)
-            text_len = len(await asyncio.to_thread(txt_file.read_text, encoding=file_encoding or "utf-8"))
+            file_text, _encoding = await asyncio.to_thread(read_text_auto, txt_file)
+            text_len = len(file_text)
 
             task = TTSTask(id=task_id, input_file=txt_file, output_file=output_file, voice=voice, text_len=text_len)
+
+            # 预读文本交给 execute 复用：整个批次每个文件只发生一次全量读
+            self._remember_text(str(txt_file), file_text)
 
             self._tasks[task_id] = task
             await self._worker_pool.enqueue(task)

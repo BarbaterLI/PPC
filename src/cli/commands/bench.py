@@ -236,6 +236,7 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
     counters = {
         "read_text": _Counter(),
         "detect_encoding": _Counter(),
+        "quick_probe": _Counter(),
         "split": _Counter(),
         "dir_scan": _Counter(),
     }
@@ -272,8 +273,10 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
 
     import src.executors.tts_executor as tts_executor_mod
     import src.text.segmenter as segmenter_mod
+    import src.utils.files as files_mod
 
-    orig_detect = tts_executor_mod.detect_encoding
+    orig_detect = files_mod.detect_encoding
+    orig_probe = files_mod.quick_probe
     orig_split = segmenter_mod.TextSegmenter.split
     try:
         from ...config.schemas import PPCConfig
@@ -286,6 +289,11 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
                 counters["detect_encoding"].count += 1
             return orig_detect(p, *a, **kw)
 
+        def probe_counter(p: Path, *a: Any, **kw: Any) -> Any:
+            if str(p).startswith(corpus):
+                counters["quick_probe"].count += 1
+            return orig_probe(p, *a, **kw)
+
         def split_counter(self: Any, text: str, max_len: int) -> Any:
             counters["split"].count += 1
             return orig_split(self, text, max_len)
@@ -295,7 +303,8 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
             output_path.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")  # 占位音频
             return ExecutionResult.ok(output_path)
 
-        tts_executor_mod.detect_encoding = detect_counter  # type: ignore[assignment]
+        files_mod.detect_encoding = detect_counter
+        files_mod.quick_probe = probe_counter  # read_text_auto 经模块全局解析，一并计数
         segmenter_mod.TextSegmenter.split = split_counter  # type: ignore[method-assign]
         TTSEngine.synthesize_segmented = stub_synth  # type: ignore[assignment]
 
@@ -319,7 +328,9 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
         pathlib.Path.read_text = orig_read_text  # type: ignore[method-assign]
         pathlib.Path.glob = orig_glob  # type: ignore[method-assign]
         pathlib.Path.rglob = orig_rglob  # type: ignore[method-assign]
-        tts_executor_mod.detect_encoding = orig_detect  # type: ignore[assignment]
+        tts_executor_mod.detect_encoding = orig_detect  # type: ignore[attr-defined]
+        files_mod.detect_encoding = orig_detect
+        files_mod.quick_probe = orig_probe
         segmenter_mod.TextSegmenter.split = orig_split  # type: ignore[method-assign]
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -331,6 +342,7 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
         "per_file": {
             "read_text_calls": round(counters["read_text"].count / files, 2),
             "detect_encoding_calls": round(counters["detect_encoding"].count / files, 2),
+            "quick_probe_calls": round(counters["quick_probe"].count / files, 2),
             "segmenter_split_calls": round(counters["split"].count / files, 2),
             "dir_scan_calls": round(counters["dir_scan"].count / files, 2),
         },

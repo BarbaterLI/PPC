@@ -69,6 +69,7 @@ def _make_stub_executor_factory(captured: dict[str, Any]) -> type:
             input_path: Any,
             output_path: Any,
             progress_handler: Any | None = None,
+            **_kw: Any,
         ) -> bool:
             return True
 

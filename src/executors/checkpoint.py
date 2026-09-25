@@ -333,6 +333,7 @@ class CheckpointManager:
         Returns:
             重建后的 CheckpointData，若没有任何可恢复任务则返回 None
         """
+        from src.utils.files import quick_probe
         cache_root = cache_root or (output_dir / ".cache")
         if not cache_root.exists():
             logger.warning("未找到 cache 目录: %s", cache_root)
@@ -372,7 +373,9 @@ class CheckpointManager:
                 input_file=str(input_file),
                 output_file=str(output_file),
                 voice=voice,
-                text_len=len(input_file.read_text(encoding="utf-8")),
+                # 缓存重建为一次性扫描：text_len 用字节大小探测即可（执行阶段
+                # 超时启发式仍按实际解码字符数计算，不受此近似影响）
+                text_len=quick_probe(input_file)[1],
                 status=status,
                 attempts=0,
                 error=None,

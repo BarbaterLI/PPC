@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -24,7 +25,7 @@ from src.executors.chapter_splitter import ChapterSplitter
 from src.executors.chapter_types import ChapterInfo
 from src.executors.splitter_strategies import ENGINE_PROFILE, ChapterWriter, PatternRegistry
 from src.reliability import ExecutionMetrics, ExecutionResult
-from src.utils.core import detect_encoding
+from src.utils.files import read_text_auto
 
 logger = logging.getLogger(__name__)
 
@@ -229,14 +230,10 @@ class ChapterEngine(BaseEngine[str, list[Path]]):
         if not input_file.exists():
             return ExecutionResult.fail(error=f"文件不存在: {input_file}", error_code=ErrorCodes.FILE_NOT_FOUND.value)
 
-        encoding = self._detect_encoding(input_file)
-        content = input_file.read_text(encoding=encoding)
+        content, _enc = await asyncio.to_thread(
+            read_text_auto, input_file, self.split_config.encoding_fallback
+        )
         return await self.split(content, output_dir, input_file.stem)
-
-    def _detect_encoding(self, file_path: Path) -> str:
-        """检测文件编码"""
-        encoding = detect_encoding(file_path, encodings=self.split_config.encoding_fallback, detect_buffer=1024)
-        return encoding if encoding else "utf-8"
 
     def get_stats(self) -> dict[str, Any]:
         """获取引擎统计信息"""

@@ -70,14 +70,17 @@ def _build_retry_policy(config: PPCConfig):
     )
 
 
-def _count_segments(input_file: Path, tts_config) -> int:
-    # 预分段以获取段数（让 --one 进度显示总段数而非 1）
+def _count_segments(input_file: Path, tts_config) -> tuple[int, str | None]:
+    """预分段以获取段数（让 --one 进度显示总段数而非 1）。
+
+    返回 ``(段数, 已读文本)``：文本一并交给执行路径复用，避免第二次全量读
+    （12.0.0 单遍 IO）。
+    """
     from ...text.segmenter import TextSegmenter
-    from ...utils.files import detect_encoding as _detect_enc
+    from ...utils.files import read_text_auto
 
     try:
-        _enc = _detect_enc(input_file)
-        _text = input_file.read_text(encoding=_enc or "utf-8")
+        _text, _enc = read_text_auto(input_file)
     except (OSError, UnicodeDecodeError):
         _text = ""
     if _text and _text.strip():
@@ -88,7 +91,7 @@ def _count_segments(input_file: Path, tts_config) -> int:
             _segments = _segmenter.split(_text, tts_config.max_segment_length) or [_text]
     else:
         _segments = []
-    return len(_segments)
+    return len(_segments), (_text or None)
 
 
 def _log_convert_details(options: ConvertOptions, output_dir: Path, config: PPCConfig, output_formatter: OutputFormatter) -> None:
@@ -206,7 +209,7 @@ def _run_convert_one(
 ) -> None:
     output_file = output_dir / (options.input.stem + ".mp3")
 
-    total_segments = _count_segments(options.input, config.tts)
+    total_segments, prefetched_text = _count_segments(options.input, config.tts)
     if total_segments == 0:
         raise CLIError(
             E.E_INPUT_EMPTY,
@@ -226,7 +229,9 @@ def _run_convert_one(
         ) as executor:
             progress_handler.start()
             try:
-                ok = await executor.execute_one(options.input, output_file, progress_handler=progress_handler)
+                ok = await executor.execute_one(
+                    options.input, output_file, progress_handler=progress_handler, text=prefetched_text
+                )
             except KeyboardInterrupt:
                 output_formatter.warning_panel("用户中断", title="中断")
                 return False

@@ -5,6 +5,7 @@
 :class:`ChapterSplitter`（与 ``ChapterEngine`` 共用同一实现）。
 """
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -16,7 +17,7 @@ from ..reliability import (
     ExecutionMetrics,
     ExecutionResult,
 )
-from ..utils.core import detect_encoding
+from ..utils.files import read_text_auto
 from .base import BaseExecutor
 from .chapter_splitter import ChapterSplitter
 from .chapter_types import ChapterInfo, VolumeInfo
@@ -74,8 +75,12 @@ class SplitterExecutor(BaseExecutor):
                     error=f"输入文件不存在 {input_path}", error_code=ErrorCodes.FILE_NOT_FOUND.value
                 )
 
-            encoding = self._detect_encoding(input_path)
-            content = input_path.read_text(encoding=encoding)
+            content, _enc = await asyncio.to_thread(
+                read_text_auto,
+                input_path,
+                self.config.split.encoding_fallback,
+                self.config.split.encoding_detect_buffer,
+            )
 
             chapters = self._splitter.split_content(content)
 
@@ -143,12 +148,3 @@ class SplitterExecutor(BaseExecutor):
     def get_volume_stats(self) -> list[dict[str, Any]]:
         """获取卷统计信息"""
         return self._splitter.get_volume_stats()
-
-    def _detect_encoding(self, file_path: Path) -> str:
-        """检测文件编码"""
-        encoding = detect_encoding(
-            file_path,
-            encodings=self.config.split.encoding_fallback,
-            detect_buffer=self.config.split.encoding_detect_buffer,
-        )
-        return encoding if encoding else "utf-8"

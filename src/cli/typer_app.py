@@ -25,7 +25,7 @@ from .app_registration import (
     register_extension_cli_apps,
     register_ext_app,
 )
-from .output import OutputFormatter, get_output, setup_logging
+from .output import get_output, setup_logging
 
 # ---------------------------------------------------------------------------
 # 根 Typer app

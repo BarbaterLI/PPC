@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel as RichPanel
 from rich.table import Table as RichTable
 from rich.text import Text
 
 from src.cli.design.tokens import SPACING, get_icon, get_style
+
+if TYPE_CHECKING:
+    from rich.traceback import Traceback
 
 _VALID_LEVELS = frozenset({"info", "success", "warning", "error", "detail"})
 

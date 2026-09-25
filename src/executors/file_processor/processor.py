@@ -5,7 +5,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from src.utils.core import MemoryMonitor, detect_encoding, memory_efficient, sanitize_filename
+from src.utils.core import MemoryMonitor, memory_efficient, sanitize_filename
+from src.utils.files import detect_encoding, read_text_auto
 
 from .file_cache import FileCache
 from .text_segmenter import TextSegmenter
@@ -41,9 +42,16 @@ class FileProcessor:
             return cached_content
 
         if encoding == "auto":
-            encoding = self.detect_encoding(file_path)
-            if not encoding:
+            try:
+                content, _enc = read_text_auto(
+                    file_path,
+                    encodings=self.config.get("split", {}).get("encoding_fallback"),
+                )
+            except Exception as e:
+                logger.error(f"读取文件失败: {file_path}, 错误: {e}")
                 return None
+            self.file_cache.put(file_path, content, _enc)
+            return content
 
         try:
             content = file_path.read_text(encoding=encoding)

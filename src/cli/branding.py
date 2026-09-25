@@ -1,6 +1,5 @@
 """品牌渲染 - 版本卡片 / 欢迎页 / 品牌横幅与品牌资产常量。"""
 
-import contextlib
 import json
 import os
 import platform
