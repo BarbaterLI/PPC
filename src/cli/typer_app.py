@@ -271,17 +271,23 @@ def convert(
         "--tts-proxy",
         help="覆盖 config.yml 的 tts.anti_risk_control.proxy / Override tts.anti_risk_control.proxy",
     ),
+    book: bool = typer.Option(
+        False, "--book", help="整书模式：批量完成后零解码装配单个带 ID3v2 章节标记的 <书名>.book.mp3（可跳章）"
+    ),
+    book_title: str | None = typer.Option(None, "--book-title", help="整书标题（缺省用输入目录名）"),
 ):
     """批量 TTS 转换
 
     把 input 下的 .txt 文件批量转换为 .mp3 音频,输出到 output。
     --one 时 input 必须为单文件,output 可省略(默认与输入同目录)。
+    --book 在批量完成后额外装配单文件整书（内嵌章节,主流播放器可直接跳章）。
 
     Examples:
         ppc convert ./txt ./out
         ppc convert ./txt ./out --voice zh-CN-XiaoxiaoNeural -c 8
         ppc convert ./txt ./out --rate +10% -r -t 1.5
         ppc convert ./txt ./out --resume --ramp-up 30
+        ppc convert ./txt ./out --book --book-title 三体
         ppc convert ./book.txt --one
         ppc convert ./book.txt ./audios --one
     """
@@ -307,6 +313,8 @@ def convert(
             timeout=timeout,
             tts_backend=tts_backend,
             tts_proxy=tts_proxy,
+            book=book,
+            book_title=book_title,
         )
     )
 

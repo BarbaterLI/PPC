@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .mp3_probe import Mp3FrameParams, Mp3Probe, find_id3v2_size, probe_mp3
+from .mp3_probe import Mp3FrameParams, Mp3Probe, probe_mp3
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,6 @@ def _header_bytes(params: Mp3FrameParams, bitrate_kbps: int, padding: int = 0) -
     """构造指定参数的 MP3 帧头（无 CRC）。"""
     version_bits = params.mpeg_version & 0x3
     layer_bits = 0x1  # Layer III
-    bitrate_table = {3: 15, 2: 14, 0: 14}  # 允许最大索引，实际下面查表
     br_table_mpeg1 = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
     br_table_mpeg2 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
     table = br_table_mpeg1 if params.mpeg_version == 3 else br_table_mpeg2

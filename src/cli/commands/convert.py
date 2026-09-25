@@ -43,6 +43,8 @@ class ConvertOptions:
     timeout: int | None = None
     tts_backend: str | None = None
     tts_proxy: str | None = None
+    book: bool = False
+    book_title: str | None = None
 
 
 def _normalize_rate(rate: str) -> str:
@@ -315,6 +317,57 @@ def _collect_pending_files(
     return files_to_process
 
 
+def _assemble_book(
+    options: ConvertOptions,
+    output_dir: Path,
+    config: PPCConfig,
+    output_formatter: OutputFormatter,
+) -> None:
+    """12.0.0 W3-1 ``--book``：把本批章节 MP3 装配为带 ID3v2 章节标记的整书。
+
+    零解码帧拼接 + CTOC/CHAP 内嵌——单文件、任意主流播放器可直接跳章。
+    """
+    from ...audio.mp3_book import BookChapter, BookMeta, merge_chapters_to_book
+
+    txt_files = sorted(options.input.rglob("*.txt")) if options.recursive else sorted(options.input.glob("*.txt"))
+    chapters: list[BookChapter] = []
+    missing: list[str] = []
+    for txt in txt_files:
+        if options.recursive:
+            mp3 = output_dir / txt.relative_to(options.input).with_suffix(".mp3")
+        else:
+            mp3 = output_dir / txt.with_suffix(".mp3").name
+        if mp3.exists() and mp3.stat().st_size > 0:
+            chapters.append(BookChapter(mp3, title=txt.stem))
+        else:
+            missing.append(txt.stem)
+
+    if not chapters:
+        output_formatter.warning("--book: 没有已完成的章节音频，跳过整书装配")
+        return
+
+    title = options.book_title or options.input.name
+    book_path = output_dir / f"{title}.book.mp3"
+    meta = BookMeta(
+        title=title,
+        album=title,
+        embed=bool(getattr(config.output, "metadata_embed", True)),
+    )
+    silence_ms = int(getattr(config.output, "silence_between_chapters_ms", 500))
+
+    result = merge_chapters_to_book(chapters, book_path, meta=meta, silence_ms=silence_ms)
+    if not result.success:
+        reason = result.degraded_reason or result.error
+        output_formatter.warning(f"--book 装配失败（章节参数不一致或不可探测: {reason}），已保留分章产物")
+        return
+
+    minutes = result.duration_seconds / 60.0
+    details = {"整书": str(book_path), "章节": f"{result.chapter_count} 章（已内嵌播放列表）", "时长": f"{minutes:.1f} 分钟"}
+    if missing:
+        details["缺失章节"] = f"{len(missing)} 个未生成: " + ", ".join(missing[:3]) + ("…" if len(missing) > 3 else "")
+    output_formatter.success_panel(f"整书已生成: {book_path}", title="BOOK", details=details)
+
+
 def _run_convert_batch(
     options: ConvertOptions,
     output_dir: Path,
@@ -364,6 +417,12 @@ def _run_convert_batch(
             if failed > 0 and progress_handler.task_infos:
                 _print_failed_tasks(output_formatter, progress_handler)
 
+            if options.book:
+                try:
+                    _assemble_book(options, output_dir, config, output_formatter)
+                except Exception as exc:  # 装配失败不影响批量转换退出码
+                    output_formatter.warning(f"--book 装配异常: {exc}")
+
             return failed == 0
 
     def _warn_interrupt():
@@ -394,6 +453,8 @@ def handle_convert(
     output_dir, config, output_formatter = _validate_convert(options)
 
     if options.one:
+        if options.book:
+            raise CLIError(E.E_BUSINESS, "--book 适用于目录批量模式（章节→整书），与 --one 互斥")
         _run_convert_one(options, output_dir, config, output_formatter)
         return
 
