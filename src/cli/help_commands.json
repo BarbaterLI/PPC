@@ -587,5 +587,34 @@
       }
     ],
     "see_also": []
+  },
+  "bench": {
+    "category": "其他",
+    "desc": "性能基线：冷启动 / 音频合并 / IO 单遍（可 --save 落盘对照）",
+    "usage": "ppc bench [all|startup|merge|io] [options]",
+    "examples": [
+      "ppc bench",
+      "ppc bench startup -n 7",
+      "ppc bench merge --segments 200"
+    ],
+    "options": [
+      {
+        "name": "--iterations, -n",
+        "desc": "startup 采样次数（默认 5）"
+      },
+      {
+        "name": "--segments",
+        "desc": "merge 基准段数（默认 60，需 ffmpeg 生成测试段）"
+      },
+      {
+        "name": "--files",
+        "desc": "io 基准文件数（默认 12）"
+      },
+      {
+        "name": "--save",
+        "desc": "保存基线 JSON 到指定路径"
+      }
+    ],
+    "see_also": ["convert"]
   }
 }

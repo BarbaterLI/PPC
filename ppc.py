@@ -6,8 +6,15 @@ BarbaterLI项目开发组 (BLY Team) 出品
 推荐使用 ``ppc webui`` 子命令）。
 """
 
+import os
 import sys
 from pathlib import Path
+
+# 应用入口（非库）：禁用 pydantic v2 插件机制的 entry_points 扫描。
+# 否则首次构建 pydantic 模型时 importlib.metadata 会对站点内全部已装
+# 发行包读取 entry_points.txt（实测 185 次文件 IO / 数十 ms），而 PPC
+# 不依赖任何第三方 pydantic 插件。必须在 pydantic 首次导入前设置。
+os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
 
 # 源码模式下 __file__ 即项目根；Nuitka standalone 下 __file__ 指向编译时
 # 嵌入的源码路径（目标机器上不存在），此处仅用于先建立 sys.path，

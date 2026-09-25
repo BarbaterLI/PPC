@@ -437,6 +437,36 @@ def voices_cmd():
     handle_voices()
 
 
+@app.command("bench")
+def bench_cmd(
+    which: str = typer.Argument("all", help="基准项: all|startup|merge|io"),
+    iterations: int = typer.Option(5, "--iterations", "-n", help="startup 采样次数"),
+    segments: int = typer.Option(60, "--segments", help="merge 段数"),
+    files: int = typer.Option(12, "--files", help="io 文件数"),
+    save: Path | None = typer.Option(None, "--save", help="保存基线 JSON 到指定路径"),
+):
+    """性能基线: 冷启动 / 音频合并 / IO 单遍 三元组，可 --save 做前后对照。
+
+    merge 基准需要 ffmpeg（生成 24kHz mono 48k 测试段），缺失时自动跳过。
+
+    Examples:
+        ppc bench
+        ppc bench startup -n 7
+        ppc bench merge --segments 200
+        ppc bench --save .bench/baseline.json
+    """
+    from .commands.bench import handle_bench
+
+    handle_bench(
+        which,
+        iterations=iterations,
+        segments=segments,
+        files=files,
+        save=save,
+        json_output=get_output().mode == "json",
+    )
+
+
 # Distributed command group
 dist_app = typer.Typer(help="分布式节点管理")
 
