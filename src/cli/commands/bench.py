@@ -173,7 +173,8 @@ def bench_merge(segments: int = 60, silence_ms: int = 100) -> dict[str, Any]:
 
         rss0 = _rss_mb()
         t0 = time.perf_counter()
-        mr = merger.merge(segs, out_py, silence_ms=silence_ms, normalize=False)
+        # 强制 pydub 慢路（merge() 现默认优先零解码拼接）
+        mr = merger._merge_multi(segs, out_py, silence_ms, False, None)
         wall = time.perf_counter() - t0
         rss1 = _rss_mb()
 

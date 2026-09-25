@@ -90,22 +90,68 @@ class AudioMerger:
 
             if len(valid_files) == 1:
                 return self._merge_single(valid_files[0], output_path)
+
+            if not normalize:
+                fast = self._try_fast_concat(valid_files, output_path, silence)
+                if fast is not None:
+                    return fast
+
             return self._merge_multi(valid_files, output_path, silence, normalize, bitrate)
 
         except Exception as e:
             logger.error(f"合并音频失败: {e}")
             return MergeResult(success=False, error=str(e))
 
+    def _try_fast_concat(self, valid_files: list[Path], output_path: Path, silence: int) -> MergeResult | None:
+        """12.0.0 W2-D：同参数纯 MP3 走零解码帧拼接（O(N) 字节拷贝）。
+
+        不适用（格式混杂/参数不一致/拼接器不可用）返回 None，调用方回退
+        pydub 解码合并——语义与产物完全兼容。
+        """
+        if self._get_format_from_extension(output_path.suffix) != "mp3":
+            return None
+        if any(f.suffix.lower() != ".mp3" for f in valid_files):
+            return None
+        try:
+            from ..audio.mp3_concat import concat_mp3_files
+        except ImportError:  # pragma: no cover
+            return None
+
+        result = concat_mp3_files(valid_files, output_path, silence_ms=silence)
+        if not result.success:
+            if result.degraded_reason:
+                logger.debug("帧拼接回退 pydub: %s", result.degraded_reason)
+            else:
+                return MergeResult(success=False, error=result.error or "帧拼接失败")
+            return None
+        return MergeResult(
+            success=True,
+            output_path=output_path,
+            duration_seconds=result.duration_seconds,
+            file_count=result.file_count,
+        )
+
     def _merge_single(self, audio_path: Path, output_path: Path) -> MergeResult:
-        audio = self._load_audio(audio_path)
-        if audio is None:
-            return MergeResult(
-                success=False,
-                error=f"音频文件无法解码: {audio_path}",
-                failed_files=[(audio_path, "无法解码")],
-            )
+        duration = -1.0
+        if audio_path.suffix.lower() == ".mp3":
+            try:
+                from ..audio.mp3_probe import probe_mp3
+
+                probe = probe_mp3(audio_path)
+            except ImportError:  # pragma: no cover
+                probe = None
+            if probe is not None:
+                duration = probe.duration_ms / 1000.0
+        if duration < 0:
+            audio = self._load_audio(audio_path)
+            if audio is None:
+                return MergeResult(
+                    success=False,
+                    error=f"音频文件无法解码: {audio_path}",
+                    failed_files=[(audio_path, "无法解码")],
+                )
+            duration = len(audio) / 1000.0
         shutil.copy(audio_path, output_path)
-        duration = self._get_duration(audio_path)
         return MergeResult(
             success=True,
             output_path=output_path,
@@ -219,7 +265,16 @@ class AudioMerger:
         return audio.apply_gain(change_in_db)
 
     def _get_duration(self, audio_path: Path) -> float:
-        """获取音频时长"""
+        """获取音频时长（mp3 用零解码帧探测，失败回退 pydub 解码）"""
+        if audio_path.suffix.lower() == ".mp3":
+            try:
+                from ..audio.mp3_probe import probe_mp3
+
+                probe = probe_mp3(audio_path)
+                if probe is not None:
+                    return probe.duration_ms / 1000.0
+            except ImportError:  # pragma: no cover
+                pass
         audio = self._load_audio(audio_path)
         if audio is None:
             return 0.0
