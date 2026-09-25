@@ -16,9 +16,6 @@ edge-tts>=7.2.8
 # 定制 edge_tts 副本中使用 Literal/NotRequired/Unpack，需显式声明
 typing_extensions>=4.10.0
 
-# 音频处理
-pydub==0.25.1
-
 # 系统监控
 psutil==7.2.2
 
@@ -43,13 +40,17 @@ ruamel.yaml>=0.18.0
 requests>=2.31.0
 packaging>=23.0
 
-# 仅在 Python >= 3.13 时安装 (替代已移除的 audioop 模块)
-audioop-lts>=0.2.0; python_version >= "3.13"
-
 # ============================================
 # 可选依赖 / Optional Dependencies
 # 以下包在代码中通过 try/except 优雅降级，未安装时对应功能自动禁用
 # ============================================
+
+# 解码式音频合并（混格式输入/音量归一化）。12.0.0 起同构 MP3 拼接走内置
+# 零解码帧路由，不再需要 pydub；仅在需要上述能力时安装。
+pydub==0.25.1
+
+# pydub 在 Python >= 3.13 需要的 audioop 替代品（标准库已移除该模块）
+audioop-lts>=0.2.0; python_version >= "3.13"
 
 # Windows 命名管道 IPC 传输（不可用时回退到 socket 传输）
 pywin32>=305; sys_platform == "win32"

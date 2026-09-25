@@ -209,7 +209,8 @@ class TTSEngine(BaseEngine[str, Path]):
             history=self._timeout_history,
         )
         self._audio_processor = AudioProcessor()
-        # edge-tts 合成输出为 MP3,分段合并必须走 pydub 路径;
+        # edge-tts 合成输出为 MP3,分段合并走 AudioMerger
+        # (12.0.0: 同构 MP3 零解码帧拼接,混格式/归一化才回退 pydub);
         # AudioProcessor.merge 只支持 WAV/PCM,否则在打开 mp3 时会因
         # ``wave.Error: # channels not specified`` 失败(实际是输出
         # wave 文件未 setparams 就关闭引发的副作用)。

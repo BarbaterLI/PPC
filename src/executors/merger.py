@@ -51,7 +51,9 @@ class AudioMerger:
         self._silence_ms = silence_ms
         self._bitrate = bitrate
         if not PYDUB_AVAILABLE:
-            logger.warning("pydub 未安装，音频合并功能将不可用。\n安装命令: pip install pydub\n注意：还需要安装 ffmpeg")
+            logger.info(
+                "pydub 未安装：同参数 MP3 仍可用零解码帧拼接；解码合并（混格式/归一化）需 pip install pydub + ffmpeg"
+            )
 
     def merge(
         self,
@@ -73,9 +75,6 @@ class AudioMerger:
         Returns:
             MergeResult 对象
         """
-        if not PYDUB_AVAILABLE:
-            return MergeResult(success=False, error="pydub 未安装，无法合并音频文件")
-
         silence = silence_ms if silence_ms is not None else self._silence_ms
 
         if not audio_files:
@@ -88,14 +87,23 @@ class AudioMerger:
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # 零解码快路径优先（无需 pydub）：同构 mp3 直拼 / 单 mp3 拷贝
             if len(valid_files) == 1:
-                return self._merge_single(valid_files[0], output_path)
-
-            if not normalize:
+                if valid_files[0].suffix.lower() == ".mp3":
+                    return self._merge_single(valid_files[0], output_path)
+            elif not normalize:
                 fast = self._try_fast_concat(valid_files, output_path, silence)
                 if fast is not None:
                     return fast
 
+            if not PYDUB_AVAILABLE:
+                return MergeResult(
+                    success=False,
+                    error="pydub 未安装，无法解码合并（pip install pydub + ffmpeg，或保证全部输入为同参数 MP3）",
+                )
+
+            if len(valid_files) == 1:
+                return self._merge_single(valid_files[0], output_path)
             return self._merge_multi(valid_files, output_path, silence, normalize, bitrate)
 
         except Exception as e:

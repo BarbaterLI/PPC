@@ -132,11 +132,20 @@ class WorkerPool:
     async def _worker_loop(self, worker_id: str):
         try:
             while True:
+                # 12.0.0 W2-E：限流门移到取任务**之前**——旧实现先出队再抢
+                # 信号量，被阻塞的 worker 会持有任务空等（预热期任务滞留、
+                # 关停时滞留加剧）。现在无许可的 worker 挂在 semaphore 上，
+                # 队列把任务交给当下空闲的 worker。
+                gated = self.ramp_up_controller is not None
+                if gated:
+                    await self.semaphore.acquire()
                 task = await self._get_next_task()
                 if task is None:
+                    if gated:
+                        self.semaphore.release()
                     logger.info("工作协程 %s 正常退出", worker_id)
                     break
-                await self._process_single_task(task, worker_id)
+                await self._process_single_task(task, worker_id, gated)
         except asyncio.CancelledError:
             logger.info("工作协程 %s 被取消", worker_id)
         except Exception as e:
@@ -155,15 +164,16 @@ class WorkerPool:
             logger.warning("获取任务时发生异常: %s", e)
             return None
 
-    async def _process_single_task(self, task: Any, worker_id: str):
+    async def _process_single_task(self, task: Any, worker_id: str, gated: bool = True):
         try:
-            async with self.semaphore:
-                await self.processor(task, worker_id, self._progress_handler)
+            await self.processor(task, worker_id, self._progress_handler)
         except Exception as e:
             # processor 意外逃逸异常：显式记录（不静默丢失），后续由
             # 执行器侧任务状态兜底；task_done() 仍由 finally 保证恰好一次。
             logger.error("Worker %s 处理任务 %s 时异常：%s", worker_id, getattr(task, "id", task), e, exc_info=True)
         finally:
+            if gated:
+                self.semaphore.release()
             self.queue.task_done()
 
     async def _ramp_up_adjuster(self):

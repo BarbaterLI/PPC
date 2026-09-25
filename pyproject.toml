@@ -8,6 +8,14 @@ version = "11.0.0"
 description = "PPC_NEXT - Text-to-Speech & Content Processing Platform"
 requires-python = ">=3.12"
 
+[project.optional-dependencies]
+# 解码式音频合并（混格式输入/音量归一化）。同构 MP3 拼接自 12.0.0 起内置
+# 零解码帧路由，不需要本组依赖。
+audio = [
+    "pydub==0.25.1",
+    "audioop-lts>=0.2.0; python_version >= '3.13'",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]

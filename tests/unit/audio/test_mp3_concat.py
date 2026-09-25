@@ -121,6 +121,29 @@ def test_merger_routes_mp3_to_fast_concat(tmp_path: Path) -> None:
     assert out.read_bytes() == a.read_bytes() + b.read_bytes()
 
 
+def test_merger_fast_route_without_pydub(tmp_path: Path, monkeypatch) -> None:
+    """pydub 缺失时同构 MP3 依然可零解码合并（12.0.0 核心卖点）。"""
+    import src.executors.merger as merger_mod
+
+    a, b = tmp_path / "a.mp3", tmp_path / "b.mp3"
+    a.write_bytes(_mp3(10))
+    b.write_bytes(_mp3(10))
+    out = tmp_path / "m.mp3"
+    monkeypatch.setattr(merger_mod, "PYDUB_AVAILABLE", False)
+    result = merger_mod.AudioMerger(silence_ms=0).merge([a, b], out, normalize=False)
+    assert result.success
+    assert out.read_bytes() == a.read_bytes() + b.read_bytes()
+
+    single = merger_mod.AudioMerger().merge([a], tmp_path / "s.mp3")
+    assert single.success and single.duration_seconds > 0
+
+    # 混格式无 pydub → 明确报错
+    bad = tmp_path / "x.wav"
+    bad.write_bytes(b"RIFF" + b"\x00" * 40)
+    r3 = merger_mod.AudioMerger().merge([a, bad], tmp_path / "z.mp3", normalize=False)
+    assert not r3.success and "pydub" in (r3.error or "")
+
+
 def test_merger_falls_back_on_corrupt_segment(tmp_path: Path) -> None:
     a = tmp_path / "a.mp3"
     bad = tmp_path / "bad.mp3"
