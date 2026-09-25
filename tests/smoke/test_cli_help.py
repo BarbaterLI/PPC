@@ -10,11 +10,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_ppc(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    # ppc CLI 强制 UTF-8 输出（见 src.cli.output.setup_console），
+    # 子进程管道必须显式按 UTF-8 解码；否则中文 Windows 默认 GBK
+    # 解码会在 reader 线程抛 UnicodeDecodeError 并吞掉 stdout。
     return subprocess.run(
         [sys.executable, "ppc.py", *args],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
@@ -67,6 +72,8 @@ class TestCLICommands:
         assert "webui" in data
 
     def test_version_exits_zero(self) -> None:
+        from src.version import __version__
+
         result = _run_ppc("--version")
         assert result.returncode == 0
-        assert "11.0.0" in ((result.stdout or "") + (result.stderr or ""))
+        assert __version__ in ((result.stdout or "") + (result.stderr or ""))

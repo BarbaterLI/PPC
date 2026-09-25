@@ -56,3 +56,7 @@ Thumbs.db
 .env.*
 *.pem
 *.key
+
+# ===== 运行时缓存 / 前端杂项 =====
+.cache/
+.eslintcache
