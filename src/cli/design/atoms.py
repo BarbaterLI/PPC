@@ -13,7 +13,6 @@ from typing import Any
 from rich.panel import Panel as RichPanel
 from rich.table import Table as RichTable
 from rich.text import Text
-from rich.traceback import Traceback
 
 from src.cli.design.tokens import SPACING, get_icon, get_style
 
@@ -182,8 +181,12 @@ class Trace:
             lines = lines[: self.max_lines] + ["... (truncated)"]
         return "\n".join(lines)
 
-    def to_rich(self) -> Traceback:
+    def to_rich(self) -> "Traceback":
         """返回 Rich Traceback。"""
+        # rich.traceback 会连带拉入 pygments 全家桶（~60ms），仅在真正渲染
+        # traceback 时导入，避免污染 CLI 冷启动路径。
+        from rich.traceback import Traceback
+
         return Traceback(
             self.exception,  # type: ignore[arg-type]  # Rich Traceback 接受 Exception 实例
             show_locals=self.expanded,

@@ -25,7 +25,7 @@ from .app_registration import (
     register_extension_cli_apps,
     register_ext_app,
 )
-from .output import OutputFormatter, setup_logging
+from .output import OutputFormatter, get_output, setup_logging
 
 # ---------------------------------------------------------------------------
 # 根 Typer app
@@ -40,17 +40,8 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-_output: OutputFormatter | None = None
 _config = None
 _extension_loader = None
-
-
-def get_output() -> OutputFormatter:
-    """Get output formatter."""
-    global _output
-    if _output is None:
-        _output = OutputFormatter()
-    return _output
 
 
 def get_extension_loader() -> ExtensionLoader:

@@ -13,6 +13,28 @@ from src.cli.design.tokens import COLORS, SPACING, get_icon, get_style
 from src.version import __version__
 
 
+def _dist_version_from_site(dist: str) -> str:
+    """从 site-packages 的 ``*.dist-info`` 目录名解析已安装包版本（零 metadata 解析）。
+
+    仅扫描目录名，避免 importlib.metadata 连带导入 email/zipfile 解析栈；
+    找不到（源码运行 / Nuitka standalone）时返回 ``"-"``。
+    """
+    try:
+        import glob
+        import sysconfig
+
+        purelib = sysconfig.get_path("purelib") or ""
+        for variant in (dist, dist.replace("_", "-")):
+            for path in glob.glob(os.path.join(purelib, f"{variant}-*.dist-info")):
+                stem = os.path.basename(path.rstrip("\\/")).split(".dist-info")[0]
+                _, _, ver = stem.rpartition("-")
+                if ver and ver[0].isdigit():
+                    return ver
+    except Exception:  # noqa: BLE001 - 版本展示失败绝不影响启动
+        pass
+    return "-"
+
+
 class BrandAssets:
     """Brand assets."""
 
@@ -55,18 +77,11 @@ class BrandingMixin:
         py_ver = platform.python_version()
         plat = platform.platform()
 
-        # 用 importlib.metadata 读取已安装包版本，避免 import edge_tts/rich
-        # 拉入 aiohttp 等重型依赖（--version 应保持轻量快速）。
-        from importlib.metadata import PackageNotFoundError
-        from importlib.metadata import version as _pkg_version
+        # 轻量读取依赖版本：importlib.metadata 会连带拉入 email/zipfile 解析
+        # 栈（冷启动 ~40ms），这里改为 dist-info 目录名直查 + rich 模块属性。
+        edge_tts_ver = _dist_version_from_site("edge_tts")
 
-        edge_tts_ver = "-"
-        with contextlib.suppress(PackageNotFoundError):
-            edge_tts_ver = _pkg_version("edge-tts")
-
-        rich_ver = "-"
-        with contextlib.suppress(PackageNotFoundError):
-            rich_ver = _pkg_version("rich")
+        rich_ver = _dist_version_from_site("rich")
 
         repository = os.environ.get("PPC_REPOSITORY", "https://github.com/BarbaterLI/PPC")
 

@@ -13,7 +13,6 @@ from typing import Any, Literal
 
 from rich.console import Console
 from rich.live import Live
-from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
     Progress,
@@ -782,6 +781,8 @@ def setup_logging(verbose: bool = False, quiet: bool = False, json_mode: bool = 
         level = logging.INFO
 
     # RichHandler 输出到 stderr,不干扰 JSON stdout
+    from rich.logging import RichHandler
+
     handler = RichHandler(
         console=console,
         rich_tracebacks=True,
@@ -800,6 +801,18 @@ def setup_logging(verbose: bool = False, quiet: bool = False, json_mode: bool = 
     logger = logging.getLogger("ppc")
     logger.setLevel(level)
     return logger
+
+
+_output_formatter: OutputFormatter | None = None
+
+
+def get_output() -> OutputFormatter:
+    """全局 OutputFormatter 单例（置于 output 模块，使 --version 等超快路径
+    无需导入 typer 链即可获得渲染能力）。"""
+    global _output_formatter
+    if _output_formatter is None:
+        _output_formatter = OutputFormatter()
+    return _output_formatter
 
 
 def set_root_log_level(name: str) -> None:

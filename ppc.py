@@ -109,6 +109,15 @@ def main():
             )
             return run_webui(host=host, port=port, debug=debug, api_token=api_token)
 
+        argv = sys.argv[1:]
+        if "-V" in argv or "--version" in argv:
+            # 版本卡片超快路径：与 typer_app.run() 内的兜底逻辑语义一致，
+            # 但提前拦截可完全跳过 typer/click 导入链（省 ~30ms 冷启动）。
+            from src.cli.output import get_output
+
+            get_output().print_version_card()
+            return 0
+
         from src.cli.typer_app import run as run_cli
         sys.argv = ["ppc"] + sys.argv[1:]
         run_cli()
