@@ -40,6 +40,7 @@ from src.core.exceptions import (
 )
 from src.engines.client_base import EdgeTTSClient
 from src.engines.http_client import EdgeTTSHttpClient
+from src.engines.segment_journal import SegmentJournal
 from src.engines.tts_cache_store import TTSCacheStore
 from src.engines.tts_client_wrapper import TTSClientWrapper
 from src.engines.tts_engine_config import (
@@ -102,6 +103,8 @@ class SegmentMerger:
     ) -> ExecutionResult[Path]:
         cache_dir = output_path.parent / ".cache" / output_path.stem
         cache_dir.mkdir(parents=True, exist_ok=True)
+        # 段级 Journal：打开/新建崩溃安全复用日志（内容寻址 + O(1) 命中）。
+        journal = SegmentJournal.open(cache_dir)
 
         try:
             results = await asyncio.gather(
@@ -112,6 +115,7 @@ class SegmentMerger:
                         cache_dir=cache_dir,
                         disable_timeout=disable_timeout,
                         progress_handler=progress_handler,
+                        journal=journal,
                     )
                     for i, seg in enumerate(segments, start=1)
                 ],
@@ -677,18 +681,33 @@ class TTSEngine(BaseEngine[str, Path]):
         cache_dir: Path,
         disable_timeout: bool,
         progress_handler: Any | None,
+        journal: Any | None = None,
     ) -> tuple[int, ExecutionResult]:
         temp_file = cache_dir / f"{cache_dir.name}_seg_{index:03d}.mp3"
         if temp_file.exists() and temp_file.stat().st_size > 0:
-            # 段级缓存完整性校验：除大小>0外，还需可被解码
-            probe = self._audio_merger._load_audio(temp_file)
-            if probe is not None:
-                logger.debug("段 %d 命中缓存: %s", index, temp_file)
-                if progress_handler:
-                    progress_handler.on_segment_complete(success=True)
-                return index, ExecutionResult.ok(temp_file)
-            logger.warning("段 %d 缓存文件损坏，重新合成: %s", index, temp_file)
-            # 探针失败，继续走合成路径（合成会覆盖 temp_file）
+            if journal is not None and journal.has(index):
+                # 内容寻址（journal 对该段已有记录）：文本 sha1 + 字节数 O(1) 校验，
+                # 免整段解码探针。分段配置或输入文本变更 → 哈希失配 → 判陈旧，
+                # 走下方重新合成，杜绝「同名段文件内容已变却被复用」的错位拼接。
+                if journal.verify(index, temp_file, segment):
+                    logger.debug("段 %d journal 命中: %s", index, temp_file)
+                    if progress_handler:
+                        progress_handler.on_segment_complete(success=True)
+                    return index, ExecutionResult.ok(temp_file)
+                logger.info("段 %d journal 失配（文本/大小已变），重新合成: %s", index, temp_file)
+            else:
+                # 无 journal 条目（11.x 旧缓存 / 尚未记录）：回退解码探针，
+                # 保持既有 resume 复用语义不回退；成功后补登 journal，后续运行转 O(1)。
+                probe = self._audio_merger._load_audio(temp_file)
+                if probe is not None:
+                    logger.debug("段 %d 命中缓存: %s", index, temp_file)
+                    if journal is not None:
+                        journal.record(index, temp_file, segment)
+                    if progress_handler:
+                        progress_handler.on_segment_complete(success=True)
+                    return index, ExecutionResult.ok(temp_file)
+                logger.warning("段 %d 缓存文件损坏，重新合成: %s", index, temp_file)
+                # 探针失败，继续走合成路径（合成会覆盖 temp_file）
 
         # disable_timeout=True（--one 模式）时完全禁用段级超时
         # 注意：不在此处获取 _api_semaphore，synthesize 内部已有信号量控制。
@@ -715,6 +734,9 @@ class TTSEngine(BaseEngine[str, Path]):
                     error=f"段级超时 ({segment_timeout:.0f}s)",
                     error_code="SEGMENT_TIMEOUT",
                 )
+        if journal is not None and result.success and temp_file.exists():
+            # 合成成功后记入 journal（崩溃一致性保证：有条目 ⟹ 文件已完整落盘）
+            journal.record(index, temp_file, segment)
         if progress_handler:
             progress_handler.on_segment_complete(
                 success=result.success,
