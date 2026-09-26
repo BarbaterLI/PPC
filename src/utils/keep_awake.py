@@ -35,8 +35,12 @@ class ScreenKeepAwake:
 
             state = es_continuous | es_system_required | es_display_required
             result = ctypes.windll.kernel32.SetThreadExecutionState(state)  # type: ignore[attr-defined]  # Windows-only
-            if result is None:
-                logger.error("SetThreadExecutionState returned None")
+            # 失败判定必须用 ``not result``：该 API 默认 restype 为 c_int，成功返回
+            # 非零状态、**失败返回 0，永远不为 None**。原 ``if result is None`` 恒假，
+            # 失败（0）时仍走 ``return True`` —— 系统可能在长任务期间休眠，而程序
+            # 以为 keep-awake 已生效。
+            if not result:
+                logger.error("SetThreadExecutionState failed (returned %r)", result)
                 return False
             self._es_state = state
             logger.info("Windows screen keep-awake enabled")

@@ -73,3 +73,45 @@ class TestElevationNonWindows:
     def test_non_permission_error_passthrough(self, monkeypatch: Any) -> None:
         monkeypatch.setattr(elevation, "is_windows", lambda: True)
         assert elevation.handle_permission_error_or_elevate(ValueError("boom")) is False
+
+
+class TestKeepAwakeWindows:
+    def test_set_thread_execution_state_failure_not_reported_as_success(self, monkeypatch: Any) -> None:
+        """``SetThreadExecutionState`` 返回 0（失败）时必须报失败，不得误报成功。
+
+        Bug: ``_keep_awake_windows`` 判定失败用的是 ``if result is None``。但
+        ``kernel32.SetThreadExecutionState`` 默认 restype 是 ``c_int``——成功返回
+        非零状态、**失败返回 0，永远不为 None**。于是 ``result is None`` 恒假，
+        失败（返回 0）时仍走 ``return True``：系统可能在长任务期间休眠，而程序
+        以为 keep-awake 已生效。
+        修复: 改判 ``if not result``（同时覆盖 0 与 None）。
+        """
+        import ctypes
+
+        monkeypatch.setattr(
+            ctypes.windll.kernel32,
+            "SetThreadExecutionState",
+            lambda state: 0,  # 模拟 API 失败（返回 0）
+            raising=False,
+        )
+
+        obj = ScreenKeepAwake()
+        obj._system = "Windows"
+        assert obj.keep_awake() is False, "SetThreadExecutionState 返回 0（失败）却被报成功"
+        assert obj.is_active() is False
+
+    def test_set_thread_execution_state_success_reports_active(self, monkeypatch: Any) -> None:
+        """成功（返回非零）时应报成功。"""
+        import ctypes
+
+        monkeypatch.setattr(
+            ctypes.windll.kernel32,
+            "SetThreadExecutionState",
+            lambda state: 0x80000003,
+            raising=False,
+        )
+
+        obj = ScreenKeepAwake()
+        obj._system = "Windows"
+        assert obj.keep_awake() is True
+        assert obj.is_active() is True
