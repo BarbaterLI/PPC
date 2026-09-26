@@ -92,8 +92,10 @@ class TimeoutHeuristicController:
         reason = "history_synthetic"
 
         # 3. 过度宽松收缩：P90 显著低于当前值时收窄到 P90 × safety_margin + 长度加成。
-        #    先于升级执行，保证"超时事件"优先放大（升级覆盖收缩）。
-        if stats.p90 > 0 and timeout > 0 and stats.p90 < timeout * config.heuristic_shrink_ratio:
+        #    仅在**无近期超时**时触发——若刚发生超时则跳过收缩，让升级直接作用于
+        #    基线合成值。否则「先收缩、再对收缩值放大」会把最终超时压到基线以下
+        #    （例：基线102 → 收缩60 → 升级75），刚超时却给出更小超时，必然再超时。
+        if recent_timeout_count == 0 and stats.p90 > 0 and timeout > 0 and stats.p90 < timeout * config.heuristic_shrink_ratio:
             timeout = stats.p90 * config.safety_margin + length_bonus
             reason = "contraction"
 
