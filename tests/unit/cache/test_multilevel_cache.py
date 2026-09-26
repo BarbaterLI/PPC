@@ -314,3 +314,31 @@ class TestL2CorruptEntryDeleted:
         # L2 should report a miss, not a hit (the corrupt entry is gone)
         assert cache._stats.l2_hits == 0
         assert cache._stats.l2_misses == 1
+
+
+class TestMemoryCacheUpdateEviction:
+    """更新处于 LRU 头部的键时的记账不变量。"""
+
+    def test_update_lru_key_keeps_size_accounting(self):
+        """更新 LRU 头部键时驱逐不得弹出该键本身。
+
+        Bug: ``set`` 更新路径的驱逐发生在 ``move_to_end`` 之前，``_evict_lru``
+        可能把**正在更新的键自己**（恰在头部）弹掉；随后重加只
+        ``_current_size_bytes += net_increase``，少算了被弹掉的旧尺寸 →
+        记账漂移；删除后甚至变负（破坏 ``_current == sum(entry.size)`` 不变量）。
+        """
+        cache = MemoryCache(max_size_mb=1)  # 1MB = 1048576B
+        assert cache.set("a", bytes(400 * 1024))
+        assert cache.set("b", bytes(400 * 1024))  # a 现在是 LRU（头部）
+
+        # 更新 LRU 键 a 到更大值 → 触发驱逐；a 在头部会被 _evict_lru 弹掉
+        assert cache.set("a", bytes(700 * 1024))
+
+        total = sum(e.size_bytes for e in cache._cache.values())
+        assert cache.current_size_bytes == total, (
+            f"size 记账漂移: current={cache.current_size_bytes} sum={total}"
+        )
+
+        cache.delete("a")
+        cache.delete("b")
+        assert cache.current_size_bytes >= 0, f"负数尺寸: {cache.current_size_bytes}"

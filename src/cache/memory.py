@@ -95,6 +95,12 @@ class MemoryCache:
             if key in self._cache:
                 old_entry = self._cache[key]
                 net_increase = size_bytes - old_entry.size_bytes
+                # 先把目标键移到末尾（MRU），再做驱逐：驱逐从头部进行，绝不会
+                # 弹出正在更新的键。否则更新一个恰在 LRU 头部的键时 _evict_lru
+                # 会把它自己弹掉 → ① 更新失败时旧值被静默删除 ② 成功重加时
+                # _current_size_bytes += net_increase 少算了被弹掉的旧尺寸
+                # （记账漂移、删除后变负，破坏 _current == sum(entry.size)）。
+                self._cache.move_to_end(key)
 
                 if net_increase > 0:
                     while self._current_size_bytes + net_increase > self._max_size_bytes and len(self._cache) > 1:
