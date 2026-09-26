@@ -164,6 +164,21 @@ class TTSEngine(BaseEngine[str, Path]):
         super().__init__()
         self.config = config
         self.tts_config = self._build_tts_config(config)
+        # 多角色配音 cast.yml（可选）：加载失败仅警告并回退单音色，不阻断构造。
+        self._cast: Any | None = None
+        _cast_file = str(getattr(config.tts, "cast_file", "") or "")
+        if _cast_file:
+            try:
+                from src.text.cast import Cast
+
+                self._cast = Cast.load(_cast_file)
+                logger.info(
+                    "多角色配音已加载 / cast loaded: %s（%d 个角色, narrator=%s）",
+                    _cast_file, len(self._cast.roles), self._cast.narrator,
+                )
+            except Exception as _cast_e:  # noqa: BLE001
+                logger.warning("cast.yml 加载失败，回退单音色 / cast load failed: %s", _cast_e)
+                self._cast = None
         self.retry_policy = create_network_retry_policy(
             max_retries=config.reliability.network_retry.max_retries,
             base_delay=config.reliability.network_retry.base_delay,
@@ -394,6 +409,23 @@ class TTSEngine(BaseEngine[str, Path]):
     # 合成入口
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # 多角色配音（cast.yml）音色解析
+    # ------------------------------------------------------------------
+
+    def _resolve_voice(self, text: str) -> str:
+        """按 cast 判定文本音色；无 cast 时恒定返回 ``tts.voice``。
+
+        cast 激活时逐段决定音色（分段粒度，见 :class:`src.text.cast.Cast`）；
+        缓存键已含 voice，故不同角色音色天然隔离、互不串音。
+        """
+        if self._cast is not None and self._cast.roles:
+            try:
+                return self._cast.voice_for(text, self.tts_config.voice)
+            except Exception:  # noqa: BLE001
+                return self.tts_config.voice
+        return self.tts_config.voice
+
     async def synthesize(
         self,
         text: str,
@@ -411,6 +443,7 @@ class TTSEngine(BaseEngine[str, Path]):
         """
         _skip_circuit_gate = bool(_private.get("_skip_circuit_gate", False))
         start_time = time.time()
+        voice = self._resolve_voice(text)  # cast 多角色：按本文本段定音色
         normalized_text = ""
         cache_key = ""
         # 预初始化以避免 disable_timeout=True 分支下未赋值，
@@ -430,7 +463,7 @@ class TTSEngine(BaseEngine[str, Path]):
                     )
 
                 cache_key = build_cache_key(
-                    self.tts_config.voice,
+                    voice,
                     normalized_text,
                     self.tts_config.rate,
                     self.tts_config.volume,
@@ -471,7 +504,7 @@ class TTSEngine(BaseEngine[str, Path]):
                     call = self._edge_client.synthesize_to_file(
                         normalized_text,
                         output_path,
-                        self.tts_config.voice,
+                        voice,
                         rate=self.tts_config.rate,
                         volume=self.tts_config.volume,
                         last_chunk_offset=DEFAULT_RESUME_OFFSET,
@@ -608,6 +641,7 @@ class TTSEngine(BaseEngine[str, Path]):
         """
         rate = _normalize_rate(rate) if rate is not None else self.tts_config.rate
         volume = volume if volume is not None else self.tts_config.volume
+        voice = self._resolve_voice(text)  # cast 多角色：按本文本定音色
 
         normalized = self._text_normalizer.normalize(text) if text else ""
         if not normalized.strip():
@@ -616,7 +650,7 @@ class TTSEngine(BaseEngine[str, Path]):
         try:
             async for chunk in self._edge_client.synthesize_stream(
                 normalized,
-                self.tts_config.voice,
+                voice,
                 rate=rate,
                 volume=volume,
                 last_chunk_offset=last_chunk_offset,

@@ -275,12 +275,16 @@ def convert(
         False, "--book", help="整书模式：批量完成后零解码装配单个带 ID3v2 章节标记的 <书名>.book.mp3（可跳章）"
     ),
     book_title: str | None = typer.Option(None, "--book-title", help="整书标题（缺省用输入目录名）"),
+    cast: str | None = typer.Option(
+        None, "--cast", help="多角色配音 cast.yml 路径（按角色分配音色，旁白/narrator 独立；覆盖配置 tts.cast_file）"
+    ),
 ):
     """批量 TTS 转换
 
     把 input 下的 .txt 文件批量转换为 .mp3 音频,输出到 output。
     --one 时 input 必须为单文件,output 可省略(默认与输入同目录)。
     --book 在批量完成后额外装配单文件整书（内嵌章节,主流播放器可直接跳章）。
+    --cast 按 cast.yml 给不同角色分配音色（多角色配音）。
 
     Examples:
         ppc convert ./txt ./out
@@ -288,6 +292,7 @@ def convert(
         ppc convert ./txt ./out --rate +10% -r -t 1.5
         ppc convert ./txt ./out --resume --ramp-up 30
         ppc convert ./txt ./out --book --book-title 三体
+        ppc convert ./txt ./out --cast cast.yml
         ppc convert ./book.txt --one
         ppc convert ./book.txt ./audios --one
     """
@@ -315,6 +320,7 @@ def convert(
             tts_proxy=tts_proxy,
             book=book,
             book_title=book_title,
+            cast=cast,
         )
     )
 

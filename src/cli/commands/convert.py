@@ -45,6 +45,7 @@ class ConvertOptions:
     tts_proxy: str | None = None
     book: bool = False
     book_title: str | None = None
+    cast: str | None = None
 
 
 def _normalize_rate(rate: str) -> str:
@@ -188,6 +189,8 @@ def _validate_convert(
     if options.ramp_up is not None:
         config.tts.ramp_up_enabled = True
         config.tts.ramp_up_duration = options.ramp_up
+    if options.cast is not None:
+        config.tts.cast_file = options.cast
 
     _log_convert_details(options, output_dir, config, output_formatter)
 

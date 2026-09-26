@@ -128,6 +128,11 @@ class TTSConfig(BaseModel):
         description="ppc.tts.v1 合成后端名（空=本地 edge_tts 默认路径；内置 openai_http，"
                     "扩展注册后端亦可按名称选用）/ ppc.tts.v1 backend name; empty = local edge_tts",
     )
+    cast_file: str = Field(
+        default="",
+        description="多角色配音 cast.yml 路径（空=单音色；非空则按分段文本判定角色换音色）/"
+                    " Multi-role voicepack cast.yml path; empty = single voice",
+    )
     concurrency: int = Field(default=8, ge=1, le=64, description="并发数")
     retries: int = Field(default=3, ge=0, le=10, description="重试次数")
     timeout: int = Field(default=120, ge=0, description="超时时间 (秒)，0 表示自动推导")
