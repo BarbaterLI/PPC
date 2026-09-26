@@ -359,13 +359,18 @@ def register_default_rules() -> None:
 
     模块导入时不再产生注册副作用; 默认规则在 :class:`RuleChain` 构造时
     自动装配, 调用方也可显式调用本函数完成注册。
+
+    **顺序关键**：具体规则（date/unit/special_symbol 的 ``\\d+`` 模式）必须
+    排在通用的 number **之前**。若 number 先跑，它会把所有数字转成中文，
+    后续规则的 ``\\d+`` 模式永不匹配——日期被错误规范成「二千零二十四-一-五」
+    （含连字符，TTS 读起来极不自然）而非「二千零二十四年一月五日」。
     """
     default_rules: tuple[NormalizerRule, ...] = (
-        NumberRule(),
-        DateRule(),
-        UnitRule(),
-        EnglishAbbrevRule(),
-        SpecialSymbolRule(),
+        DateRule(),           # 需原始数字 (YYYY-MM-DD / YYYY年MM月DD日)
+        UnitRule(),           # 需原始数字 (5kg / 5公斤)
+        SpecialSymbolRule(),  # 序数需原始数字 (1st/2nd/3rd)
+        EnglishAbbrevRule(),  # 与数字无关
+        NumberRule(),         # 通用数字转写——必须最后跑
     )
     for rule in default_rules:
         if rule.name not in _RULE_REGISTRY:

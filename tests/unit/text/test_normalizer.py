@@ -452,3 +452,26 @@ class TestEdgeCases:
         # 它在 _INVISIBLE_CHARS 之外的 normalize_empty_lines/trim 链路里会保留
         out = normalizer.normalize("a\u3000b")
         assert "a" in out and "b" in out
+
+
+class TestRuleChainOrder:
+    def test_specific_rules_run_before_number(self) -> None:
+        """具体规则（date/unit/序数）须在通用 number 之前执行。
+
+        Bug: ``register_default_rules`` 把 NumberRule 排第一，它先把所有数字
+        转成中文，导致 DateRule/UnitRule/SpecialSymbolRule 的 ``\\d+`` 模式
+        永不匹配——这些规则沦为死代码。日期被错误规范化成
+        「二千零二十四-一-五」（含连字符，TTS 读起来极不自然）而非
+        「二千零二十四年一月五日」。影响生产：``tts_engine`` 每次合成前
+        都调用 ``normalize()``。
+        """
+        out = TextNormalizer().normalize("会议日期2024-01-05召开")
+        assert "年" in out and "月" in out and "日" in out, (
+            f"DateRule 未生效（被 NumberRule 抢先），日期规范化错误: {out!r}"
+        )
+
+        names = [r.name for r in RuleChain()]
+        for specific in ("date", "unit", "special_symbol"):
+            assert names.index(specific) < names.index("number"), (
+                f"{specific} 应在 number 之前执行: {names}"
+            )
