@@ -1,6 +1,6 @@
 """Public API for src.utils.
 
-12.0.0 起子模块惰性导出（PEP 562）：``import src.utils.format`` 之类的轻量
+12.x 起子模块惰性导出（PEP 562）：``import src.utils.format`` 之类的轻量
 引用不再连带拉起 asyncio/ssl/subprocess 等重依赖（CLI 冷启动实测省 ~90ms）；
 首次访问符号时才加载对应子模块。
 """

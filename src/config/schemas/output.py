@@ -1,6 +1,6 @@
 """输出配置 Schema
 
-12.0.0 起 webhook / rate_limit 配置段与 audio_quality / post_processing /
+12.x 起 webhook / rate_limit 配置段与 audio_quality / post_processing /
 output_naming 字段已移除（从未被任何代码读取；限流实际由 ``tts.rate_limit``
 整数控制，合并静音由 ``output.silence_between_chapters_ms`` 控制）。
 旧配置文件中的相应键会被 pydantic 静默忽略。

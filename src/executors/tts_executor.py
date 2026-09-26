@@ -105,7 +105,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         # 音频转换后处理器列表（默认空，便于测试注入；未注册时行为完全不变）
         self._audio_converters: list = []
 
-        # 单遍 IO 文本复用缓存（12.0.0 W2-B）：入队阶段已全量解码出的文本，
+        # 单遍 IO 文本复用缓存（12.x W2-B）：入队阶段已全量解码出的文本，
         # execute() 直接复用，省掉执行阶段的第二次全读。容量与并发数挂钩
         # （initialize 内设定），逐出最旧条目——最坏情况也只是回退磁盘重读，
         # 语义不变。

@@ -111,7 +111,7 @@ class AudioMerger:
             return MergeResult(success=False, error=str(e))
 
     def _try_fast_concat(self, valid_files: list[Path], output_path: Path, silence: int) -> MergeResult | None:
-        """12.0.0 W2-D：同参数纯 MP3 走零解码帧拼接（O(N) 字节拷贝）。
+        """12.x W2-D：同参数纯 MP3 走零解码帧拼接（O(N) 字节拷贝）。
 
         不适用（格式混杂/参数不一致/拼接器不可用）返回 None，调用方回退
         pydub 解码合并——语义与产物完全兼容。

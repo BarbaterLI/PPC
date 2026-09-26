@@ -110,3 +110,55 @@ class TestUnknownVersion:
         # 验证映射表覆盖主流版本
         assert "5.0" in VERSION_MAPPING
         assert "8.0" in VERSION_MAPPING
+        assert "11.0" in VERSION_MAPPING  # 11 -> 12.x
+
+
+# ---------------------------------------------------------------------------
+# v11 → v12 迁移
+# ---------------------------------------------------------------------------
+
+
+class TestV11ToV12:
+    def test_migrate_v11_bumps_version_and_drops_dead_sections(self, tmp_path: Path) -> None:
+        from src.version import __version__
+
+        v11 = tmp_path / "config.yml"
+        v11.write_text(
+            "version: 11.0.0\n"
+            "tts:\n  voice: zh-CN-YunxiNeural\n  concurrency: 6\n"
+            "features: {a: 1}\n"
+            "webhook: {url: x}\n"
+            "rate_limit: {r: 5}\n",
+            encoding="utf-8",
+        )
+        m = ConfigMigrator()
+        result = m.migrate(v11, source_version="11.0")
+        assert result
+        assert result["version"] == __version__
+        # 12.x 移除的死段被显式剥离
+        assert "features" not in result
+        assert "webhook" not in result
+        assert "rate_limit" not in result
+        # 既有配置字段保留
+        assert result["tts"]["voice"] == "zh-CN-YunxiNeural"
+        assert result["tts"]["concurrency"] == 6
+        # 迁移元数据
+        fm = result["_migrated_from"]
+        assert fm["source_version"] == "11.0.0"
+        assert fm["source"] == str(v11)
+
+    def test_migrate_v11_missing_file(self, tmp_path: Path) -> None:
+        m = ConfigMigrator()
+        assert m.migrate(tmp_path / "missing.yml", source_version="11.0") == {}
+
+    def test_migrate_v11_invalid_yaml(self, tmp_path: Path) -> None:
+        v11 = tmp_path / "bad.yml"
+        v11.write_text("a: b: c: :", encoding="utf-8")
+        m = ConfigMigrator()
+        assert m.migrate(v11, source_version="11.0") == {}
+
+    def test_migrate_v11_non_mapping_top_level(self, tmp_path: Path) -> None:
+        v11 = tmp_path / "list.yml"
+        v11.write_text("- 1\n- 2\n", encoding="utf-8")
+        m = ConfigMigrator()
+        assert m.migrate(v11, source_version="11.0") == {}

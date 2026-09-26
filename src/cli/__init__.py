@@ -1,6 +1,6 @@
 """CLI module - Command Line Interface
 
-Typer + Rich 双入口。12.0.0 起本包 ``__init__`` 不再 eager 导入 ``typer_app``
+Typer + Rich 双入口。12.x 起本包 ``__init__`` 不再 eager 导入 ``typer_app``
 （连带 typer/click/pygments 全链），改为 PEP 562 惰性转发：``from src.cli
 import app`` 语义不变，但 ``import src.cli.output`` 不再触发 ~120ms 的
 typer 导入链。

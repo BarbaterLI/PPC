@@ -132,7 +132,7 @@ class WorkerPool:
     async def _worker_loop(self, worker_id: str):
         try:
             while True:
-                # 12.0.0 W2-E：限流门移到取任务**之前**——旧实现先出队再抢
+                # 12.x W2-E：限流门移到取任务**之前**——旧实现先出队再抢
                 # 信号量，被阻塞的 worker 会持有任务空等（预热期任务滞留、
                 # 关停时滞留加剧）。现在无许可的 worker 挂在 semaphore 上，
                 # 队列把任务交给当下空闲的 worker。

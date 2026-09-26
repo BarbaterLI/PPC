@@ -50,7 +50,7 @@ class PPCConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _ignore_legacy_dropped_sections(cls, data: Any) -> Any:
-        """12.0.0 移除的 features / webhook / rate_limit 段静默忽略（含嵌套键）。"""
+        """12.x 移除的 features / webhook / rate_limit 段静默忽略（含嵌套键）。"""
         if isinstance(data, dict):
             dropped = {"features", "webhook", "rate_limit"} & data.keys()
             if dropped:

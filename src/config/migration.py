@@ -72,6 +72,52 @@ class ConfigMigrator:
         logger.info("PPC8配置迁移完成")
         return v8_config
 
+    def migrate_v11_to_v12(self, v11_config_path: Path) -> dict[str, Any]:
+        """PPC11配置迁移到 12.x（``ppc.tts.v1`` / 零解码合并 / 单遍 IO 时代）。
+
+        12.x 的 pydantic schema 已优雅兼容旧配置的增删键（新增
+        ``backend_plugin`` / ``cast_file`` 取默认值，移除段被静默忽略），
+        故本迁移主要做三件事：版本戳升为当前版本、显式剥离 12.x 已删除的
+        死配置段、补 ``_migrated_from`` 元数据。目标版本取
+        :data:`src.version.__version__`（避免字面量散落，见版本 SSO 守护）。
+        """
+        import yaml as _yaml
+
+        from src.version import __version__
+
+        logger.info("开始迁移 PPC11 配置到 %s 格式...", __version__)
+
+        if not v11_config_path.exists():
+            logger.warning("PPC11 配置文件不存在 %s", v11_config_path)
+            return {}
+
+        try:
+            with v11_config_path.open("r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.error("读取 PPC11 配置失败: %s", e)
+            return {}
+
+        if not isinstance(cfg, dict):
+            logger.error("PPC11 配置顶层应为映射: %s", v11_config_path)
+            return {}
+
+        source_version = str(cfg.get("version", "11.x"))
+
+        # 12.x 移除的死配置段（从未被读取；pydantic 亦忽略，此处显式剥离使落盘更干净）
+        for dead in ("features", "webhook", "rate_limit"):
+            cfg.pop(dead, None)
+
+        cfg["version"] = __version__
+        cfg["_migrated_from"] = {
+            "source": str(v11_config_path),
+            "migrated_at": datetime.now(timezone.utc).isoformat(),
+            "source_version": source_version,
+        }
+
+        logger.info("PPC11 配置迁移完成 (%s -> %s)", source_version, __version__)
+        return cfg
+
     def _load_v5_config(self, config_path: Path) -> dict[str, Any]:
         """加载PPC5 INI配置"""
         config = configparser.ConfigParser()
@@ -160,6 +206,7 @@ class ConfigMigrator:
 VERSION_MAPPING: dict[str, Callable[[ConfigMigrator, Path], dict[str, Any]]] = {
     "5.0": ConfigMigrator.migrate_v5_to_v6,
     "8.0": ConfigMigrator.migrate_v8_to_v9,
+    "11.0": ConfigMigrator.migrate_v11_to_v12,
 }
 
 

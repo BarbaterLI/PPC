@@ -1,6 +1,6 @@
 """分布式配置 Schema
 
-12.0.0 精简：仅保留真实被读取的 ``nodes`` 与 ``node_max_concurrency``。
+12.x 精简：仅保留真实被读取的 ``nodes`` 与 ``node_max_concurrency``。
 负载均衡策略 / 容错迁移 / 健康检查间隔等由 Web API 请求参数与运行时
 构造参数控制（见 src/web/api/distributed.py 与 DistributedScheduler），
 不再作为配置文件键存在。旧配置中的多余键被静默忽略。

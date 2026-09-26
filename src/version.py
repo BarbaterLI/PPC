@@ -6,6 +6,6 @@
 ``python ppc.py`` 启动方式下触发 ppc 模块二次导入。
 """
 
-__version__ = "11.0.0"
+__version__ = "12.0.0"
 
 __all__ = ["__version__"]

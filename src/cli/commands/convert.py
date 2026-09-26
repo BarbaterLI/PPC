@@ -77,7 +77,7 @@ def _count_segments(input_file: Path, tts_config) -> tuple[int, str | None]:
     """预分段以获取段数（让 --one 进度显示总段数而非 1）。
 
     返回 ``(段数, 已读文本)``：文本一并交给执行路径复用，避免第二次全量读
-    （12.0.0 单遍 IO）。
+    （12.x 单遍 IO）。
     """
     from ...text.segmenter import TextSegmenter
     from ...utils.files import read_text_auto
@@ -326,7 +326,7 @@ def _assemble_book(
     config: PPCConfig,
     output_formatter: OutputFormatter,
 ) -> None:
-    """12.0.0 W3-1 ``--book``：把本批章节 MP3 装配为带 ID3v2 章节标记的整书。
+    """12.x W3-1 ``--book``：把本批章节 MP3 装配为带 ID3v2 章节标记的整书。
 
     零解码帧拼接 + CTOC/CHAP 内嵌——单文件、任意主流播放器可直接跳章。
     """
