@@ -365,3 +365,40 @@ def test_async_facade_does_not_block_event_loop():
         return ticked["v"]
 
     assert asyncio.run(runner()) is True
+
+
+# -----------------------------------------------------------------------------
+# refill_rate<=0 阻塞不得自旋（导出 API 的死循环 bug）
+# -----------------------------------------------------------------------------
+
+
+def test_sync_blocking_no_refill_rejects_not_spins():
+    """refill_rate<=0 + blocking + 无 timeout 时应立即拒绝，而非 `wait(0)` 无限自旋。
+
+    修复前：`_calculate_wait_time` 对 refill_rate<=0 返回 0.0 →
+    `threading.Event().wait(0)` 空转，无 timeout 时永久挂死（看门狗应看到线程存活）。
+    """
+    import threading as _threading
+
+    b = TokenBucketRateLimiter(max_tokens=1, refill_rate=0.0)
+    b.acquire()  # 吃掉唯一 token，此后永不补充
+
+    result: list = []
+
+    def attempt():
+        result.append(b.acquire(tokens=1, blocking=True))  # 无 timeout
+
+    t = _threading.Thread(target=attempt, daemon=True)
+    t.start()
+    t.join(timeout=1.0)
+    assert not t.is_alive(), "refill_rate=0 阻塞调用挂死（自旋未被拦截）"
+    assert result and result[0].allowed is False
+
+
+def test_sync_max_tokens_zero_current_rate_no_crash():
+    """max_tokens=0 时 _get_current_rate 应返回 0.0 而非 ZeroDivisionError（对齐 async）。"""
+    b = TokenBucketRateLimiter(max_tokens=0, refill_rate=5.0)
+    # _total_requests=0 早退
+    assert b._get_current_rate() == 0.0
+    b.acquire(blocking=False)  # 计入 total_requests 后仍不得崩溃
+    assert b._get_current_rate() == 0.0

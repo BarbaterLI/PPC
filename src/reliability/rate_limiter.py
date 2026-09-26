@@ -82,6 +82,13 @@ class TokenBucketRateLimiter:
                     self._rejected_requests += 1
                     return RateLimitResult(allowed=False, current_rate=self._get_current_rate())
 
+                if self._refill_rate <= 0:
+                    # 永不补充 token：阻塞只会 `wait(0)` 无限自旋烧 CPU（且不设
+                    # timeout 时永久挂死）。立即拒绝——与 AsyncTokenBucket 的
+                    # ``refill_rate <= 0`` 守护一致。
+                    self._rejected_requests += 1
+                    return RateLimitResult(allowed=False, wait_time=0.0, current_rate=self._get_current_rate())
+
                 if timeout is not None:
                     elapsed = time.time() - start_time
                     if elapsed >= timeout:
@@ -117,7 +124,7 @@ class TokenBucketRateLimiter:
         return tokens_needed / self._refill_rate if self._refill_rate > 0 else 0.0
 
     def _get_current_rate(self) -> float:
-        if self._total_requests == 0:
+        if self._total_requests == 0 or self._max_tokens <= 0:
             return 0.0
         return self._refill_rate * (self._tokens / self._max_tokens)
 
