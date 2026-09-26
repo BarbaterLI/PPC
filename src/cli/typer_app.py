@@ -482,6 +482,29 @@ def bench_cmd(
     )
 
 
+@app.command("doctor")
+def doctor_cmd(
+    config_path: Path | None = typer.Option(None, "--config", "-C", help="要检查的配置文件路径"),
+    no_network: bool = typer.Option(False, "--no-network", help="跳过网络可达性探测"),
+):
+    """环境自诊断: Python/依赖/后端/ffmpeg/配置/目录/扩展 一键体检，异常项给修复提示。
+
+    Examples:
+        ppc doctor
+        ppc doctor --no-network
+        ppc doctor -C config.yml
+    """
+    from .commands.doctor import handle_doctor
+
+    code = handle_doctor(
+        config_path,
+        use_network=not no_network,
+        json_output=get_output().mode == "json",
+    )
+    if code:
+        raise typer.Exit(code)
+
+
 # Distributed command group
 dist_app = typer.Typer(help="分布式节点管理")
 
