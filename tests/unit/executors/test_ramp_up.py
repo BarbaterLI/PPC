@@ -425,3 +425,33 @@ def test_merge_segments_calls_merge_async_not_merge(tmp_path):
     # 核心断言：merge_async 被调用，merge 未被调用
     assert fake_merger.merge_async.called, "必须调用 merge_async"
     assert not fake_merger.merge.called, "不应调用同步 merge（会阻塞事件循环）"
+
+
+def test_shutdown_fast_when_ramp_incomplete():
+    """ramp 未完成时 ``shutdown`` 应立即返回，不得干等满 5s 超时。
+
+    Bug: ``shutdown`` gather 的 ``self.workers`` 含 ramp-up 调整器任务，
+    它不消费 sentinel、只靠 ``is_complete``（ramp 完成）或取消退出。于是
+    ramp 未完成时 gather 等不到它 → ``wait_for(timeout=5)`` 干等满 5s 才
+    强制取消——启用 ``--ramp-up`` 且转换在 ramp 完成前结束时，每次转换多
+    5 秒关停延迟（实测 ~5011ms）。
+    """
+    from src.executors.tts_worker_pool import WorkerPool
+
+    async def main():
+        async def proc(task, wid, ph):  # noqa: ARG001
+            return None
+
+        pool = WorkerPool(
+            concurrency=4,
+            processor=proc,
+            ramp_up_controller=RampUpController(target_concurrency=4, duration=30.0),
+        )
+        await pool.start()
+        await pool.wait_all()  # 空队列，立即返回
+        t0 = time.perf_counter()
+        await pool.shutdown()
+        return (time.perf_counter() - t0) * 1000
+
+    dt = _run(main())
+    assert dt < 1500, f"shutdown 耗时 {dt:.0f}ms（ramp 未完成应立即退出，非干等 5s 超时）"

@@ -76,6 +76,7 @@ class WorkerPool:
         self.queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self.semaphore: asyncio.Semaphore = asyncio.Semaphore(1 if ramp_up_controller is not None else concurrency)
         self.workers: list[asyncio.Task[Any]] = []
+        self._ramp_up_task: asyncio.Task[Any] | None = None
         self._ramp_up_released = 0
         self._progress_handler: Any | None = None
 
@@ -94,6 +95,7 @@ class WorkerPool:
         if self.ramp_up_controller is not None:
             self.ramp_up_controller.start()
             ramp_up_task = asyncio.create_task(self._ramp_up_adjuster())
+            self._ramp_up_task = ramp_up_task
             self.workers.append(ramp_up_task)
             logger.info(
                 "并发预热已启动: %ds 内从 1 逐步增加到 %d 并发",
@@ -112,6 +114,19 @@ class WorkerPool:
 
     async def shutdown(self, timeout: float = 5.0):
         """向每个工作协程发送退出信号并等待其安全退出。"""
+        # 先取消并摘除 ramp-up 调整器：它不消费 sentinel，只靠 is_complete
+        # （ramp 完成）或被取消退出。若留在 gather 里，ramp 未完成时会干等
+        # 满 timeout 才强制取消（实测 ~5s 关停延迟）。
+        if self._ramp_up_task is not None:
+            self._ramp_up_task.cancel()
+            try:
+                await self._ramp_up_task
+            except asyncio.CancelledError:
+                pass
+            if self._ramp_up_task in self.workers:
+                self.workers.remove(self._ramp_up_task)
+            self._ramp_up_task = None
+
         for i in range(len(self.workers)):
             await self.queue.put((0, time.time(), f"sentinel-{i}", _SENTINEL))
 
