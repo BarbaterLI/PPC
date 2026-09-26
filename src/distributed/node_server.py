@@ -439,7 +439,9 @@ class TTSNodeService:
             with NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
                 output_path = Path(tmp.name)
 
-            result = await self._tts_engine.synthesize(text, output_path)
+            # 走 synthesize_segmented（而非 synthesize）：长文本分段、多角色
+            # cast 轮次换音色、短文本退化为单次合成——语义一致且覆盖配音。
+            result = await self._tts_engine.synthesize_segmented(text, output_path)
             if not result.success:
                 raise RuntimeError(result.error or "synthesis failed")
             if not output_path.exists():

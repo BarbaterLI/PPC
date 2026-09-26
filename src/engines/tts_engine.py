@@ -100,6 +100,7 @@ class SegmentMerger:
         start_time: float,
         disable_timeout: bool = False,
         progress_handler: Any | None = None,
+        voices: list[str] | None = None,
     ) -> ExecutionResult[Path]:
         cache_dir = output_path.parent / ".cache" / output_path.stem
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +117,7 @@ class SegmentMerger:
                         disable_timeout=disable_timeout,
                         progress_handler=progress_handler,
                         journal=journal,
+                        voice=(voices[i - 1] if voices and i - 1 < len(voices) else None),
                     )
                     for i, seg in enumerate(segments, start=1)
                 ],
@@ -437,13 +439,15 @@ class TTSEngine(BaseEngine[str, Path]):
 
         所有 API 请求都经过 _api_semaphore 控制，确保总并发数严格受限。
 
-        ``_private`` 仅接收内部参数 ``_skip_circuit_gate``：多段文件已在
-        文件级做过单次熔断 gate，内部各段不再重复入闸（避免一个文件
-        独占多个半开探针槽位）。
+        ``_private`` 接收内部参数 ``_skip_circuit_gate``（多段文件已在文件级
+        做过单次熔断 gate，内部各段不再重复入闸）与 ``_voice``（多角色轮次
+        显式音色；缺省则按 cast 首说话人探测 / 配置音色）。
         """
         _skip_circuit_gate = bool(_private.get("_skip_circuit_gate", False))
         start_time = time.time()
-        voice = self._resolve_voice(text)  # cast 多角色：按本文本段定音色
+        # 显式音色（多角色轮次穿透）优先；否则按 cast 首说话人探测 / 配置音色。
+        _explicit_voice = _private.get("_voice")
+        voice = _explicit_voice if _explicit_voice else self._resolve_voice(text)
         normalized_text = ""
         cache_key = ""
         # 预初始化以避免 disable_timeout=True 分支下未赋值，
@@ -685,6 +689,13 @@ class TTSEngine(BaseEngine[str, Path]):
             if not text or not text.strip():
                 return ExecutionResult.fail(error="文本内容为空", error_code=ErrorCodes.EMPTY_CONTENT.value)
 
+            # 多角色配音：轮次级切分（绕过下方 len<=max 单次快捷路径——短文本
+            # 也常混合旁白+多人对白，必须逐轮次换音色）。
+            if self._cast is not None and self._cast.roles:
+                return await self._synthesize_cast(
+                    text, output_path, start_time, disable_timeout, progress_handler
+                )
+
             if len(text) <= self.tts_config.max_segment_length:
                 return await self.synthesize(text, output_path, disable_timeout=disable_timeout)
 
@@ -707,6 +718,72 @@ class TTSEngine(BaseEngine[str, Path]):
             logger.error(f"分段TTS合成失败: {e}")
             return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
 
+    # ------------------------------------------------------------------
+    # 多角色配音：轮次级合成
+    # ------------------------------------------------------------------
+
+    def _voice_for_speaker(self, speaker: str | None) -> str:
+        """说话人 → 音色（旁白用 narrator/default，角色用 roles 映射）。"""
+        assert self._cast is not None
+        if speaker is None:
+            return self._cast.narrator or self._cast.default or self.tts_config.voice
+        return self._cast.roles.get(speaker) or self._cast.default or self._cast.narrator or self.tts_config.voice
+
+    def _expand_turns(self, turns: list[Any]) -> tuple[list[str], list[str]]:
+        """轮次 → (segments, voices)：长轮次内部按 max_segment_length 再切。
+
+        每个轮次单一说话人，故其内部切出的所有块继承同一音色；相邻同说话人
+        轮次已在解析器合并，此处保证 ``len(segments) == len(voices)``。
+        """
+        max_len = self.tts_config.max_segment_length
+        segments: list[str] = []
+        voices: list[str] = []
+        for t in turns:
+            voice = self._voice_for_speaker(t.speaker)
+            text = t.text or ""
+            if not text.strip():
+                continue
+            # 长轮次复用既有分段器（OOV 过滤 + 标点切分），全部继承该音色
+            pieces = self._text_segmenter.split(text, max_len) if len(text) > max_len else [text.strip()]
+            for piece in pieces:
+                if piece and piece.strip():
+                    segments.append(piece.strip())
+                    voices.append(voice)
+        return segments, voices
+
+    async def _synthesize_cast(
+        self,
+        text: str,
+        output_path: Path,
+        start_time: float,
+        disable_timeout: bool,
+        progress_handler: Any | None,
+    ) -> ExecutionResult[Path]:
+        """轮次级多角色合成：切轮次 → 显式音色穿透 → 单段或合并。"""
+        try:
+            turns = self._cast.split_turns(text)
+            segments, voices = self._expand_turns(turns)
+            if not segments:
+                return ExecutionResult.fail(error="文本分段失败", error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
+            logger.debug(
+                "轮次级配音: %d 轮次 → %d 段", len(turns), len(segments)
+            )
+            if len(segments) == 1:
+                return await self.synthesize(
+                    segments[0], output_path, disable_timeout=disable_timeout, _voice=voices[0]
+                )
+            return await self._merge_segments_gated(
+                segments,
+                output_path,
+                start_time,
+                disable_timeout=disable_timeout,
+                progress_handler=progress_handler,
+                voices=voices,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"轮次级配音合成失败: {e}")
+            return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
+
     async def _synthesize_segment(
         self,
         index: int,
@@ -716,6 +793,7 @@ class TTSEngine(BaseEngine[str, Path]):
         disable_timeout: bool,
         progress_handler: Any | None,
         journal: Any | None = None,
+        voice: str | None = None,
     ) -> tuple[int, ExecutionResult]:
         temp_file = cache_dir / f"{cache_dir.name}_seg_{index:03d}.mp3"
         if temp_file.exists() and temp_file.stat().st_size > 0:
@@ -749,14 +827,14 @@ class TTSEngine(BaseEngine[str, Path]):
         # _skip_circuit_gate=True：多段文件已在文件级入闸，各段不再重复走熔断。
         if disable_timeout:
             result = await self.synthesize(
-                segment, temp_file, disable_timeout=True, _skip_circuit_gate=True
+                segment, temp_file, disable_timeout=True, _skip_circuit_gate=True, _voice=voice
             )
         else:
             segment_timeout = self._calculate_timeout(segment)
             try:
                 result = await asyncio.wait_for(
                     self.synthesize(
-                        segment, temp_file, disable_timeout=False, _skip_circuit_gate=True
+                        segment, temp_file, disable_timeout=False, _skip_circuit_gate=True, _voice=voice
                     ),
                     timeout=segment_timeout,
                 )
@@ -838,6 +916,7 @@ class TTSEngine(BaseEngine[str, Path]):
         start_time: float,
         disable_timeout: bool = False,
         progress_handler: Any | None = None,
+        voices: list[str] | None = None,
     ) -> ExecutionResult[Path]:
         """并发合成各分段并合并落盘，委托给 :class:`SegmentMerger`。"""
         return await self._seg_merger.merge_segments(
@@ -846,6 +925,7 @@ class TTSEngine(BaseEngine[str, Path]):
             start_time,
             disable_timeout=disable_timeout,
             progress_handler=progress_handler,
+            voices=voices,
         )
 
     async def _merge_segments_gated(
@@ -855,6 +935,7 @@ class TTSEngine(BaseEngine[str, Path]):
         start_time: float,
         disable_timeout: bool = False,
         progress_handler: Any | None = None,
+        voices: list[str] | None = None,
     ) -> ExecutionResult[Path]:
         """文件级单次熔断 gate 的多段合成。
 
@@ -870,6 +951,7 @@ class TTSEngine(BaseEngine[str, Path]):
                 start_time,
                 disable_timeout=disable_timeout,
                 progress_handler=progress_handler,
+                voices=voices,
             )
             if not result.success or result.data is None:
                 raise RuntimeError(result.error or "分段合成失败")

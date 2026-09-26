@@ -162,6 +162,16 @@ class Cast:
         """整段列表 → 与之一一对应的音色列表（便捷批量接口）。"""
         return [self.voice_for(s, fallback) for s in segments]
 
+    def split_turns(self, text: str) -> list[Any]:
+        """轮次级切分（见 :mod:`src.text.speaker_turns`）。
+
+        返回 ``list[Utterance]``，``speaker`` 为 ``None``（旁白）或已登记角色名。
+        这是多角色配音的主路径——每个轮次单独合成、单独指定音色。
+        """
+        from .speaker_turns import split_speaker_turns
+
+        return split_speaker_turns(text, self.roles.keys())
+
     # ------------------------------------------------------------------ 诊断
 
     def summary(self) -> dict[str, Any]:

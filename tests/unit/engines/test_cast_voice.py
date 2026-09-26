@@ -95,3 +95,76 @@ def test_synthesize_without_cast_always_uses_config_voice(tmp_path):
         _run(engine.synthesize("山风吹过。", tmp_path / "b.mp3", disable_timeout=True))
     voices = [c.args[2] for c in fake_client.synthesize_to_file.call_args_list]
     assert voices == [engine.tts_config.voice, engine.tts_config.voice]
+
+
+# ---------------------------------------------------------------- 轮次级穿透（W3-2 重构）
+
+
+def _make_cast_engine(tmp_path):
+    cast = _write_cast(tmp_path, "narrator: VN\nroles:\n  李明: VL\n  王芳: VW\n")
+    return _make_engine(cast)
+
+
+def test_split_turns_and_expand_maps_voice(tmp_path):
+    """轮次切分 + 音色展开：每段单一说话人，voices 与 segments 对齐。"""
+    engine = _make_cast_engine(tmp_path)
+    turns = engine._cast.split_turns("李明：走。王芳：好。")
+    segments, voices = engine._expand_turns(turns)
+    assert len(segments) == len(voices)
+    # 标签旁白(narrator) / 角色对白 交替
+    assert voices == ["VN", "VL", "VN", "VW"]
+
+
+def test_expand_turns_splits_long_turn_same_voice(tmp_path):
+    """超长旁白轮次内部按 max_segment_length 再切，全部继承 narrator 音色。"""
+    engine = _make_cast_engine(tmp_path)
+    long_nar = "山风吹过。" * 600  # 3000 字 > 默认 max_segment_length=2500
+    turns = engine._cast.split_turns(long_nar)
+    segments, voices = engine._expand_turns(turns)
+    assert len(segments) > 1  # 被切块
+    assert set(voices) == {"VN"}  # 全旁白音色
+
+
+def test_synthesize_segmented_cast_turn_level_voice_sequence(tmp_path):
+    """cast 激活时 synthesize_segmented 逐轮次传显式 _voice（非首说话人探测）。"""
+    engine = _make_cast_engine(tmp_path)
+    captured: list = []
+
+    async def fake_synth(text, output_path, disable_timeout=False, **kw):
+        captured.append(kw.get("_voice"))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"ID3seg")
+        return MagicMock(success=True, error=None)
+
+    engine.synthesize = fake_synth  # type: ignore[assignment]
+
+    def fake_merge(temp_files, merged_path, **_kw):
+        merged_path.write_bytes(b"ID3merged")
+        return MagicMock(success=True, error=None, file_count=len(temp_files))
+
+    engine._audio_merger = MagicMock()  # type: ignore[assignment]
+    engine._audio_merger.merge_async = AsyncMock(side_effect=fake_merge)
+
+    out = tmp_path / "out.mp3"
+    result = _run(engine.synthesize_segmented("李明：走。王芳：好。", out, disable_timeout=True))
+
+    assert result.success, result.error
+    # 每轮次一个显式音色：旁白/李明/旁白/王芳
+    assert captured == ["VN", "VL", "VN", "VW"]
+
+
+def test_synthesize_segmented_single_turn_uses_explicit_voice(tmp_path):
+    """单轮次（纯旁白）走单次合成，_voice = narrator。"""
+    engine = _make_cast_engine(tmp_path)
+    captured: list = []
+
+    async def fake_synth(text, output_path, disable_timeout=False, **kw):
+        captured.append(kw.get("_voice"))
+        output_path.write_bytes(b"ID3")
+        return MagicMock(success=True, error=None)
+
+    engine.synthesize = fake_synth  # type: ignore[assignment]
+    out = tmp_path / "o.mp3"
+    result = _run(engine.synthesize_segmented("山风吹过，林间寂静。", out, disable_timeout=True))
+    assert result.success, result.error
+    assert captured == ["VN"]  # 纯旁白 → narrator 音色（单段）
