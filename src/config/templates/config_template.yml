@@ -86,8 +86,8 @@ tts:
   # Built-in: openai_http; 扩展后端经 .ppcext 注册后按名称填入 / extension backends resolve by registered name
   backend_plugin: ""
   # 多角色配音 cast.yml 路径（空=单音色）/ Multi-role voicepack cast.yml path (empty = single voice)
-  # 非空时按分段文本判定角色换音色；亦可用 `ppc convert --cast cast.yml` 覆盖
-  # When set, segments switch voice by detected speaker; also overridable via --cast
+  # 非空时按说话人轮次切分（旁白/角色逐句换音色）；亦可用 `ppc convert --cast cast.yml` 覆盖
+  # When set, splits by speaker turn (narrator/roles switch per utterance); also overridable via --cast
   cast_file: ""
 
   # --- 风控规避配置 / Anti-Risk-Control ---

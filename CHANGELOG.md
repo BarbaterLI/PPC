@@ -23,9 +23,13 @@
 - `ppc convert --book [--book-title]`：整本零解码装配为单文件有声书，写 **ID3v2.4
   CTOC + CHAP**（章节时间轴 + 内嵌标题，ffprobe / mpv / MusicBee 可读）+ 合成 Xing TOC
   双栈（第三方播放器生态覆盖）；产出 `输出目录/<书名>.book.mp3`，可跳章。
-- 多角色配音 **`cast.yml`**：`ppc convert --cast cast.yml`（或配置 `tts.cast_file`）按
-  分段文本判定角色换音色；三种识别模式（行首角色+冒号 / 说话动词归因 / 任意位置+冒号），
-  `narrator`/`default` 兜底；缓存键已含音色，角色间互不串音。
+- 多角色配音 **`cast.yml`**：`ppc convert --cast cast.yml`（或配置 `tts.cast_file`）。
+  **说话人轮次级**（非分段级）：每次说话人切换即一个独立合成单元，旁白/narrator 与每个
+  角色各自音色、逐句切换；长轮次内部再按 `max_segment_length` 切块但音色不变。识别模式
+  覆盖 5 种引号定界符（`“”「」『』""‘’`）+ 前向标签（`李明：`/`李明笑道：`）+ 后向归因
+  （`”，李明笑道`）+ 破折号（`——李明：`）+ 冒号直述（`李明：…`）+ 独立成行 + 代词承接
+  （`，他说`→继承）+ 连续引号继承；角色名最长匹配 + CJK 负向后顾（`小李` 不误命中 `李`）；
+  相邻同说话人合并降请求数；`narrator`/`default` 兜底，缓存键含音色互不串音。
 - **`ppc.tts.v1` 后端协议**（`src/engines/tts_protocol.py`）：版本协商 + 能力声明
   （voices/probe）+ 惰性注册表；内置 **`openai_http`** 后端（OpenAI 兼容 `/audio/speech`，
   mp3 直通零解码管线，接 Kokoro/SoVITS/F5 等本地服务），扩展后端由加载器自动注册、
