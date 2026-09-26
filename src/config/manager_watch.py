@@ -32,6 +32,10 @@ class ConfigHistoryStore:
         self._entries: list[dict[str, Any]] = []
         self._log_file = log_file
         self._lock = threading.RLock()
+        # 单调递增版本号计数器。不能用 len(self._versions)+1：列表被裁剪到
+        # max_versions 后 len 不再等于历史最高版本号，会导致版本号重复、
+        # get_version/rollback 按号查找歧义。
+        self._next_version = 1
 
     # ------------------------------------------------------------------
     # 版本管理
@@ -39,7 +43,8 @@ class ConfigHistoryStore:
 
     def save_version(self, config: PPCConfig) -> int:
         with self._lock:
-            version = len(self._versions) + 1
+            version = self._next_version
+            self._next_version += 1
             config_copy = copy.deepcopy(config)
             self._versions.append((version, config_copy, datetime.now()))
 
