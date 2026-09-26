@@ -71,7 +71,13 @@ class HealthChecker:
                 old_status = node.status
 
                 async with health_lock:
-                    if is_healthy:
+                    if node.status == NodeStatus.DRAINING:
+                        # 管理态（remove_node 正在摘除该节点）：健康检查只更新
+                        # last_health_check，不改写状态。否则存活节点被打回
+                        # ACTIVE → is_available 为真 → 摘除期间调度器继续派活、
+                        # current_concurrency 降不下去，drain 循环被拖到超时。
+                        pass
+                    elif is_healthy:
                         node.status = NodeStatus.ACTIVE
                         failure_counts[node_id] = 0
                     else:
