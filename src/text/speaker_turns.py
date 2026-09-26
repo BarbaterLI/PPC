@@ -199,6 +199,11 @@ def _find_colon_labels(text: str, matcher: _RoleMatcher, inside_spans: list[tupl
     """找引号外的 ``角色：`` 直述标签：返回 ``[(body_start, speech_end, role)]``。
 
     ``body_start`` = 冒号之后（标签 ``角色：`` 归旁白）；直述内容到下个标签/引号/段末。
+
+    已知限制：段末边界以换行为准（小说段落逐行）。**单行**输入里
+    ``角色：对白。旁白。`` 无换行时，body 会延伸到行末、把后续旁白并入该
+    说话人音色；与多句对话 ``角色：句1。句2。`` 结构相同、无法语义区分，
+    为不破坏多句对话故不按句点硬切。标准逐行 .txt 不受影响。
     """
     labels: list[tuple[int, int, str]] = []
     if not matcher.roles:

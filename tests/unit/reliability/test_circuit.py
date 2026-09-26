@@ -364,3 +364,75 @@ class TestCallSyncEventLoopSafety:
         # not crash with a loop-binding RuntimeError.
         with pytest.raises(CircuitBreakerError):
             cb.call_sync(ok)
+
+
+# -----------------------------------------------------------------------------
+# 半开探针槽归还（旁路 success/failure 的异常不得泄漏槽位）
+# -----------------------------------------------------------------------------
+
+
+class TestHalfOpenSlotRelease:
+    def test_excluded_exception_releases_probe_slot(self):
+        """排除异常在半开探针时必须归还槽位（否则 current_calls 泄漏→卡死半开）。"""
+
+        async def runner():
+            cb = _make_cb(
+                trip_strategy=TripStrategy.CONSECUTIVE_FAILURES,
+                consecutive_failure_threshold=1,
+                timeout=0.0,
+                half_open_max_calls=1,
+                half_open_canary_ratio=1.0,
+            )
+            cb.exclude_exceptions(KeyError)
+
+            async def trip():
+                raise RuntimeError("trip")
+
+            async def excluded():
+                raise KeyError("excluded")
+
+            # 熔断 → OPEN
+            with pytest.raises(RuntimeError):
+                await cb.call(trip)
+            assert cb.state == CircuitState.OPEN
+
+            # 半开探针抛出被排除异常：槽位必须归还、状态不被排除异常改动
+            with pytest.raises(KeyError):
+                await cb.call(excluded)
+
+            assert cb._half_open_limiter.current_calls == 0, "排除异常泄漏了半开探针槽"
+            assert cb.state == CircuitState.HALF_OPEN
+
+        _run(runner())
+
+    def test_base_exception_releases_probe_slot(self):
+        """CancelledError 等 BaseException（不被 except Exception 捕获）同样须归还槽位。"""
+
+        class _BaseProbe(BaseException):
+            pass
+
+        async def runner():
+            cb = _make_cb(
+                trip_strategy=TripStrategy.CONSECUTIVE_FAILURES,
+                consecutive_failure_threshold=1,
+                timeout=0.0,
+                half_open_max_calls=1,
+                half_open_canary_ratio=1.0,
+            )
+
+            async def trip():
+                raise RuntimeError("trip")
+
+            async def base_exc():
+                raise _BaseProbe()
+
+            with pytest.raises(RuntimeError):
+                await cb.call(trip)
+            assert cb.state == CircuitState.OPEN
+
+            with pytest.raises(_BaseProbe):
+                await cb.call(base_exc)
+
+            assert cb._half_open_limiter.current_calls == 0, "BaseException 泄漏了半开探针槽"
+
+        _run(runner())

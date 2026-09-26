@@ -348,7 +348,7 @@ class CircuitBreaker:
         lets callers count business failures (e.g. corrupt audio, failed
         merge) as breaker failures even when ``func`` returns normally.
         """
-        allowed, _is_canary_reject = await self._run_on_loop(self._gate())
+        allowed, _is_canary_reject, slot_held = await self._run_on_loop(self._gate())
         if not allowed:
             # 拒绝计数已在 _gate（专用 loop）内更新，避免调用方线程
             # 与熔断 loop 交叉写同一份统计。
@@ -388,9 +388,19 @@ class CircuitBreaker:
             return result
         except Exception as e:
             if isinstance(e, tuple(self._excluded_exceptions)):
+                # 排除异常不计入统计，但 gate 已持有半开探针槽 → 必须归还，
+                # 否则 _current_calls 泄漏、canary 配额被吃光后半开卡死。
+                if slot_held:
+                    await self._run_on_loop(self._release_probe_slot())
                 raise
             duration = time.time() - start_time
             await self._run_on_loop(self._on_failure(e, duration))
+            raise
+        except BaseException:
+            # CancelledError 等（py3.8+ 属 BaseException、不被 except Exception
+            # 捕获）旁路 success/failure：同样归还探针槽后再原样抛出。
+            if slot_held:
+                await self._run_on_loop(self._release_probe_slot())
             raise
 
     def call_sync(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -437,31 +447,36 @@ class CircuitBreaker:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return asyncio.wrap_future(future)
 
-    async def _gate(self) -> tuple[bool, bool]:
+    async def _gate(self) -> tuple[bool, bool, bool]:
         """Decide whether a call is allowed right now.
 
-        Executed on the dedicated loop. Returns ``(allowed, is_canary_reject)``
-        and bumps rejection counters when the call is not allowed, keeping
-        ALL breaker accounting serialized on the dedicated loop (single-writer
-        不变量：调用方上下文不得直接修改 ``self._stats`` 计数).
+        Executed on the dedicated loop. Returns ``(allowed, is_canary_reject,
+        slot_held)`` where ``slot_held`` is True iff this decision **acquired a
+        half-open probe slot** that the caller must release on any exit path
+        that does not route through :meth:`_on_success`/:meth:`_on_failure`
+        (excluded exceptions / ``CancelledError``), otherwise the limiter leaks
+        and the breaker can wedge in HALF_OPEN. Bumps rejection counters when
+        the call is not allowed, keeping ALL breaker accounting serialized on
+        the dedicated loop (single-writer 不变量：调用方上下文不得直接修改
+        ``self._stats`` 计数).
         """
         if self._state == CircuitState.CLOSED:
-            return True, False
+            return True, False, False
         if self._state == CircuitState.OPEN:
             if self._check_transition_to_half_open_sync():
                 self._stats.rejected_calls += 1
-                return False, False
+                return False, False, False
             # 冷却期结束：真正切入半开并放行一次探活（占用 canary 槽位）
             await self._transition_to(CircuitState.HALF_OPEN)
             if await self._acquire_probe_slot():
                 self._stats.canary_allowed += 1
-                return True, False
+                return True, False, True
             self._stats.rejected_calls += 1
-            return False, False
+            return False, False, False
         if self._state == CircuitState.HALF_OPEN:
             if await self._acquire_probe_slot():
                 self._stats.canary_allowed += 1
-                return True, False
+                return True, False, True
             # No probe slot left: distinguish "max concurrency" from
             # "canary quota exhausted" for metric purposes.
             canary_window = max(
@@ -473,15 +488,25 @@ class CircuitBreaker:
                 self._stats.canary_rejected += 1
             else:
                 self._stats.rejected_calls += 1
-            return False, is_canary
+            return False, is_canary, False
         self._stats.rejected_calls += 1
-        return False, False
+        return False, False, False
 
     async def _acquire_probe_slot(self) -> bool:
         """Acquire a half-open probe slot (serialized on the dedicated loop)."""
         if not await self._half_open_limiter.acquire():
             return False
         return True
+
+    async def _release_probe_slot(self) -> None:
+        """Release a held half-open probe slot (serialized on the dedicated loop).
+
+        与 :meth:`_handle_half_open_success`/:meth:`_handle_half_open_failure`
+        中的 release 不重叠：本方法仅用于**旁路**了 success/failure 计数的
+        逃逸路径（排除异常 / BaseException），故不做状态判定、不改成功计数。
+        ``HalfOpenLimiter.release`` 内部 ``max(0, ...)`` 夹紧，多还不会为负。
+        """
+        await self._half_open_limiter.release()
 
     def _check_transition_to_half_open_sync(self) -> bool:
         """Whether the breaker is still in its open cooldown.
