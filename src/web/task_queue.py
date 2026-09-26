@@ -129,9 +129,18 @@ class TaskStore:
                 del self._tasks[old_id]
 
     def mark_running(self, task_id: str) -> bool:
+        """将任务标记为 RUNNING；已处于终态（如已取消）的任务拒绝并返回 False。
+
+        修复：排队中（PENDING）被 cancel 的任务，其工作线程可能稍后才启动，
+        旧实现无条件把状态覆盖回 RUNNING 并返回 True → ``_run_task`` 照常执行
+        ``handler.run``，cancel 形同虚设（白跑整个 handler、状态来回跳）。
+        ``_run_task`` 在 ``if not mark_running: return`` 处即跳过。
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
+                return False
+            if task.status in (TaskStatus.CANCELLED, TaskStatus.COMPLETED, TaskStatus.FAILED):
                 return False
             task.status = TaskStatus.RUNNING
             task.started_at = time.time()

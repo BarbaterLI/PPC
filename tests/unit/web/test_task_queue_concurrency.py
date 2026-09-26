@@ -235,3 +235,37 @@ class TestCancelThenCompleteRace:
         final_task = manager.get_task(task_id)
         assert final_task is not None
         assert final_task.status == TaskStatus.CANCELLED
+
+
+def test_cancelled_pending_task_does_not_execute():
+    """PENDING 任务被 cancel 后，``_run_task`` 不得再执行 handler。
+
+    Bug: ``mark_running`` 无条件把状态覆盖为 RUNNING 并返回 True，于是
+    ``_run_task`` 照常执行 ``handler.run``——排队中（PENDING）的任务被取消后
+    依然跑完整个 handler，cancel 形同虚设（浪费资源、状态来回跳）。
+    修复: ``mark_running`` 对已 CANCELLED 的任务拒绝（返回 False），
+    ``_run_task`` 于 ``if not mark_running: return`` 处直接跳过。
+    """
+    from src.web.task_queue import EventBroker, TaskHandlerRegistry, TaskRunner, TaskStore
+
+    store = TaskStore()
+    runner = TaskRunner(store, EventBroker(store), TaskHandlerRegistry())
+    executed: list[str] = []
+
+    class _H(TaskHandler):
+        task_type = "t"
+
+        def run(self, task_id: str, params: dict[str, Any]) -> dict[str, Any]:
+            executed.append(task_id)
+            return {}
+
+    runner._registry.register(_H())
+
+    tid = "pending-cancelled"
+    store.add(TaskInfo(task_id=tid, task_type="t"))  # PENDING
+    store.cancel(tid)  # 排队中被取消 → CANCELLED + cancel_event
+
+    runner._run_task(tid, "t", {})  # 模拟任务线程此刻才启动
+
+    assert executed == [], f"已取消的 PENDING 任务仍执行了 handler: {executed}"
+    assert store.get(tid).status == TaskStatus.CANCELLED
