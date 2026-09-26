@@ -14,9 +14,9 @@ PPC_NEXT 将大批量 `.txt` 章节文件转换为高音质 MP3 有声书：内�
 
 | 领域 | 能力 |
 |---|---|
-| 合成 | Edge TTS（内置定制副本 + 环境包双后端）、多语音回退、语速/音量控制、字级时间戳 (SRT/WordBoundary) |
-| 管线 | 智能分段（标点驱动）、并发工作池、渐进预热 (ramp-up)、段级缓存断点重建 (`resume`)、隔离区自动重试 |
-| 成品 | 章节内嵌 ID3v2 CHAP/CTTS + 封面/元数据的单文件有声书 (`--book`)、MP3 帧级零解码合并 |
+| 合成 | Edge TTS（内置定制副本 + 环境包双后端）、多语音回退、语速/音量控制、字级时间戳 (SRT/WordBoundary)、多角色配音 (`--cast cast.yml`)、`ppc.tts.v1` 后端协议（内置 `openai_http`） |
+| 管线 | 智能分段（标点驱动）、并发工作池、渐进预热 (ramp-up)、段级缓存断点重建 (`resume`)、段级 Journal 崩溃续传、隔离区自动重试 |
+| 成品 | 章节内嵌 ID3v2 CHAP/CTOC + 元数据的单文件有声书 (`--book`)、MP3 帧级零解码合并 |
 | 可靠 | 熔断器、指数退避重试、NoAudioReceived 静默重试、自适应超时 (fixed/auto/adaptive/synthetic)、检查点原子写 |
 | 分布式 | master/node 模式、健康检查、负载均衡、任务迁移 |
 | 扩展 | `.ppcext` 包管理、静态安全扫描、沙箱 (受限文件系统/网络/socket)、IPC (命名管道/socket)、executable 扩展 |
@@ -29,8 +29,7 @@ PPC_NEXT 将大批量 `.txt` 章节文件转换为高音质 MP3 有声书：内�
 ```bash
 pip install -r requirements.txt
 # 可选 extras：
-#   pip install "ppc-next[extra]"    # pydub/lxml 等兼容后端依赖（v12 起合并不再必需）
-#   pip install "ppc-next[distributed]"
+#   pip install "ppc-next[audio]"     # pydub 音频后端（v12 起同构 MP3 合并不再必需）
 ```
 
 源码直跑：`python ppc.py --help`。Nuitka standalone 打包后 `ppc.exe` 同路径运行。
@@ -45,8 +44,8 @@ ppc convert ./novel_chapters ./audio
 ppc convert 第1章.txt --one
 # 4. 中断后续传：
 ppc convert ./novel_chapters ./audio --resume
-# 5. 整本成品（章节标记 + 元数据 + 封面）：
-ppc convert ./novel_chapters ./book.mp3 --book --title "夜航船" --author "张岱" --cover cover.jpg
+# 5. 整本成品（章节标记 + 元数据）：
+ppc convert ./novel_chapters ./audio --book --book-title "夜航船"
 # 6. WebUI：
 ppc webui            # http://127.0.0.1:8000
 # 7. 环境自诊断：
