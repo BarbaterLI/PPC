@@ -340,3 +340,31 @@ class TestRetryThreadPoolReuse:
 
         assert result == "ok"
         mock_exec_cls.assert_not_called()
+
+
+class TestRetryTimeout:
+    def test_timeout_bounds_total_time_not_blocked_by_shutdown(self):
+        """``timeout`` 须约束 ``retry`` 总耗时，不得被 ``finally`` 的 ``executor.shutdown()`` 拖住。
+
+        Bug: ``retry`` 的 ``finally`` 调用 ``executor.shutdown()``（默认
+        ``wait=True``）。超时后 ``future.result(timeout)`` 抛 TimeoutError，但
+        线程里的任务**仍在运行**；``shutdown(wait=True)`` 会阻塞直到该僵尸任务
+        结束——于是 ``timeout`` 形同虚设，总耗时被挂起的 func 拖住（实测
+        timeout=0.2s 却耗时 3.0s）。
+        修复: ``shutdown(wait=False, cancel_futures=True)``——不等僵尸任务，
+        让 timeout 真正约束 ``retry`` 的返回。
+        """
+
+        def hang():
+            time.sleep(1.5)
+            return "done"
+
+        cfg = RetryConfig(max_retries=0, timeout=0.1, jitter=False)
+        t0 = time.perf_counter()
+        try:
+            retry(hang, config=cfg, operation="hang")
+        except Exception:  # noqa: BLE001
+            pass
+        dt = time.perf_counter() - t0
+
+        assert dt < 0.8, f"timeout=0.1s 但 retry 实耗 {dt:.2f}s（shutdown 阻塞等待挂起任务，超时失效）"

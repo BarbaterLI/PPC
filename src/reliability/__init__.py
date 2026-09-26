@@ -86,8 +86,6 @@ __all__ = [
     # result
     "Result",
     "ResultState",
-    "Ok",
-    "Err",
     # retry
     "RetryConfig",
     "RetryContext",
@@ -124,8 +122,6 @@ __all__ = [
     "get_circuit_breakers",
     "get_rate_limiter",
     "set_rate_limiter",
-    "is_ok",
-    "is_err",
     "retry",
     "retry_async",
     "retry_on_failure",

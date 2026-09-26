@@ -263,7 +263,10 @@ def retry(
                     config.after_retry(context, e)
     finally:
         if executor is not None:
-            executor.shutdown()
+            # 不等待超时后仍在运行的僵尸任务（wait=True 会阻塞到它结束，
+            # 使 timeout 形同虚设——实测 timeout=0.1s 却因 shutdown 等待
+            # 挂起任务耗时 1.5s）。cancel_futures 取消尚未启动的排队任务。
+            executor.shutdown(wait=False, cancel_futures=True)
 
     assert last_error is not None  # pragma: no cover - loop always produces an error here
     raise last_error
