@@ -207,7 +207,11 @@ class DiskCache:
         file_path = self._cache_dir / filename
 
         with self._lock:
-            old_entry = self._metadata.get(key)
+            # 先把被更新的旧条目**移出** _metadata 并扣减其尺寸：否则驱逐循环
+            # _evict_if_needed 按 last_access_time 选中最旧者时，若正是被更新的
+            # 键，_remove_entry 会再扣一次其尺寸（二次扣减）→ _current_size_bytes
+            # 低估、实际占用超出 max_size（缓存溢出）。移出后它无法被驱逐再次扣减。
+            old_entry = self._metadata.pop(key, None)
             if old_entry:
                 self._current_size_bytes -= old_entry.size_bytes
 
@@ -217,6 +221,8 @@ class DiskCache:
             if self._current_size_bytes + size_bytes > self._max_size_bytes:
                 logger.warning(f"Disk cache space insufficient: {key}")
                 if old_entry:
+                    # 还原旧条目（尺寸与元数据）
+                    self._metadata[key] = old_entry
                     self._current_size_bytes += old_entry.size_bytes
                 return False
 
@@ -239,6 +245,8 @@ class DiskCache:
                 return True
             except Exception as e:
                 if old_entry:
+                    # 写失败：还原旧条目
+                    self._metadata[key] = old_entry
                     self._current_size_bytes += old_entry.size_bytes
                 logger.error(f"Failed to write disk cache: {key}, {e}")
                 return False

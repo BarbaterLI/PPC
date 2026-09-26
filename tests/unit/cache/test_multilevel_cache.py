@@ -342,3 +342,32 @@ class TestMemoryCacheUpdateEviction:
         cache.delete("a")
         cache.delete("b")
         assert cache.current_size_bytes >= 0, f"负数尺寸: {cache.current_size_bytes}"
+
+
+class TestDiskCacheUpdateEviction:
+    def test_set_updating_lru_key_keeps_size_accounting(self, tmp_path):
+        """更新处于 LRU（最旧）的键时，驱逐不得二次扣减其旧尺寸。
+
+        Bug: ``DiskCache.set`` 在 L212 先 ``_current_size_bytes -= old.size``
+        却**不把 old_entry 移出** ``_metadata``；随后驱逐循环 ``_evict_if_needed``
+        按 ``last_access_time`` 选中最旧者——若正是被更新的键，``_remove_entry``
+        再扣一次其尺寸 → 二次扣减 → ``_current_size_bytes`` 低估，且实际占用
+        超出 ``max_size_bytes``（缓存溢出）。
+        修复: 更新前把 old_entry 从 ``_metadata`` 弹出（尺寸已扣），使其无法被
+        驱逐再次扣减；失败时再还原。
+        """
+        from src.cache.disk import DiskCache
+
+        dc = DiskCache(str(tmp_path), max_size_mb=1)  # 1MB = 1048576
+        K = 1024
+        assert dc.set("A", bytes(600 * K))   # A 最旧 (LRU)
+        assert dc.set("B", bytes(400 * K))
+        assert dc.set("A", bytes(700 * K))   # 更新 A（LRU）→ 触发驱逐，A 自身被选中
+
+        actual = sum(e.size_bytes for e in dc._metadata.values())
+        assert dc.current_size_bytes == actual, (
+            f"size 记账漂移: current={dc.current_size_bytes} actual={actual}"
+        )
+        assert dc.current_size_bytes <= dc._max_size_bytes, (
+            f"缓存超出 max_size: {dc.current_size_bytes} > {dc._max_size_bytes}"
+        )
