@@ -133,7 +133,13 @@ class AudioProcessor:
                             if wf.getnframes() == 0:
                                 continue
                             if wf.getparams()[:3] != params[:3]:
-                                logger.warning(f"音频参数不匹配 ({file_path.name})，将重新对齐")
+                                # 参数（声道/采样率/位宽）不匹配：跳过而非写入——
+                                # 原始帧若按首文件的头写出，采样率/声道被错误解释，
+                                # 该段播放变速失真（静默损坏）。与缺失文件的处理一致。
+                                logger.warning(
+                                    f"音频参数不匹配，已跳过（无法安全合并不同采样率/声道的原始帧）: {file_path.name}"
+                                )
+                                continue
                             out_wf.writeframes(wf.readframes(wf.getnframes()))
                     except (wave.Error, EOFError) as e:
                         logger.warning(f"无法读取音频文件 {file_path}: {e}")

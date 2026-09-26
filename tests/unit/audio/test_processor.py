@@ -194,6 +194,30 @@ class TestMerge:
         assert processor.merge([silent_wav], out) is True
         assert out.exists()
 
+    def test_merge_skips_param_mismatched_file(self, processor: AudioProcessor, tmp_path: Path) -> None:
+        """参数不匹配的文件应被跳过，不得写入首文件参数下造成损坏。
+
+        Bug: ``merge`` 检测到 ``getparams()[:3] != params[:3]`` 时仅警告
+        “将重新对齐”却**无对齐逻辑**，随后把 44100Hz 的原始帧写进以首个
+        文件（8000Hz）为头的 WAV——输出被标记 8000Hz 却含 44100Hz 内容，
+        播放时该段变速失真（静默损坏）。
+        修复: 参数不匹配即跳过该文件（与缺失文件的处理一致），杜绝损坏。
+        """
+        a = tmp_path / "a.wav"
+        b = tmp_path / "b.wav"
+        _write_silent_wav(a, duration_seconds=0.1, sample_rate=8000)   # 800 帧
+        _write_silent_wav(b, duration_seconds=0.1, sample_rate=44100)  # 4410 帧
+        out = tmp_path / "out.wav"
+
+        assert processor.merge([a, b], out, silence_ms=0) is True
+
+        with wave.open(str(out), "rb") as wf:
+            assert wf.getframerate() == 8000
+            # 不匹配的 b 必须被跳过：否则输出帧数 = 800+4410，b 内容以 8000Hz 播放失真
+            assert wf.getnframes() == 800, (
+                f"参数不匹配文件被写入造成损坏: {wf.getnframes()} 帧 (期望 800，b 应被跳过)"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Info / Duration
