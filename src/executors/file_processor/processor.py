@@ -43,14 +43,16 @@ class FileProcessor:
 
         if encoding == "auto":
             try:
-                content, _enc = read_text_auto(
+                content, _ = read_text_auto(
                     file_path,
                     encodings=self.config.get("split", {}).get("encoding_fallback"),
                 )
             except Exception as e:
                 logger.error(f"读取文件失败: {file_path}, 错误: {e}")
                 return None
-            self.file_cache.put(file_path, content, _enc)
+            # 按**请求键**（encoding="auto"）缓存：get 用的键就是 encoding。
+            # 旧实现存 _enc（检测到的 gbk 等）→ path_auto 永不命中、每次重读磁盘。
+            self.file_cache.put(file_path, content, encoding)
             return content
 
         try:
