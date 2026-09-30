@@ -63,8 +63,13 @@ class RuleBasic(BaseModel):
     """规则基本信息：标识、匹配模式、类型与优先级"""
 
     name: str = Field(..., description="规则名称")
-    pattern: str = Field(..., description="匹配模式")
+    # rule_type 必须声明在 pattern 之前：validate_pattern 用
+    # info.data.get("rule_type") 判断是否该做正则校验，而 Pydantic 按字段声明序
+    # 校验——若 rule_type 在后，校验 pattern 时它尚未进入 info.data（恒 None），
+    # “仅 REGEX 类型才校验”的条件永不生效，prefix/suffix/contains/exact 的字面量
+    # pattern（含 [ ( * 等元字符）会被误拒为“无效正则”。
     rule_type: RuleType = Field(default=RuleType.REGEX, description="规则类型")
+    pattern: str = Field(..., description="匹配模式")
     description: str | None = Field(None, description="规则描述")
     priority: int = Field(default=10, ge=1, le=100, description="优先级（数值越大优先级越高）")
     enabled: bool = Field(default=True, description="是否启用")
@@ -72,7 +77,7 @@ class RuleBasic(BaseModel):
     @field_validator("pattern")
     @classmethod
     def validate_pattern(cls, v: str, info) -> str:
-        """验证正则表达式模式"""
+        """验证正则表达式模式（仅 REGEX 类型；非正则类型的 pattern 是字面量）"""
         if info.data.get("rule_type") in (None, RuleType.REGEX):
             return _validate_regex(v)
         return v
