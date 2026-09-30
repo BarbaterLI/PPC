@@ -93,7 +93,11 @@ class TTSExecutorFactory(ExecutorFactory):
             if task.rate is not None:
                 cfg.tts.rate = task.rate
             if task.timeout_multiplier is not None:
-                cfg.tts._timeout_multiplier = task.timeout_multiplier  # type: ignore[attr-defined]
+                # 必须写真实字段 timeout_multiplier（无下划线）：下游 tts_engine
+                # 读 getattr(config.tts, "timeout_multiplier", 1.0)。此前误写
+                # _timeout_multiplier（影子属性、从不被读取），导致分布式/worker
+                # 请求携带的超时倍率被静默丢弃。
+                cfg.tts.timeout_multiplier = task.timeout_multiplier
             if task.ramp_up is not None:
                 cfg.tts.ramp_up_enabled = True
                 cfg.tts.ramp_up_duration = task.ramp_up
