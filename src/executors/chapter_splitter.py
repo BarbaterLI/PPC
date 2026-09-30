@@ -128,8 +128,14 @@ class ChapterSplitter:
 
                 chapter_index += 1
                 extracted_title = self._extract_chapter_title(stripped, matched_rule)
+                # 首章之前若有非空白、未匹配任何章节模式的前导内容（序言/简介），
+                # 令首章 start_line=0 把它并入首章：否则这些行不进入任何章节、
+                # 在"有章节"时被静默丢弃（与末尾"无章节则保留全文"的 fallback 意图矛盾）。
+                start_line = i
+                if chapter_index == 1 and i > 0 and "".join(lines[:i]).strip():
+                    start_line = 0
                 current_chapter = ChapterInfo(
-                    index=chapter_index, title=extracted_title, start_line=i, end_line=len(lines), content=""
+                    index=chapter_index, title=extracted_title, start_line=start_line, end_line=len(lines), content=""
                 )
 
                 if matched_rule and matched_rule.stop_on_match:
