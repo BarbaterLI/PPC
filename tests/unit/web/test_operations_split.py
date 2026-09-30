@@ -236,3 +236,68 @@ class TestBrowseEndpoint:
         resp = flask_client.get(f"/api/browse?path={tmp_path / 'nope'}")
         assert resp.status_code == 404
         assert resp.get_json()["success"] is False
+
+
+class TestSplitDoesNotMutateSharedConfig:
+    """``/api/split`` 不得就地修改 ``get_config()`` 返回的共享配置对象。"""
+
+    def test_split_does_not_mutate_shared_config(
+        self, flask_client: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Bug: ``split_text`` 直接 ``config.split.preset = ...`` 改写
+        ``mgr.get_config()`` 的返回值。该方法返回的是 ConfigManager 单例的
+        **活对象**（非拷贝），于是一次 WebUI split 请求的 preset/hierarchical
+        覆盖**泄漏到全局配置**，影响后续所有请求（对比 CLI ``convert.py`` 用
+        ``copy.deepcopy`` 隔离）。
+        修复: ``deepcopy`` 后再改。
+        """
+        from src.config import get_preset
+
+        real_cfg = get_preset("balanced")
+        orig_preset = real_cfg.split.preset
+        orig_hier = real_cfg.split.hierarchical_split
+        assert orig_preset != "english_novel"  # 确保与请求值不同
+
+        # stub SplitterExecutor（加速，避免真实分章）
+        import src.executors.splitter_core as splitter_mod
+        from types import SimpleNamespace as _SN
+
+        class _StubExec:
+            def __init__(self, *a, **k):  # noqa: ANN002, ANN003
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):  # noqa: ANN002
+                return False
+
+            async def execute(self, input_path, output_dir):  # noqa: ARG002
+                return _SN(success=True, data=[tmp_path / "ch1.txt"], metrics=_SN(duration=0.0))
+
+        monkeypatch.setattr(splitter_mod, "SplitterExecutor", _StubExec)
+
+        # stub get_default_manager → 返回持有真实配置的 manager（观测污染）
+        import src.config.manager_core as manager_mod
+
+        class _Mgr:
+            def get_config(self):
+                return real_cfg
+
+        monkeypatch.setattr(manager_mod, "get_default_manager", lambda: _Mgr())
+
+        input_file = tmp_path / "novel.txt"
+        input_file.write_text("第一章 内容", encoding="utf-8")
+
+        resp = flask_client.post(
+            "/api/split",
+            json={"input_path": str(input_file), "preset": "english_novel", "hierarchical": True},
+        )
+        assert resp.status_code == 200, resp.get_json()
+
+        assert real_cfg.split.preset == orig_preset, (
+            f"split 端点污染共享配置: preset {orig_preset} -> {real_cfg.split.preset}"
+        )
+        assert real_cfg.split.hierarchical_split == orig_hier, (
+            f"split 端点污染共享配置: hierarchical {orig_hier} -> {real_cfg.split.hierarchical_split}"
+        )

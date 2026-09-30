@@ -4,6 +4,7 @@
 """
 
 import contextlib
+import copy
 import logging
 from pathlib import Path
 
@@ -105,7 +106,10 @@ def split_text():
         from src.executors.splitter_core import SplitterExecutor
 
         mgr = get_default_manager()
-        config = mgr.get_config()
+        # deepcopy 后再改：get_config() 返回的是 ConfigManager 单例的**活对象**，
+        # 就地改会把本次请求的 preset/hierarchical 覆盖泄漏到全局配置，影响
+        # 后续所有请求（对齐 CLI convert.py 的 copy.deepcopy 隔离语义）。
+        config = copy.deepcopy(mgr.get_config())
         config.split.preset = preset
         config.split.hierarchical_split = hierarchical
 
