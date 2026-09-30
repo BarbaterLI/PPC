@@ -440,6 +440,13 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         await self._drain_quarantine(progress_handler)
         await self._worker_pool.shutdown()
 
+        # 批次结束必须落一次最终检查点：_save_checkpoint_if_needed 仅每
+        # checkpoint_interval(5) 个任务存一次，末尾不足 5 个的完成任务不会落盘。
+        # 缺这次保存时，checkpoint 仍把它们记为 pending，resume 会（因
+        # _resume_from_checkpoint 直接按 pending 入队、不查 output-exists）把
+        # 已完成的最后 <5 个任务重新合成一遍，浪费网络与时间。
+        await self._save_checkpoint()
+
         return self._build_batch_result(total, start_time)
 
     async def _drain_quarantine(self, progress_handler: Any | None, max_rounds: int = 8) -> None:
