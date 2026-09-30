@@ -4,11 +4,13 @@
 """
 
 import logging
+import posixpath
 import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
@@ -233,6 +235,24 @@ class EPUBEngine(BaseEngine[Path, dict[str, Any]]):
         except Exception as e:
             logger.warning(f"解析OPF文件失败: {e}")
 
+    @staticmethod
+    def _href_candidates(href: str) -> list[str]:
+        """生成 manifest href 对应的候选 zip 路径（去重、保序）。
+
+        EPUB 的 ``href`` 是 **URI 引用**：可能百分号编码（``chap%201.xhtml``）、
+        含 ``../`` 相对路径；而 zip 内是解码后的规范名。原实现只用原始 href
+        直读，编码/相对路径的章节 ``zf.read`` 抛 KeyError 被吞 → **章节静默丢失**。
+        候选顺序：原始 → 百分号解码 → 规范化（``../`` 归一），原始优先保证已能
+        读取的 EPUB 行为不变（无回归）。
+        """
+        candidates: list[str] = []
+        decoded = unquote(href)
+        normalized = posixpath.normpath(decoded)
+        for cand in (href, decoded, normalized):
+            if cand and cand not in candidates:
+                candidates.append(cand)
+        return candidates
+
     def _parse_chapter_from_href(
         self,
         zf: zipfile.ZipFile,
@@ -241,14 +261,20 @@ class EPUBEngine(BaseEngine[Path, dict[str, Any]]):
         order: int,
         chapters: list[EPUBChapter],
     ) -> None:
-        """从指定路径解析章节内容"""
-        try:
-            html_content = zf.read(href).decode(ENCODING_UTF8)
+        """从指定路径解析章节内容（依次尝试各候选 zip 路径）。"""
+        for candidate in self._href_candidates(href):
+            try:
+                html_content = zf.read(candidate).decode(ENCODING_UTF8)
+            except KeyError:
+                continue  # 该候选不在 zip 内，尝试下一个（解码/规范化路径）
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"解析章节失败: {candidate}, {e}")
+                return
             chapter = self._parse_html_chapter(item_id, html_content, order)
             if chapter:
                 chapters.append(chapter)
-        except Exception as e:
-            logger.warning(f"解析章节失败: {href}, {e}")
+            return
+        logger.warning(f"章节未能从任何候选路径读取: {href}")
 
     def _parse_html_chapter(self, item_id: str, html_content: str, order: int) -> EPUBChapter | None:
         """解析 HTML 章节内容"""
