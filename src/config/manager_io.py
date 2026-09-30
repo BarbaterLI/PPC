@@ -90,6 +90,13 @@ def _validate(config: PPCConfig):
 def save_config_to_file(manager: ConfigStoreProtocol) -> bool:
     try:
         config_dict = manager._config.model_dump(mode="json")
+        # 保留 schema 外的未知（legacy）键，与 manager_access._normalize_dict
+        # “避免丢配置”的语义一致。model_dump 只含 schema 字段，若不把
+        # _config_dict 中的未知键补回，_update_commented_map 会把它们从文件删除
+        # ——内存保留、保存即丢（legacy 键如 ui: 在首次 set 后从 config.yml 消失）。
+        for key, value in (manager._config_dict or {}).items():
+            if key not in config_dict:
+                config_dict[key] = value
         config_dict["version"] = manager.CONFIG_VERSION
         config_dict["_saved_at"] = datetime.now(timezone.utc).isoformat()
 

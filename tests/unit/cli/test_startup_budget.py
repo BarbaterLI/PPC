@@ -77,31 +77,37 @@ def test_version_path_imports_stay_light():
     assert not offenders, f"--version 路径加载了重型模块: {offenders}"
 
 
+def _third_party_self_ms(entries: list[tuple[int, str]]) -> float:
+    """第三方模块 import 自身耗时合计（ms）。"""
+    skip = {
+        "src", "ppc", "__main__", "encodings", "codecs", "site", "io", "abc",
+        "os", "stat", "posixpath", "genericpath", "_collections_abc",
+    }
+    total = 0
+    for us, name in entries:
+        if name.startswith("src.") or name in skip:
+            continue
+        total += us
+    return total / 1000.0
+
+
 def test_version_importtime_budget():
-    """第三方导入总量必须低于预算上限（防新依赖/eager import 悄悄上线）。"""
-    entries, modules = _capture_importtime()
-    third_party = [
-        (us, name)
-        for (us, name) in entries
-        if not name.startswith("src.")
-        and name
-        not in {
-            "src",
-            "ppc",
-            "__main__",
-            "encodings",
-            "codecs",
-            "site",
-            "io",
-            "abc",
-            "os",
-            "stat",
-            "posixpath",
-            "genericpath",
-            "_collections_abc",
-        }
-    ]
-    total_self_ms = sum(us for us, _ in third_party) / 1000.0
-    n_modules = len(modules)
-    assert n_modules <= MAX_MODULES, f"模块数 {n_modules} 超预算 {MAX_MODULES}（新增 eager import？）"
-    assert total_self_ms <= MAX_SELF_MS, f"导入自耗时 {total_self_ms:.0f}ms 超预算 {MAX_SELF_MS:.0f}ms"
+    """第三方导入总量必须低于预算上限（防新依赖/eager import 悄悄上线）。
+
+    采样 3 次取最小：``importtime`` 自耗时是代码的**结构性成本**，但单次采样
+    在冷页缓存 / 满负载下会被磁盘 I/O 与 CPU 争用抬高 → 假阳性（本测试曾因此
+    在全量套件下偶发失败）。取 min 近似暖/空载成本；结构性回归（新增重导入）
+    会抬高**每个**采样，min 仍会超预算而被拦截，门禁不削弱。
+    """
+    best_ms: float | None = None
+    best_modules = 0
+    for _ in range(3):
+        entries, modules = _capture_importtime()
+        ms = _third_party_self_ms(entries)
+        if best_ms is None or ms < best_ms:
+            best_ms = ms
+            best_modules = len(modules)
+
+    assert best_modules <= MAX_MODULES, f"模块数 {best_modules} 超预算 {MAX_MODULES}（新增 eager import？）"
+    assert best_ms is not None
+    assert best_ms <= MAX_SELF_MS, f"导入自耗时 {best_ms:.0f}ms 超预算 {MAX_SELF_MS:.0f}ms"
