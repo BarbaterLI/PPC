@@ -320,6 +320,13 @@ class TTSNodeService:
 
             if "max_concurrency" in data:
                 new_concurrency = int(data["max_concurrency"])
+                if new_concurrency < 1:
+                    # asyncio.Semaphore(0) 永久零许可 → 所有 /synthesize 请求
+                    # 在 acquire 上无限阻塞（节点“活着”却无法合成）。0/负数拒绝。
+                    return web.json_response(
+                        {"error": f"max_concurrency must be >= 1, got {new_concurrency}"},
+                        status=400,
+                    )
                 self.max_concurrency = new_concurrency
                 old_semaphore = self._semaphore
                 self._semaphore = asyncio.Semaphore(new_concurrency)
