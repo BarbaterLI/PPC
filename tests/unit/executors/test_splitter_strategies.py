@@ -180,6 +180,44 @@ class TestTryMatchLinePrecomputed:
         assert rule.name == "r1"
 
 
+class TestRequireNoIndent:
+    """validate_title 的 require_no_indent 验证。"""
+
+    @staticmethod
+    def _rule():
+        return CustomRule(
+            name="r",
+            pattern=r"^第\d+章",
+            rule_type=RuleType.REGEX,
+            require_no_indent=True,
+        )
+
+    def test_indented_chapter_line_rejected(self):
+        """require_no_indent=True（默认）必须拒绝带缩进的章节行。
+
+        Bug: ``validate_title`` 先 ``title.strip()`` 再查
+        ``stripped.startswith(" ")`` —— 恒为 False，该验证（默认 True）实为
+        死代码，缩进章节行从不被拒；且 ``check_rule_match`` 传的是 stripped，
+        缩进信息在到达 validate_title 前就丢了。
+        修复: 对原始 title 判断缩进 + ``check_rule_match`` 传原始 line。
+        """
+        rule = self._rule()
+        executor = SplitterExecutor(custom_rules=[rule])
+        matcher = executor._splitter.matcher
+        lines = ["   第1章 缩进章节"]
+        found = matcher.check_rule_match(lines[0], 0, lines, rule)
+        assert found is False, "缩进章节行应被 require_no_indent 拒绝"
+
+    def test_non_indented_chapter_line_accepted(self):
+        """非缩进章节行仍应匹配（修复不误伤）。"""
+        rule = self._rule()
+        executor = SplitterExecutor(custom_rules=[rule])
+        matcher = executor._splitter.matcher
+        lines = ["第1章 正常章节"]
+        found = matcher.check_rule_match(lines[0], 0, lines, rule)
+        assert found is True
+
+
 # ---------------------------------------------------------------------------
 # ChapterSplitter._split_flat 直接调用（覆盖预计算路径）
 # ---------------------------------------------------------------------------

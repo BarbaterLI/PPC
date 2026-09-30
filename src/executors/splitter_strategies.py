@@ -393,7 +393,9 @@ class RuleMatcher:
             if not self._match_pattern_with_type(match_text, rule.pattern, rule_type):
                 return False
 
-        return self.validate_title(stripped, rule)
+        # 原始 title 需保留缩进信息传入：validate_title 的 require_no_indent
+        # 判断的是 strip 之前的缩进（若此处传 stripped，缩进已丢、该验证恒 False）。
+        return self.validate_title(line, rule)
 
     def is_volume_line(self, line: str) -> bool:
         """检查一行是否为卷标记（遍历全部预设的卷模式）"""
@@ -413,7 +415,10 @@ class RuleMatcher:
 
         stripped = title.strip()
 
-        if rule.require_no_indent and stripped.startswith(" "):
+        # require_no_indent 必须在 strip **之前**对原始 title 判断：旧实现先
+        # ``stripped = title.strip()`` 再查 ``stripped.startswith(" ")``，恒为
+        # False —— 该验证（默认 True）实为死代码，缩进的章节行从不被拒绝。
+        if rule.require_no_indent and title[:1] in (" ", "\t"):
             return False
 
         if rule.allow_space_prefix:
