@@ -13,8 +13,10 @@
   实例只在首次解析时构造（不拖慢启动，不引入无用 import）。内置后端
   （如 ``openai_http``）与加载器导入的扩展后端共用同一注册表。
 
-依赖方向：engines 层拥有本协议与注册表；``src/extensions`` 的 TTSBackend
-接口仅声明匹配这些方法的默认实现（不反向 import engines）。
+依赖方向（单向）：engines 层拥有本协议与注册表，且不得 import
+``src.extensions``——内置后端按 :func:`negotiate` 的鸭子类型实现即可，
+无需继承扩展框架的基类。``src.extensions`` 访问注册表时延迟导入本模块
+（extensions → engines 单向），不得出现反向 import。
 """
 
 from __future__ import annotations

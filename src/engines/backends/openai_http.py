@@ -27,7 +27,6 @@ from typing import Any
 
 from src.core.exceptions import NetworkError, PermanentError, TransientError
 from src.engines.tts_protocol import PROTOCOL, BackendCapabilities, backend_registry
-from src.extensions.base.interfaces.audio import TTSBackend
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +44,12 @@ def rate_to_speed(rate: str) -> float:
     return max(0.25, min(4.0, 1.0 + int(float(m.group(1))) / 100.0))
 
 
-class OpenAIHTTPBackend(TTSBackend):
-    """OpenAI 兼容 ``/audio/speech`` 后端。"""
+class OpenAIHTTPBackend:
+    """OpenAI 兼容 ``/audio/speech`` 后端。
+
+    按 ``ppc.tts.v1`` 协议鸭子类型实现（由 ``src.engines.tts_protocol``
+    协商），不继承 ``src.extensions`` 的插件基类——engines 层不依赖扩展框架。
+    """
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         opts = options or {}

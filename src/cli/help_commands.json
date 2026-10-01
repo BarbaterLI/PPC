@@ -119,6 +119,18 @@
       {
         "name": "--tts-proxy",
         "desc": "覆盖 config.yml 的 tts.anti_risk_control.proxy / Override tts.anti_risk_control.proxy"
+      },
+      {
+        "name": "--book",
+        "desc": "整书模式：批量完成后零解码装配单个带 ID3v2 章节标记的 <书名>.book.mp3（可跳章）"
+      },
+      {
+        "name": "--book-title",
+        "desc": "整书标题（缺省用输入目录名）"
+      },
+      {
+        "name": "--cast",
+        "desc": "多角色配音 cast.yml 路径（按角色分配音色，旁白/narrator 独立；覆盖配置 tts.cast_file）"
       }
     ],
     "see_also": [
@@ -587,6 +599,27 @@
       }
     ],
     "see_also": []
+  },
+  "doctor": {
+    "category": "其他",
+    "desc": "环境自诊断: Python/依赖/后端/ffmpeg/配置/目录/扩展 一键体检，异常项给修复提示。",
+    "usage": "ppc doctor [options]",
+    "examples": [
+      "ppc doctor",
+      "ppc doctor --no-network",
+      "ppc doctor -C config.yml"
+    ],
+    "options": [
+      {
+        "name": "--config, -C",
+        "desc": "要检查的配置文件路径"
+      },
+      {
+        "name": "--no-network",
+        "desc": "跳过网络可达性探测"
+      }
+    ],
+    "see_also": ["bench"]
   },
   "bench": {
     "category": "其他",

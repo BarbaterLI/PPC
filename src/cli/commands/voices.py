@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E

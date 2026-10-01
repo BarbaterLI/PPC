@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 from ...config import ConfigManager, get_preset_names
 from ...core.exceptions import CLIError

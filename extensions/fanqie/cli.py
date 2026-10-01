@@ -26,12 +26,10 @@ def register_cli(app: typer.Typer, extension: FanqieExtension) -> None:
         app: Typer 应用实例
         extension: FanqieExtension 实例
     """
-    # 延迟导入: src.cli.output 会传递性地触发 src.cli.typer_app 加载，
-    # 而 typer_app 模块级会调用 _build_ext_app() → extension.register_cli()。
-    # 若放在模块顶层，cli.py 尚未完成初始化，会触发 "partially initialized module" 循环导入。
-    # 放在函数体内，cli.py 模块级导入不含 typer_app 触发点，可安全完成加载。
-    from src.cli.design.tokens import ColorTokens, get_icon
-    from src.cli.output import console
+    # 延迟导入宿主公共接缝（src.cli.extension_api）：宿主 CLI 装配期间会加载
+    # 扩展的 register_cli，模块顶层导入会与 cli 包初始化顺序耦合；函数体内导入
+    # 保证插件模块可安全加载，且插件只依赖宿主的稳定公共 API 而非内部实现。
+    from src.cli.extension_api import ColorTokens, console, get_icon
 
     @app.command("install")
     def fanqie_install(

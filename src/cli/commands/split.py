@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 from ...config import ConfigManager, CustomRule, get_preset, get_preset_names
 from ...executors import SplitterExecutor

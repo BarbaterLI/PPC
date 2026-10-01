@@ -10,7 +10,7 @@ from pathlib import Path
 from ...executors.checkpoint import CheckpointManager
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E
-from ..typer_app import get_output
+from ..output import get_output
 
 
 def handle_resume(

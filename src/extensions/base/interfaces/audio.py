@@ -48,6 +48,9 @@ class TTSBackend(ABC):
     ``protocol_version`` / ``capabilities`` / ``list_voices`` / ``probe``
     为协议 v1 的可选能力面，均带安全默认实现——早期扩展无需改动即可通过
     协商（视为 v1 基线、无可选能力）。
+
+    本类面向扩展作者。宿主内置后端按协议鸭子类型实现、不继承本类，以保持
+    ``src.engines`` 不依赖扩展框架（见 ``src.engines.tts_protocol``）。
     """
 
     @abstractmethod

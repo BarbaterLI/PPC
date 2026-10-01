@@ -9,5 +9,16 @@
       "suggestion": 2
     },
     "scope": "d:/PPCs/11.0.0/main (whole project)"
+  },
+  {
+    "date": "2026-10-01",
+    "mode": "Architecture Audit",
+    "score": 74,
+    "findings": {
+      "critical": 1,
+      "warning": 2,
+      "suggestion": 1
+    },
+    "scope": "d:/PPCs/12.0.0/alpha/alpha src/engines + src/cli + src/extensions + extensions/fanqie"
   }
 ]

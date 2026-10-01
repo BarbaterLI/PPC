@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 from ...config import ConfigManager, get_preset
 from ...executors import TTSExecutor

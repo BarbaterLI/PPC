@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 
 def handle_webui(

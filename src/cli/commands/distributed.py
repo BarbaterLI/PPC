@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from src.cli.typer_app import get_output
+from src.cli.output import get_output
 
 from ...config import ConfigManager
 from ...distributed import (
