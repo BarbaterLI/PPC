@@ -28,7 +28,10 @@ from unittest.mock import Mock
 import pytest
 
 from src.extensions.base import SecurityLevel
-from src.extensions.executable_adapter import ExecutableExtensionAdapter
+from src.extensions.executable_adapter import (
+    ExecutableExtensionAdapter,
+    ExtensionUnhealthyError,
+)
 from src.extensions.ipc import IPCClient, IPCError, IPCRequest, IPCResponse, IPCServer, _read_line
 from src.extensions.package import ExtensionManifest
 from src.extensions.sandbox import SandboxConfig, SandboxContext
@@ -341,7 +344,8 @@ def test_ipc_connection_lost_triggers_on_error(
     assert adapter._failed is False
 
     with caplog.at_level(logging.ERROR, logger="src.extensions.executable_adapter"):
-        adapter.process("some text")
+        with pytest.raises(ExtensionUnhealthyError):
+            adapter.process("some text")
 
     # _failed 被标记为 True
     assert adapter._failed is True
@@ -491,10 +495,9 @@ def test_ipc_adapter_handles_connection_error(
     assert adapter._failed is False
 
     with caplog.at_level(logging.ERROR, logger="src.extensions.executable_adapter"):
-        result = adapter.process("test input")
+        with pytest.raises(ExtensionUnhealthyError):
+            adapter.process("test input")
 
-    # 返回 None（IPC 失败）
-    assert result is None
     # _failed 被标记为 True
     assert adapter._failed is True
     # ERROR 日志包含 "IPC connection lost" 和扩展名
@@ -641,3 +644,58 @@ def test_ipc_buffered_read_throughput_reasonable():
     # 10 轮 50KB 往返应在数秒内完成；设宽松上限 10s 防止偶发抖动误报，
     # 同时能捕捉到逐字节读取退化（旧实现下该用例会显著变慢）。
     assert elapsed < 10.0, f"缓冲读取往返过慢：{elapsed:.2f}s for 10x50KB"
+
+
+# ---------------------------------------------------------------------------
+# P2-16: 端口冲突/哈希碰撞时的跨扩展串扰防护（身份校验）
+# ---------------------------------------------------------------------------
+
+
+def test_client_skips_server_with_mismatched_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """扩展 A 占用同名基础端口时，扩展 B 的客户端不得连上 A。
+
+    场景：A/B 的派生端口相同（模拟名称哈希碰撞/端口顺延）。A 先绑定
+    ``port``，B 只能绑定 ``port+1``。旧实现中 B 的客户端会直接向 A 发请求
+    （请求串扰）；引入 identity 后，A 拒绝且客户端继续探测到 B。
+    """
+    # 取一个空闲端口，随后 A/B 都用它作为 base
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+        base_port = probe.getsockname()[1]
+    finally:
+        probe.close()
+
+    # A 的 base 恰好等于 B 的 base + 0 区间内的端口：B 的客户端会先探到 A。
+    def _fake_port(name: str) -> int:
+        return base_port if name.endswith("ext-a") else base_port + 1
+
+    monkeypatch.setattr("src.extensions.ipc.server._derive_port", _fake_port)
+    monkeypatch.setattr("src.extensions.ipc.client._derive_port", _fake_port)
+
+    a_calls: list[str] = []
+
+    server_a = IPCServer("ext-a", transport="socket")
+    server_a.on_request(lambda action, data: a_calls.append(action) or {"owner": "a"})
+    server_a.start()
+
+    server_b = IPCServer("ext-b", transport="socket")
+    server_b.on_request(lambda action, data: {"owner": "b"})
+    server_b.start()
+
+    try:
+        assert server_a.get_bound_port() == base_port
+        assert server_b.get_bound_port() == base_port + 1
+
+        client_b = IPCClient("ext-b", transport="socket", timeout=5.0)
+        response = client_b.send("process", {"text": "hello"})
+        client_b.close()
+    finally:
+        server_a.stop()
+        server_b.stop()
+
+    assert response["status"] == "ok"
+    assert response["result"] == {"owner": "b"}, "B 的请求被错误地发给了 A"
+    assert a_calls == [], "身份不匹配的服务端不得执行 handler"

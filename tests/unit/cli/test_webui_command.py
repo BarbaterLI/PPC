@@ -30,6 +30,16 @@ class TestWebUICommand:
         assert result.exit_code == 0
         assert "webui" in result.output
 
+    def test_webui_propagates_refusal_exit_code(self, monkeypatch: Any) -> None:
+        """非回环地址且无 token 时 ``run_webui`` 返回 1，CLI 必须以 1 退出。
+
+        P2-15：旧实现丢弃了 ``handle_webui`` 的返回值，打印拒绝提示后仍以
+        退出码 0 结束，脚本/CI 无法感知启动失败。
+        """
+        monkeypatch.setattr("src.web.runner.run_webui", lambda **kwargs: 1)
+        result = runner.invoke(app, ["webui", "--host", "0.0.0.0"])
+        assert result.exit_code == 1
+
     def test_webui_delegates_to_runner(self, monkeypatch: Any) -> None:
         captured: dict[str, Any] = {}
 
@@ -67,9 +77,13 @@ class TestPPCEntryCompat:
 
     def test_parse_webui_args_defaults(self) -> None:
         import ppc
+        from src.web.runner import DEFAULT_HOST
 
         host, port, debug, api_token = ppc._parse_webui_args(["ppc", "--webui"])
-        assert host == "0.0.0.0"
+        # 默认必须绑回环地址：`run_webui` 对「非回环 + 无 token」会直接拒绝启动，
+        # 因此把默认值设成 0.0.0.0 会让 `ppc --webui` 裸跑必然失败。
+        # 默认值单一事实源是 runner.DEFAULT_HOST，此处直接引用以免再次漂移。
+        assert host == DEFAULT_HOST == "127.0.0.1"
         assert port == 5000
         assert debug is False
         assert api_token is None

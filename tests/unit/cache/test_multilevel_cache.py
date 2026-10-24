@@ -16,6 +16,8 @@ Task 24:
 
 from __future__ import annotations
 
+import logging
+
 from src.cache.multilevel_cache import (
     _MISSING,
     CacheLevel,
@@ -314,6 +316,95 @@ class TestL2CorruptEntryDeleted:
         # L2 should report a miss, not a hit (the corrupt entry is gone)
         assert cache._stats.l2_hits == 0
         assert cache._stats.l2_misses == 1
+
+
+class TestL2TypePreservation:
+    """S4: L2 往返必须保持类型，且不得用 str() 静默降级。"""
+
+    @staticmethod
+    def _make_cache(tmp_path):
+        return MultiLevelCache(
+            {
+                "l1_max_size_mb": 10,
+                "l2_cache_dir": str(tmp_path / "ml"),
+                "l2_max_size_mb": 10,
+            }
+        )
+
+    def test_tuple_and_set_round_trip_through_l2(self, tmp_path):
+        cache = self._make_cache(tmp_path)
+        value = {"a": (1, 2), "s": {3, 4}}
+        assert cache.set("k", value)
+
+        # L1 命中：原类型
+        assert cache.get("k") == value
+
+        # 清空 L1，强制从 L2 回读
+        cache.l1.clear()
+        restored = cache.get("k")
+        assert restored == value
+        assert isinstance(restored["a"], tuple)
+        assert isinstance(restored["s"], set)
+
+    def test_nested_containers_round_trip(self, tmp_path):
+        cache = self._make_cache(tmp_path)
+        value = {"nested": [(1, 2), {"x": (3,)}], "fs": frozenset({5})}
+        assert cache.set("k", value)
+        cache.l1.clear()
+        restored = cache.get("k")
+        assert restored["nested"] == [(1, 2), {"x": (3,)}]
+        assert isinstance(restored["nested"][0], tuple)
+        assert isinstance(restored["fs"], frozenset)
+
+    def test_custom_object_skips_l2_instead_of_stringifying(self, tmp_path, caplog):
+        class _Custom:
+            def __str__(self) -> str:  # pragma: no cover - 不应被调用
+                return "custom-str"
+
+            __repr__ = __str__
+
+        cache = self._make_cache(tmp_path)
+        obj = _Custom()
+
+        with caplog.at_level(logging.DEBUG, logger="src.cache.multilevel"):
+            assert cache.set("k", {"obj": obj})
+
+        # 只保留 L1，L2 不写入（更不得写入 "custom-str"）
+        assert "k" not in cache.l2._metadata
+        assert any("Skipped L2 cache" in r.message for r in caplog.records)
+
+        # L1 仍是原对象
+        assert cache.get("k")["obj"] is obj
+
+        # L1 淘汰后是干净的 L2 miss，而不是字符串
+        cache.l1.clear()
+        assert cache.get("k") is None
+
+    def test_non_serializable_overwrite_removes_stale_l2_entry(self, tmp_path):
+        cache = self._make_cache(tmp_path)
+        assert cache.set("k", {"old": [1, 2]})
+        assert "k" in cache.l2._metadata
+
+        class _Custom:
+            pass
+
+        assert cache.set("k", {"obj": _Custom()})
+        # 旧 L2 条目必须被清除，否则 L1 淘汰后会读到陈旧数据
+        assert "k" not in cache.l2._metadata
+        cache.l1.clear()
+        assert cache.get("k") is None
+
+    def test_legacy_plain_json_l2_entry_still_readable(self, tmp_path):
+        """兼容旧版本写入的纯 JSON 数据（无类型标记）。"""
+        import json
+        from pathlib import Path
+
+        cache = self._make_cache(tmp_path)
+        assert cache.set("k", ["legacy"])  # 先建元数据/文件
+        entry = cache.l2._metadata["k"]
+        Path(entry.file_path).write_bytes(json.dumps({"a": [1, 2]}).encode("utf-8"))
+        cache.l1.clear()
+        assert cache.get("k") == {"a": [1, 2]}
 
 
 class TestMemoryCacheUpdateEviction:

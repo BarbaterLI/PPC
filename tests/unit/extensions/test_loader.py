@@ -544,6 +544,73 @@ def test_audit_log_on_disable(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# P2-19: 同名扩展覆盖时必须清理旧实例/旧模块
+# ---------------------------------------------------------------------------
+
+DUPLICATE_EXT_SOURCE = '''"""Two directories produce the same extension name."""
+import sys
+
+from src.extensions.base import Extension, ExtensionMetadata
+
+
+class DuplicateExtension(Extension):
+    def __init__(self):
+        super().__init__(ExtensionMetadata(
+            name="dup-ext",
+            version="1.0.0",
+            description="duplicate name test",
+        ))
+        self.cleanup_called = False
+
+    async def initialize(self) -> None:
+        self._initialized = True
+
+    async def cleanup(self) -> None:
+        self._initialized = False
+        self.cleanup_called = True
+
+
+extension = DuplicateExtension()
+'''
+
+
+def test_duplicate_name_override_cleans_previous_instance(tmp_path: Path):
+    """同名扩展被覆盖时，旧实例 cleanup 被调用且旧模块离开 sys.modules。"""
+    import sys
+
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    ext_a = dir_a / "dup.py"
+    ext_b = dir_b / "dup.py"
+    ext_a.write_text(DUPLICATE_EXT_SOURCE, encoding="utf-8")
+    ext_b.write_text(DUPLICATE_EXT_SOURCE, encoding="utf-8")
+
+    loader = ExtensionLoader()
+    try:
+        _run(loader._load_extension_from_file(ext_a))
+        old = loader.get_extension("dup-ext")
+        assert old is not None
+        old_module = loader._extension_modules["dup-ext"]
+        assert old_module in sys.modules
+
+        _run(loader._load_extension_from_file(ext_b))
+
+        new = loader.get_extension("dup-ext")
+        assert new is not old
+        assert old.cleanup_called is True, "旧实例的 cleanup 未被调用"
+        assert old_module not in sys.modules, "旧动态模块仍残留在 sys.modules"
+        assert loader._extension_modules["dup-ext"] != old_module
+
+        _run(loader.clear())
+        assert "dup-ext" not in loader.get_loaded_extensions()
+        assert loader._registered_module_names == set()
+    finally:
+        _run(loader.clear())
+
+
+# ---------------------------------------------------------------------------
 # unload(name) 测试
 # ---------------------------------------------------------------------------
 

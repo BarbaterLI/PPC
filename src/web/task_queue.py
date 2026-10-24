@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -7,10 +8,17 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from queue import Queue
+from queue import Empty, Full, Queue
 from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
 
 
 class TaskStatus(Enum):
@@ -230,6 +238,9 @@ class TaskStore:
 class EventBroker:
     """进度订阅 / 事件推送：管理任务订阅者队列与 SSE 事件流。"""
 
+    # 订阅队列上限：慢消费者（前端断开前堆积）不会无限占用内存。
+    SUBSCRIBER_QUEUE_MAXSIZE = 1000
+
     def __init__(self, store: TaskStore) -> None:
         self._store = store
 
@@ -238,9 +249,47 @@ class EventBroker:
             task = self._store._tasks.get(task_id)
             if task is None:
                 return None
-            q: Queue = Queue()
+            q: Queue = Queue(maxsize=self.SUBSCRIBER_QUEUE_MAXSIZE)
             task._subscribers.append(q)
             return q
+
+    def unsubscribe(self, task_id: str, q: Queue | None) -> None:
+        """注销订阅者（幂等）。
+
+        C2（P1）：触发条件——SSE 流结束（任务终态）或客户端断连后 EventSource
+        自动重连。修复前 ``subscribe()`` 只追加、全项目没有注销路径，Queue 与
+        积压消息随重连无限累积（内存泄漏），``publish`` 还要遍历所有死队列。
+        用 ``list.remove`` 定位（O(订阅者数) 的一次性操作），避免每次 publish
+        全表扫描；任务已被历史清理或重复注销都静默返回。
+        """
+        if q is None:
+            return
+        with self._store._lock:
+            task = self._store._tasks.get(task_id)
+            if task is None:
+                return
+            try:
+                task._subscribers.remove(q)
+            except ValueError:
+                return
+
+    def _enqueue(self, q: Queue, item: Any) -> None:
+        """有界入队：满则丢弃最旧一条，保证最新状态与终止信号不被饿死。
+
+        进度消息具有「最新优先」语义（旧进度无意义），故丢弃最旧；
+        终止信号 ``None`` 与终态事件同理强制入队，避免 SSE 流永不结束。
+        """
+        try:
+            q.put_nowait(item)
+        except Full:
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
+            try:
+                q.put_nowait(item)
+            except Full:
+                pass
 
     def publish(self, subscribers: list[Queue], event: str, data: dict[str, Any]) -> None:
         message = json.dumps({"event": event, "data": data})
@@ -248,37 +297,55 @@ class EventBroker:
         # manager lock; iterate the snapshot directly to avoid holding the
         # lock during subscriber callbacks.
         for q in subscribers:
-            q.put(message)
+            self._enqueue(q, message)
         if event in ("complete", "error"):
             for q in subscribers:
-                q.put(None)
+                self._enqueue(q, None)
 
 
 class TaskRunner:
-    """执行与线程管理：为每个任务启动后台线程并驱动 handler 跑完。"""
+    """执行与线程管理：为每个任务启动后台线程并驱动 handler 跑完。
+
+    用有界并发信号量钳制同时运行的任务数：超限的任务直接失败（而非无限
+    堆积线程/内存），同时保留 daemon 线程语义（进程可正常退出）。
+    并发上限由环境变量 ``PPC_WEB_MAX_TASKS`` 控制，默认 8。
+    """
 
     def __init__(
         self,
         store: TaskStore,
         broker: EventBroker,
         registry: TaskHandlerRegistry,
+        max_concurrent_tasks: int | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
         self._registry = registry
+        self._max_concurrent_tasks = max_concurrent_tasks or _env_int("PPC_WEB_MAX_TASKS", 8)
+        self._slots = threading.BoundedSemaphore(self._max_concurrent_tasks)
 
     def create_task(self, task_type: str, params: dict[str, Any] | None = None) -> str:
         task_id = uuid.uuid4().hex
         self._store.add(TaskInfo(task_id=task_id, task_type=task_type, params=params or {}))
 
         thread = threading.Thread(
-            target=self._run_task,
+            target=self._run_task_guarded,
             args=(task_id, task_type, params or {}),
             daemon=True,
         )
         thread.start()
 
         return task_id
+
+    def _run_task_guarded(self, task_id: str, task_type: str, params: dict[str, Any]):
+        """占用并发槽位执行任务；无空闲槽位时立即失败，避免线程无限堆积。"""
+        if not self._slots.acquire(blocking=False):
+            self._fail(task_id, "任务队列已满，请稍后重试 / task queue is full")
+            return
+        try:
+            self._run_task(task_id, task_type, params)
+        finally:
+            self._slots.release()
 
     def _run_task(self, task_id: str, task_type: str, params: dict[str, Any]):
         handler = self._registry.get(task_type)
@@ -348,6 +415,10 @@ class TaskManager:
 
     def subscribe(self, task_id: str) -> Queue | None:
         return self.broker.subscribe(task_id)
+
+    def unsubscribe(self, task_id: str, q: Queue | None) -> None:
+        """注销 SSE 订阅者；SSE 生成器的 ``finally`` 中调用，避免重连累积。"""
+        self.broker.unsubscribe(task_id, q)
 
     def is_cancelled(self, task_id: str) -> bool:
         task = self.store.get(task_id)

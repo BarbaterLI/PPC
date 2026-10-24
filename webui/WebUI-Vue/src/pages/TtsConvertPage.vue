@@ -55,6 +55,7 @@ interface ConvertFormData {
   resume: boolean
   tts_backend: string
   tts_proxy: string
+  segment_bitrate: string
 }
 
 const INITIAL_FORM: ConvertFormData = {
@@ -67,6 +68,7 @@ const INITIAL_FORM: ConvertFormData = {
   resume: false,
   tts_backend: 'auto',
   tts_proxy: '',
+  segment_bitrate: '',
 }
 
 const CONNECTION_TIMEOUT = 300000
@@ -161,6 +163,7 @@ const handleStartConvert = async () => {
       resume: form.resume,
       tts_backend: form.tts_backend,
       tts_proxy: form.tts_proxy,
+      segment_bitrate: form.segment_bitrate || undefined,
     })
     if (result.success === false) {
       throw new Error(result.error?.message || '创建任务失败')
@@ -427,6 +430,19 @@ const formatDuration = (seconds: number): string => {
                 PlaceholderText="http://127.0.0.1:7890"
                 :ShowDeleteButton="false"
                 @update:Text="(v: string) => (form.tts_proxy = v)"
+              />
+            </div>
+
+            <!-- 输出比特率 -->
+            <div class="ppc-form-group">
+              <WinTextBlock class="ppc-form-label" :Text="'输出比特率'" />
+              <WinTextBlock class="ppc-form-desc" FontSize="12" :Text="'合并输出 MP3 比特率，如 48k/64k/96k/128k'" />
+              <WinTextBox
+                :Text="form.segment_bitrate"
+                :IsEnabled="!submitting"
+                PlaceholderText="48k（默认）"
+                :ShowDeleteButton="false"
+                @update:Text="(v: string) => (form.segment_bitrate = v)"
               />
             </div>
           </div>

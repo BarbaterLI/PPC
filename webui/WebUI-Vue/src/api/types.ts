@@ -61,6 +61,17 @@ export interface Task {
   progress_message?: string
 }
 
+export interface PagedTasks {
+  items: Task[]
+  total: number
+}
+
+export interface TaskListQuery {
+  status?: TaskStatus
+  limit?: number
+  offset?: number
+}
+
 export interface ConvertTaskParams {
   input_dir: string
   output_dir: string
@@ -71,6 +82,7 @@ export interface ConvertTaskParams {
   rate?: string
   tts_backend?: string
   tts_proxy?: string
+  segment_bitrate?: string
   recursive?: boolean
   resume?: boolean
 }

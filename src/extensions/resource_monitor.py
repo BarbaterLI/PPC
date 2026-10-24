@@ -22,6 +22,10 @@ from src.extensions.process_manager import ExecutableProcessManager
 
 logger = logging.getLogger(__name__)
 
+# 连续 N 次 psutil 瞬时异常后停止监控（避免无限刷 warning）。
+# 单次瞬时异常只跳过本轮，不终止监控。
+_MAX_CONSECUTIVE_CHECK_ERRORS = 5
+
 
 class ResourceMonitor:
     """资源监控器：检查 CPU / 内存 / 超时，超限则终止进程。"""
@@ -66,6 +70,7 @@ class ResourceMonitor:
 
         start_time = time.time()
         proc = self._prime_psutil_process(process)
+        consecutive_errors = 0
 
         while True:
             # 进程已退出 → 退出监控
@@ -77,10 +82,25 @@ class ResourceMonitor:
             ):
                 return
 
-            if self._check_cpu_memory(
+            should_exit, check_failed = self._check_cpu_memory(
                 manifest.name, process, adapter, proc, max_cpu, max_memory_mb
-            ):
+            )
+            if should_exit:
                 return
+
+            if check_failed:
+                # 触发条件：单次 psutil 瞬时异常（AccessDenied 等）。
+                # 后果：旧实现直接 return，此后 timeout/CPU/内存全部不再
+                # 检查；这里只跳过本轮，连续失败达到上限才停止监控。
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_CHECK_ERRORS:
+                    logger.error(
+                        f"Resource monitoring for '{manifest.name}' stopped after "
+                        f"{consecutive_errors} consecutive psutil errors"
+                    )
+                    return
+            else:
+                consecutive_errors = 0
 
             time.sleep(poll_interval)
 
@@ -126,10 +146,19 @@ class ResourceMonitor:
         proc,
         max_cpu,
         max_memory_mb,
-    ) -> bool:
-        """CPU / 内存检查（需要 psutil）：返回 True 表示已终止进程、监控应退出。"""
+    ) -> tuple[bool, bool]:
+        """CPU / 内存检查（需要 psutil）。
+
+        返回:
+            ``(should_exit, check_failed)``：
+
+            * ``should_exit=True``：已终止进程（超限）或进程已消失，
+              监控应退出
+            * ``check_failed=True``：本轮遇到可恢复的 psutil 瞬时异常，
+              调用方应跳过本轮继续监控
+        """
         if not _PSUTIL_AVAILABLE or proc is None:
-            return False
+            return False, False
         try:
             if max_cpu is not None:
                 cpu = proc.cpu_percent()
@@ -140,7 +169,7 @@ class ResourceMonitor:
                         f"{cpu}% > {max_cpu}%"
                     )
                     adapter._failed = True
-                    return True
+                    return True, False
 
             if max_memory_mb is not None:
                 mem_info = proc.memory_info()
@@ -152,8 +181,19 @@ class ResourceMonitor:
                         f"{mem_mb:.1f}MB > {max_memory_mb}MB"
                     )
                     adapter._failed = True
-                    return True
-        except Exception:
-            # psutil.NoSuchProcess / AccessDenied 等：进程可能已退出
-            return True
-        return False
+                    return True, False
+        except psutil.NoSuchProcess:  # type: ignore[union-attr]
+            # 进程真的没了 → 正常退出监控
+            logger.debug(f"Process for executable '{name}' no longer exists")
+            return True, False
+        except Exception as e:  # noqa: BLE001
+            # 触发条件：Windows 上 AccessDenied / ZombieProcess 等瞬时错误
+            # （进程仍存活）。
+            # 后果：旧实现 return True 被当成“监控退出”，一次抖动后
+            # timeout/CPU/内存限制全部失效；现在只跳过本轮。
+            logger.warning(
+                f"Transient psutil error while monitoring '{name}' "
+                f"({type(e).__name__}: {e}), skipping this poll"
+            )
+            return False, True
+        return False, False

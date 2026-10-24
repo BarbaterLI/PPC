@@ -36,13 +36,15 @@ class CommunicateAdapter:
         *,
         anti_risk_config: AntiRiskControlConfig | None = None,
         muid_manager: MuidManager | None = None,
-        shared_connector: Any | None = None,
         ua_health_filter: UAHealthFilter | None = None,
+        exclude_uas: set[str] | None = None,
     ) -> None:
         self._communicate = communicate
         self._config = anti_risk_config
         self._muid_manager = muid_manager
-        self._shared_connector = shared_connector
+        # UA 切换验证已尝试过的 UA：从候选池中排除，确保每次重试落到
+        # 一个真正的新 UA 上（见 ``_retry_on_no_audio``）。
+        self._exclude_uas: frozenset[str] = frozenset(exclude_uas or ())
         self._ua_health_filter = ua_health_filter
         # Tracks the UA selected in the most recent ``stream()`` call,
         # so callers (e.g. ``_synthesize_single_voice``) can inspect it
@@ -86,7 +88,16 @@ class CommunicateAdapter:
                 try:
                     # Filter out unhealthy UAs; fall back to full pool
                     # if all are unhealthy (better to try than to skip).
+                    # 先排除本次合成中已验证失败过的 UA（UA 切换验证），
+                    # 再按健康状况过滤；若排除后为空（池中 UA 都试过了），
+                    # 保留原池以便仍有重试机会。
                     pool = self._config.user_agents
+                    if self._exclude_uas:
+                        remaining = [
+                            ua for ua in pool if ua not in self._exclude_uas
+                        ]
+                        if remaining:
+                            pool = remaining
                     if self._ua_health_filter is not None:
                         healthy = self._ua_health_filter.filter_healthy(pool)
                         if healthy:

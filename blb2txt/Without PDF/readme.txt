@@ -1,0 +1,1 @@
+Use this variant if it is not necessary to extract text and images from PDF files.

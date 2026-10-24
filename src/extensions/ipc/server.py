@@ -10,7 +10,12 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from src.extensions.ipc.messages import IPCError, IPCRequest, IPCResponse
+from src.extensions.ipc.messages import (
+    IDENTITY_MISMATCH,
+    IPCError,
+    IPCRequest,
+    IPCResponse,
+)
 from src.extensions.ipc.protocol import (
     DEFAULT_TIMEOUT,
     _derive_port,
@@ -59,6 +64,8 @@ class IPCServer:
         self._accept_thread: threading.Thread | None = None
         self._connections: list[socket.socket] = []
         self._lock = threading.Lock()
+        # 旧客户端（不发 identity）只提示一次，避免每次请求刷 warning。
+        self._legacy_identity_warned = False
 
     @property
     def transport(self) -> str:
@@ -274,6 +281,38 @@ class IPCServer:
                 except IPCError:
                     return
                 continue
+
+            # P2-16: 身份校验。端口由名称哈希派生且冲突时顺延，客户端按
+            # 自己的 base 端口顺序探测，可能先连到另一个扩展的服务端。
+            # 触发条件：请求携带的 identity 与本服务端 pipe_name 不一致。
+            # 后果：拒绝并关闭连接；客户端收到 IDENTITY_MISMATCH 后继续探测
+            # 下一个端口，从根上避免跨扩展请求串扰/握手错配。
+            if msg.identity:
+                if msg.identity != self._pipe_name:
+                    logger.warning(
+                        "IPCServer 拒绝跨扩展连接 (name=%s, client_identity=%s)",
+                        self._pipe_name,
+                        msg.identity,
+                    )
+                    mismatch = IPCResponse.failure(
+                        msg.id,
+                        f"{IDENTITY_MISMATCH}: expected={self._pipe_name}, got={msg.identity}",
+                    )
+                    try:
+                        transport.send(
+                            (json.dumps(mismatch.to_dict()) + "\n").encode("utf-8")
+                        )
+                    except IPCError:
+                        pass
+                    return
+            elif not self._legacy_identity_warned:
+                # 向后兼容：旧客户端不发送 identity，按原行为继续处理。
+                self._legacy_identity_warned = True
+                logger.warning(
+                    "IPCServer 收到未携带 identity 的旧客户端请求 (name=%s)，"
+                    "按旧协议继续处理；建议升级客户端以避免跨扩展串扰",
+                    self._pipe_name,
+                )
 
             # 分发到 handler
             resp = self._dispatch(msg)

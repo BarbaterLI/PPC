@@ -20,8 +20,30 @@ from src.config.migration import ConfigMigrator
 from src.config.presets import COMMENTED_YAML_TEMPLATE, get_preset
 from src.config.schemas import PPCConfig
 from src.utils.core import deep_merge as _deep_merge
+from src.utils.core import fill_missing
 
 logger = logging.getLogger(__name__)
+
+
+# 已废弃的配置键：仅保留在 schema 中以兼容旧配置文件，任何写盘路径都
+# 不再输出。``shared_connector`` 从未真正生效（详见 AntiRiskControlConfig
+# 字段注释），继续写出会误导用户以为连接复用已开启。
+_DEPRECATED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    ("tts", "anti_risk_control", "shared_connector"),
+)
+
+
+def _drop_deprecated_keys(config_dict: dict[str, Any]) -> None:
+    """递归删除已废弃的配置键（就地修改）。"""
+    for path in _DEPRECATED_CONFIG_PATHS:
+        node: Any = config_dict
+        for key in path[:-1]:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        if isinstance(node, dict):
+            node.pop(path[-1], None)
 
 
 def load_config_from_file(manager: ConfigStoreProtocol) -> PPCConfig:
@@ -46,7 +68,8 @@ def load_config_dict_from_file(manager: ConfigStoreProtocol) -> dict[str, Any]:
             config_dict = _deep_merge(config_dict, migrated)
 
     if manager.config_path.exists():
-        config_dict = _deep_merge(config_dict, _load_from_file(manager.config_path))
+        raw_config = _load_from_file(manager.config_path)
+        config_dict = _deep_merge(config_dict, _migrate_yaml_if_needed(manager.config_path, raw_config))
 
     if manager._temp_overrides:
         config_dict = _deep_merge(config_dict, manager._temp_overrides)
@@ -65,6 +88,35 @@ def _load_from_file(path: Path) -> dict[str, Any]:
     except Exception as e:
         logger.error("加载配置文件失败: %s, 错误: %s", path, e)
         return {}
+
+
+def _migrate_yaml_if_needed(path: Path, raw_config: Any) -> Any:
+    """按 ``config.yml`` 的 ``version`` 字段决定是否执行迁移链。
+
+    触发条件：磁盘上的 config.yml 仍为 8.x / 11.x（12.x 之前的 YAML 版本）。
+    后果：旧实现只在 PPC5 的 INI 路径调用 ``migrate(..., "5.0")``，
+    ``migrate_v11_to_v12`` 永不执行——v11 的 ``features`` / ``webhook`` /
+    ``rate_limit`` 不被剥离、version 不升级、无 ``_migrated_from`` 元数据。
+    迁移失败或版本未知时原样返回，保证加载永不因迁移而中断。
+    """
+    if not isinstance(raw_config, dict):
+        return raw_config
+
+    version = raw_config.get("version")
+    key = ConfigMigrator.version_key(version)
+    if key not in ("8.0", "11.0"):
+        return raw_config
+
+    try:
+        migrated = ConfigMigrator().migrate_chain(path, version)
+    except Exception as e:  # noqa: BLE001 - 迁移失败不应阻断配置加载
+        logger.error("配置迁移链执行失败，沿用原始配置: %s", e)
+        return raw_config
+
+    if migrated:
+        logger.info("配置文件已迁移: %s (%s -> %s)", path, version, migrated.get("version"))
+        return migrated
+    return raw_config
 
 
 def _migrate_from_ppc5(ppc5_path: Path) -> dict[str, Any]:
@@ -93,10 +145,13 @@ def save_config_to_file(manager: ConfigStoreProtocol) -> bool:
         # 保留 schema 外的未知（legacy）键，与 manager_access._normalize_dict
         # “避免丢配置”的语义一致。model_dump 只含 schema 字段，若不把
         # _config_dict 中的未知键补回，_update_commented_map 会把它们从文件删除
-        # ——内存保留、保存即丢（legacy 键如 ui: 在首次 set 后从 config.yml 消失）。
-        for key, value in (manager._config_dict or {}).items():
-            if key not in config_dict:
-                config_dict[key] = value
+        # ——内存保留、保存即丢。必须是**递归**补全：legacy 键也可能在嵌套层
+        # （core.mode / core.temp_dir 等）。
+        fill_missing(config_dict, manager._config_dict or {})
+        # fill_missing 会把旧文件里的 shared_connector 重新补回（它属于
+        # schema 外保留键的补全逻辑），因此必须在补全之后再剔除，确保
+        # 保存结果不再写出已废弃的键。
+        _drop_deprecated_keys(config_dict)
         config_dict["version"] = manager.CONFIG_VERSION
         config_dict["_saved_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -106,15 +161,18 @@ def save_config_to_file(manager: ConfigStoreProtocol) -> bool:
                 "ruamel.yaml 不可用或序列化失败，回退到 yaml.dump（配置文件注释将丢失）；"
                 "建议安装 ruamel.yaml 以保留注释"
             )
-            with manager.config_path.open("w", encoding="utf-8") as f:
+
+            def _dump_plain(fh) -> None:
                 yaml.dump(
                     config_dict,
-                    f,
+                    fh,
                     allow_unicode=True,
                     indent=2,
                     default_flow_style=False,
                     Dumper=yaml.SafeDumper,
                 )
+
+            _atomic_write(manager.config_path, _dump_plain)
 
         manager._dirty = False
         logger.info("配置已保存: %s", manager.config_path)
@@ -125,12 +183,40 @@ def save_config_to_file(manager: ConfigStoreProtocol) -> bool:
         return False
 
 
+def _atomic_write(path: Path, write_fn) -> None:
+    """以「临时文件 + os.replace」原子地写出文件。
+
+    直接 ``open("w")`` 覆盖时若进程中断/断电，``config.yml`` 会被截断，
+    下次启动 ``_load_from_file`` 会静默返回 ``{}``，用户配置整体回退到预设
+    默认值。此处保证任一时刻磁盘上要么是旧内容、要么是完整新内容。
+
+    参数:
+        path: 目标文件路径。
+        write_fn: 接收已打开的文件对象、负责写入内容的可调用对象。
+    """
+    import os
+
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            write_fn(fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _save_with_ruamel(manager, config_dict: dict[str, Any]) -> bool:
     """使用 ruamel.yaml 往返序列化保留注释。
 
     读取现有 config.yml（若存在）以保留注释，遍历 ``config_dict`` 原地更新
     ruamel 结构。ruamel 不可用或序列化失败时返回 ``False``，由调用方回退到
-    ``yaml.dump``。
+    ``yaml.dump``。写出走原子替换，避免中断导致配置截断。
     """
     try:
         from ruamel.yaml import YAML
@@ -153,12 +239,24 @@ def _save_with_ruamel(manager, config_dict: dict[str, Any]) -> bool:
 
         _update_commented_map(existing_data, config_dict, CommentedMap, CommentedSeq)
 
-        with manager.config_path.open("w", encoding="utf-8") as f:
-            yaml_engine.dump(existing_data, f)
+        _atomic_write(manager.config_path, lambda fh: yaml_engine.dump(existing_data, fh))
         return True
     except Exception as ruamel_exc:
         logger.warning("ruamel.yaml 序列化失败，将回退到 yaml.dump: %s", ruamel_exc)
         return False
+
+
+def _plain(value: Any) -> Any:
+    """把 ruamel 的 CommentedMap / CommentedSeq 递归降级为普通 dict / list。
+
+    仅用于内容比对：ruamel 的容器携带注释、锚点等元数据，直接比较会因包装类型
+    不同而误判为「有变化」。
+    """
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
 
 
 def _update_commented_map(target, source: dict[str, Any], CommentedMap, CommentedSeq) -> None:
@@ -167,7 +265,9 @@ def _update_commented_map(target, source: dict[str, Any], CommentedMap, Commente
     - 已存在的 dict 键：递归更新，保留注释
     - 新增的 dict 键：追加到末尾
     - 不再存在的键：从 target 移除
-    - 列表：整体替换为新的 CommentedSeq（列表项注释无法可靠保留）
+    - 列表：**内容未变时保留原 ``CommentedSeq`` 对象**（仅内容变化才重建）
+      —— 无条件整段替换会割断 ruamel 的注释锚点，导致保存后注释错位/丢失
+      （实测：模板内容完全不变时也会 421→349 行、注释 183→147）。
     """
     # 移除不再存在的键
     for key in list(target.keys()):
@@ -180,6 +280,10 @@ def _update_commented_map(target, source: dict[str, Any], CommentedMap, Commente
                 target[key] = CommentedMap()
             _update_commented_map(target[key], value, CommentedMap, CommentedSeq)
         elif isinstance(value, list):
+            existing = target.get(key) if hasattr(target, "get") else None
+            if isinstance(existing, list) and _plain(existing) == _plain(value):
+                # 内容一致：保留原对象与注释，避免无谓重写
+                continue
             new_seq = CommentedSeq()
             for item in value:
                 if isinstance(item, dict):
@@ -205,6 +309,7 @@ def save_commented_config(manager: ConfigStoreProtocol):
 def export_config(manager: ConfigStoreProtocol, output_path: Path) -> bool:
     try:
         config_dict = manager._config.model_dump(mode="json")
+        _drop_deprecated_keys(config_dict)
         content = yaml.dump(config_dict, allow_unicode=True, indent=2)
         signature = _compute_config_signature(content)
         signed_content = _CONFIG_SIGNATURE_MARKER + signature + "\n" + content

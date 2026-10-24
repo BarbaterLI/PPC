@@ -509,7 +509,17 @@ class ChapterWriter:
         return fmt.format(volume=volume_title, index=f"{volume_index:02d}")
 
     def write_chapter(self, output_file: Path, chapter: ChapterInfo) -> Path:
-        """写入章节文件，返回实际写入的文件路径"""
+        """写入章节文件，返回实际写入的文件路径。
+
+        标题行来源：``ChapterSplitter`` 产出的 ``chapter.content`` 已包含标题行
+        （``start_line`` 即标题所在行，首章并入前言时标题行在正文中间）。
+        旧实现无条件先写 ``chapter.title`` + 分隔线再写 ``content``，
+        触发条件为「章节正文里本来就有标题行」（即绝大多数章节），后果是
+        每个章节文件形如 ``第一章 开端\\n====\\n\\n第一章 开端\\n正文…``，
+        下游 TTS 会把章节名读两遍。此处改为：正文里已含标题行则原样保留，
+        只按配置在该行后插入分隔线；仅当正文完全不含标题（理论上不应出现）
+        时才补写标题行。
+        """
         volume_dir = None
         if chapter._volume_title:
             vol_index = chapter._volume_index or 0
@@ -521,16 +531,52 @@ class ChapterWriter:
         else:
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
+        add_separator = self.config.split.add_title_separator
+        lines = chapter.content.split("\n")
+        title = chapter.title.strip()
+        title_idx = self._find_title_line(lines, title)
+
         with output_file.open("w", encoding="utf-8") as f:
-            f.write(f"{chapter.title}\n")
-            if self.config.split.add_title_separator:
-                f.write("=" * len(chapter.title) * 2 + "\n\n")
+            if title_idx is None:
+                # 兜底：正文不含标题行（如"全文"回退章节）→ 补写一次标题
+                f.write(f"{chapter.title}\n")
+                if add_separator:
+                    f.write("=" * len(chapter.title) * 2 + "\n\n")
+                else:
+                    f.write("\n")
+                f.write(chapter.content)
             else:
-                f.write("\n")
-            f.write(chapter.content)
+                out_lines: list[str] = []
+                for i, line in enumerate(lines):
+                    out_lines.append(line)
+                    if i == title_idx and add_separator:
+                        out_lines.append("=" * len(line.strip()) * 2)
+                        out_lines.append("")
+                f.write("\n".join(out_lines))
             f.write("\n")
 
         return output_file
+
+    @staticmethod
+    def _find_title_line(lines: list[str], title: str) -> int | None:
+        """在正文行中定位标题行索引（不存在返回 ``None``）。
+
+        判定顺序：整行等于标题（内置规则下 ``title`` 即原始标题行，精确）；
+        否则在前 10 行内找以标题开头/结尾的行（自定义规则做了
+        ``title_prefix_remove`` 等提取时，标题只是原始行的一部分）。
+        限制行数是为了避免正文句子里偶然出现标题词导致误判。
+        """
+        if not title:
+            return None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped == title:
+                return i
+            if i < 10 and (stripped.startswith(title) or stripped.endswith(title)):
+                return i
+        return None
 
 
 __all__ = [

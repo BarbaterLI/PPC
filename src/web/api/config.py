@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import tempfile
@@ -18,13 +19,12 @@ config_bp = Blueprint("config", __name__, url_prefix="/api/config")
 def get_all_config():
     try:
         from src.config.manager_core import get_default_manager
-        from src.config.schemas import PPCConfig
 
         mgr = get_default_manager()
         config_dict = mgr.get_all()
 
         flat_items = []
-        schema_map = _build_schema_map(PPCConfig)
+        schema_map = _get_schema_map()
         _flatten_config(config_dict, "", flat_items, schema_map=schema_map)
 
         return success_response(flat_items)
@@ -59,8 +59,15 @@ def update_config():
         if not data or "key" not in data or "value" not in data:
             return error_response("Missing 'key' or 'value' in request body", code="BAD_REQUEST", status_code=400)
 
+        if request.content_length and request.content_length > 1 * 1024 * 1024:
+            return error_response("Body size exceeds 1MB limit", code="BAD_REQUEST", status_code=400)
+
         key = data["key"]
         value = data["value"]
+
+        validation_error = _validate_config_value(key, value, _get_schema_map())
+        if validation_error:
+            return error_response(validation_error, code="VALIDATION_ERROR", status_code=400)
 
         mgr = get_default_manager()
         success = mgr.set(key, value)
@@ -89,7 +96,11 @@ def batch_update_config():
                 status_code=400,
             )
 
+        if request.content_length and request.content_length > 1 * 1024 * 1024:
+            return error_response("Body size exceeds 1MB limit", code="BAD_REQUEST", status_code=400)
+
         mgr = get_default_manager()
+        schema_map = _get_schema_map()
         updated_keys = []
         failed = []
 
@@ -99,6 +110,10 @@ def batch_update_config():
                 continue
             key = item["key"]
             value = item["value"]
+            validation_error = _validate_config_value(key, value, schema_map)
+            if validation_error:
+                failed.append({"key": key, "error": validation_error})
+                continue
             try:
                 success = mgr.set(key, value)
                 if success:
@@ -354,6 +369,56 @@ def _build_schema_map(model_cls) -> dict[str, dict]:
 
     walk(schema.get("properties", {}), "")
     return result
+
+
+@functools.lru_cache(maxsize=1)
+def _get_schema_map() -> dict[str, dict]:
+    """缓存 Pydantic schema 映射（进程生命周期内静态，避免每次请求重建）。
+
+    ``maxsize=1`` 且返回 dict 只读使用；调用方不得原地修改返回值。
+    """
+    from src.config.schemas import PPCConfig
+
+    return _build_schema_map(PPCConfig)
+
+
+def _validate_config_value(key: str, value: Any, schema_map: dict | None = None) -> str | None:
+    """按 schema 校验单个配置值；合法返回 None，否则返回错误描述。
+
+    未知 key（schema 中不存在）放行，交由 ``mgr.set`` 做最终校验；
+    已知 key 按 ``type`` / ``options``（enum）做 Web 层预校验，非法值返回
+    400 ``VALIDATION_ERROR``，避免脏值穿透到配置管理器。
+    """
+    meta = (schema_map or {}).get(key)
+    if not meta:
+        return None
+
+    options = meta.get("options") or []
+    if options and str(value) not in [str(o) for o in options]:
+        return f"Config key '{key}' must be one of: {', '.join(str(o) for o in options)}"
+
+    expected_type = meta.get("type")
+    if expected_type == "boolean":
+        if isinstance(value, str):
+            return None if value.strip().lower() in ("true", "false") else f"Config key '{key}' expects a boolean"
+        if not isinstance(value, bool):
+            return f"Config key '{key}' expects a boolean"
+    elif expected_type in ("number", "integer"):
+        if isinstance(value, bool):
+            return f"Config key '{key}' expects a number"
+        if isinstance(value, (int, float)):
+            return None
+        if isinstance(value, str):
+            try:
+                float(value)
+                return None
+            except ValueError:
+                return f"Config key '{key}' expects a number"
+        return f"Config key '{key}' expects a number"
+    elif expected_type == "string":
+        if not isinstance(value, str):
+            return f"Config key '{key}' expects a string"
+    return None
 
 
 def _flatten_config(obj, prefix, items, category="core", schema_map: dict | None = None):

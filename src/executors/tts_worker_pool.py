@@ -79,6 +79,8 @@ class WorkerPool:
         self._ramp_up_task: asyncio.Task[Any] | None = None
         self._ramp_up_released = 0
         self._progress_handler: Any | None = None
+        # shutdown 后队列中可能残留未被消费的 sentinel，见 _drain_sentinels
+        self._shutdown = False
 
     @property
     def ramp_up_released(self) -> int:
@@ -90,6 +92,9 @@ class WorkerPool:
 
     async def start(self, progress_handler: Any | None = None):
         """启动并发预热（如启用）与全部工作协程。"""
+        # 允许同一个池服务多个批次：上一批 shutdown 已结束旧 worker，
+        # 这里重新开始即可（残留 sentinel 已在 shutdown 内清空）。
+        self._shutdown = False
         self._progress_handler = progress_handler
         self.workers = []
         if self.ramp_up_controller is not None:
@@ -140,6 +145,31 @@ class WorkerPool:
                     if not worker.done():
                         worker.cancel()
 
+        self._shutdown = True
+        # 触发条件：sentinel 数量多于实际消费它的 worker（worker 提前退出/
+        # 被取消），或某 worker 退出前已取走多个。后果：这些 sentinel 从未
+        # task_done，queue._unfinished_tasks 永远 > 0，下一批次的
+        # wait_all()（queue.join）会永久挂起；若被新 worker 优先取到，还会
+        # 立即退出导致真实任务无人消费。故 shutdown 末尾清空残留 sentinel。
+        self._drain_sentinels()
+
+    def _drain_sentinels(self) -> None:
+        """丢弃队列中残留的 sentinel，真实任务原样重新入队。"""
+        leftover: list[tuple[Any, ...]] = []
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item[3] is _SENTINEL:
+                self.queue.task_done()  # 抵消 shutdown 时 put 的未完成计数
+            else:
+                leftover.append(item)
+        for item in leftover:
+            # 真实任务不能丢：task_done 抵消 get，put 重新计入未完成数
+            self.queue.task_done()
+            self.queue.put_nowait(item)
+
     def clear_workers(self):
         """清空工作协程引用（执行器 cleanup 时调用）。"""
         self.workers = []
@@ -171,7 +201,11 @@ class WorkerPool:
             priority, timestamp, task_id, task = await self.queue.get()
 
             if task is _SENTINEL:
+                # 触发条件：worker 取到 shutdown 投递的退出信号。sentinel 也是
+                # 一次 put，必须在这里 task_done，否则 unfinished 计数永远
+                # 无法归零，后续批次的 queue.join() 会永久阻塞。
                 logger.debug("Worker 收到退出信号")
+                self.queue.task_done()
                 return None
 
             return task

@@ -33,7 +33,9 @@ class _FakeCommunicate:
 
     Accepts the same kwargs the real Communicate receives so it can be
     instantiated by ``EdgeTTSHttpClient._make_communicate`` directly. If
-    ``fail_with`` is set, ``stream()`` raises it before yielding any chunk.
+    ``fail_with`` is set, ``stream()`` raises it before yielding any chunk
+    unless ``fail_after`` is given — then it yields that many chunks first
+    (simulating a server that breaks mid-stream).
     """
 
     def __init__(
@@ -47,6 +49,7 @@ class _FakeCommunicate:
         proxy: str | None = None,
         chunks: list[bytes] | None = None,
         fail_with: BaseException | None = None,
+        fail_after: int | None = None,
     ) -> None:
         self.text = text
         self.voice = voice
@@ -56,12 +59,17 @@ class _FakeCommunicate:
         self.proxy = proxy
         self.chunks = chunks or [b"\x00" * 16]
         self.fail_with = fail_with
+        self.fail_after = fail_after
 
     async def stream(self):  # noqa: D401
+        if self.fail_with is not None and self.fail_after is None:
+            raise self.fail_with
+        for i, chunk in enumerate(self.chunks):
+            if self.fail_after is not None and i >= self.fail_after:
+                break
+            yield {"type": "audio", "data": chunk}
         if self.fail_with is not None:
             raise self.fail_with
-        for chunk in self.chunks:
-            yield {"type": "audio", "data": chunk}
         yield {"type": "turn.end"}
 
 
@@ -217,3 +225,51 @@ class TestVoiceFallbacks:
 
         # Only the primary voice should have been attempted — fallbacks skipped.
         assert attempted_voices == ["primary-voice"]
+
+    def test_partial_audio_must_not_fallback(self) -> None:
+        """V1：首个音色已 yield 一块音频后才抛 QuotaError → 不得换音色。
+
+        触发条件：服务端在已下发若干音频块后返回 429/QuotaError。
+        后果（旧实现）：循环继续换下一个 voice 并继续 yield，同一输出文件
+        前段是音色 A、后段是音色 B（混音且事后无法察觉）。
+        修复后：已产出音频时直接上抛 QuotaError，让上层整段重试。
+        """
+        attempted_voices: list[str] = []
+
+        def factory(text: str, voice: str, rate: str, volume: str) -> _FakeCommunicate:
+            attempted_voices.append(voice)
+            if voice == "primary-voice":
+                return _FakeCommunicate(
+                    text=text,
+                    voice=voice,
+                    rate=rate,
+                    volume=volume,
+                    chunks=[b"PART-A", b"PART-B"],
+                    fail_with=QuotaError("429 mid-stream"),
+                    fail_after=1,  # 先产出一块，再失败
+                )
+            return _FakeCommunicate(
+                text=text, voice=voice, rate=rate, volume=volume, chunks=[b"FALLBACK"]
+            )
+
+        client = _make_client(
+            voice_fallbacks=["fallback-voice-1", "fallback-voice-2"],
+            communicate_factory=factory,
+        )
+
+        seen: list[bytes] = []
+
+        async def drive() -> None:
+            async for chunk in client.synthesize_stream("hi", "primary-voice"):
+                if chunk.type == "audio":
+                    seen.append(chunk.data)
+
+        with pytest.raises(QuotaError):
+            asyncio.run(drive())
+
+        # 只产出首音色的那一段，没有混入回退音色的数据
+        assert seen == [b"PART-A"]
+        # 未尝试任何回退音色
+        assert attempted_voices == ["primary-voice"]
+        # effective voice 未被回退音色污染
+        assert client.last_effective_voice != "fallback-voice-1"

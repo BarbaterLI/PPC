@@ -7,7 +7,12 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 from src.config.presets import get_preset
-from src.engines.segment_journal import JOURNAL_NAME, SegmentJournal, _text_sha1
+from src.engines.segment_journal import (
+    JOURNAL_LOG_NAME,
+    JOURNAL_NAME,
+    SegmentJournal,
+    _text_sha1,
+)
 
 
 def _run(coro):
@@ -105,6 +110,80 @@ def test_record_skips_when_file_gone(tmp_path):
     f.unlink()
     j.record(1, f, text)  # stat 失败 → 不写条目、不抛
     assert not j.has(1)
+
+
+def test_record_io_is_linear_not_full_rewrite_per_segment(tmp_path):
+    """n 段只写 1 次整份快照 + n 行追加（旧实现每段重写整份 → O(n²)）。"""
+    j = SegmentJournal.open(tmp_path)
+    n = 20
+    for i in range(1, n + 1):
+        f, text = _seg_file(tmp_path, f"s{i:03d}.mp3")
+        j.record(i, f, text)
+
+    assert j.count == n
+    # 关键断言：整份快照写入次数不随段数增长（旧实现为 n 次）
+    assert j.snapshot_writes < n
+    assert j.snapshot_writes == 1
+    # 增量日志每段一行（O(1) 追加，而非重写既有条目）
+    log_lines = (tmp_path / JOURNAL_LOG_NAME).read_text(encoding="utf-8").splitlines()
+    assert len(log_lines) == n
+
+
+def test_restart_reads_back_all_appended_entries(tmp_path):
+    """重启后快照 + 增量日志归并，条目全部可正确读回。"""
+    j = SegmentJournal.open(tmp_path)
+    recorded = []
+    for i in range(1, 11):
+        f, text = _seg_file(tmp_path, f"r{i:03d}.mp3")
+        recorded.append((i, f, text))
+        j.record(i, f, text)
+
+    j2 = SegmentJournal.open(tmp_path)  # 模拟重启
+    assert j2.count == 10
+    for i, f, text in recorded:
+        assert j2.has(i)
+        assert j2.verify(i, f, text) is True
+
+    # 归并后日志被压实：只留一份包含全部条目的快照
+    assert not (tmp_path / JOURNAL_LOG_NAME).exists()
+    raw = json.loads((tmp_path / JOURNAL_NAME).read_text(encoding="utf-8"))
+    assert len(raw["entries"]) == 10
+
+
+def test_truncated_log_tail_ignored(tmp_path):
+    """崩溃留下的半行日志被丢弃，前序完整条目仍然生效（保守重合成）。"""
+    j = SegmentJournal.open(tmp_path)
+    f, text = _seg_file(tmp_path, "t.mp3")
+    j.record(1, f, text)
+
+    with (tmp_path / JOURNAL_LOG_NAME).open("a", encoding="utf-8") as fh:
+        fh.write('{"i": 2, "size": 8, "sha')  # 崩溃：半行
+
+    j2 = SegmentJournal.open(tmp_path)
+    assert j2.count == 1
+    assert j2.has(1) and j2.verify(1, f, text) is True
+    assert not j2.has(2)
+
+
+def test_reads_legacy_snapshot_only(tmp_path):
+    """旧格式（只有 journal.json、无增量日志）仍可读，但无音色指纹 → 不复用。
+
+    旧条目缺 ``sig`` 字段（无音色指纹），V3 起一律视为失配 → 重新合成，
+    避免沿用无法校验音色的旧段；读取本身（count/has）保持兼容。
+    """
+    f, text = _seg_file(tmp_path, "legacy.mp3")
+    (tmp_path / JOURNAL_NAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [{"i": 1, "size": f.stat().st_size, "sha1": _text_sha1(text)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    j = SegmentJournal.open(tmp_path)
+    assert j.count == 1 and j.has(1)
+    assert j.verify(1, f, text) is False
 
 
 # ---------------------------------------------------------------- 集成：引擎段路径
@@ -231,4 +310,84 @@ def test_legacy_probe_hit_recorded_into_journal(tmp_path):
 
     j = SegmentJournal.open(cache_dir)
     assert j.has(1)  # 探针命中后补登
-    assert j.verify(1, cache_dir / "out_seg_001.mp3", "段一") is True
+    # V3 起条目带音色/合成参数指纹，校验需按同一组参数（引擎实际用的值）
+    assert (
+        j.verify(
+            1,
+            cache_dir / "out_seg_001.mp3",
+            "段一",
+            voice=engine.tts_config.voice,
+            rate=engine.tts_config.rate,
+            volume=engine.tts_config.volume,
+        )
+        is True
+    )
+
+
+# ---------------------------------------------------------------- V3：音色纳入指纹
+
+
+def test_verify_rejects_voice_change_with_same_size(tmp_path):
+    """V3：同文本、同字节数、仅换音色 → 必须失配（旧判据会误命中）。
+
+    触发条件：用户只改 ``tts.voice``，而分段文本与 TTS 输出字节数恰好不变。
+    后果（旧实现）：复用上一音色的段文件 → 整书/整段音色前后不一致。
+    """
+    f, text = _seg_file(tmp_path, "a.mp3", b"ID3audio")  # 字节数固定
+    j = SegmentJournal.open(tmp_path)
+    j.record(1, f, text, voice="zh-CN-XiaoxiaoNeural", rate="+0%", volume="+0%")
+
+    assert j.verify(1, f, text, voice="zh-CN-XiaoxiaoNeural", rate="+0%", volume="+0%") is True
+    # 文本与字节数完全一致，仅音色不同 → 不命中
+    assert j.verify(1, f, text, voice="zh-CN-YunxiNeural", rate="+0%", volume="+0%") is False
+    # 语速/音量变化同样失配
+    assert j.verify(1, f, text, voice="zh-CN-XiaoxiaoNeural", rate="+10%", volume="+0%") is False
+    assert j.verify(1, f, text, voice="zh-CN-XiaoxiaoNeural", rate="+0%", volume="+10%") is False
+
+
+def test_voice_fingerprint_survives_reopen(tmp_path):
+    """V3：音色指纹随条目持久化（快照 + 增量日志），重启后判据不变。"""
+    f, text = _seg_file(tmp_path, "b.mp3", b"ID3audio")
+    j = SegmentJournal.open(tmp_path)
+    j.record(1, f, text, voice="voice-A", rate="+0%", volume="+0%")
+
+    j2 = SegmentJournal.open(tmp_path)  # 重启
+    assert j2.verify(1, f, text, voice="voice-A", rate="+0%", volume="+0%") is True
+    assert j2.verify(1, f, text, voice="voice-B", rate="+0%", volume="+0%") is False
+
+
+def test_legacy_entry_without_fingerprint_never_hits(tmp_path):
+    """V3：旧 journal 条目（无 sig 字段）不命中 → 重新合成。"""
+    f, text = _seg_file(tmp_path, "c.mp3", b"ID3audio")
+    (tmp_path / JOURNAL_NAME).write_text(
+        json.dumps(
+            {"version": 1, "entries": [{"i": 1, "size": f.stat().st_size, "sha1": _text_sha1(text)}]}
+        ),
+        encoding="utf-8",
+    )
+    j = SegmentJournal.open(tmp_path)
+    assert j.has(1)  # 旧条目仍被读入（兼容读取）
+    assert j.verify(1, f, text, voice="voice-A", rate="+0%", volume="+0%") is False
+
+
+def test_engine_resynthesizes_after_voice_change(tmp_path):
+    """V3 集成：仅改配置音色（文本/字节数不变）→ 段不再命中，重新合成。"""
+    engine, mock, output, cache_dir = _engine_with_synth(tmp_path)
+
+    # 让第二段失败以保留缓存与 journal
+    async def fail_two(text, out_path, **_kw):
+        out_path.write_bytes(b"ID3audio")
+        return MagicMock(success=False, error="x") if "段二" in text else MagicMock(success=True, error=None)
+
+    engine.synthesize = MagicMock(wraps=fail_two)  # type: ignore[assignment]
+    _run(engine._merge_segments(["段一", "段二"], output, 0.0, disable_timeout=True))
+    assert SegmentJournal.open(cache_dir).has(1)
+
+    # 只改音色后重跑（段文件与文本都不变）
+    engine2, mock2, output2, cache2 = _engine_with_synth(tmp_path)
+    engine2.tts_config.voice = "zh-CN-YunxiNeural"
+    _run(engine2._merge_segments(["段一", "段二"], output2, 0.0, disable_timeout=True))
+
+    # 段一失配 → 重新合成（否则会用旧音色的段）
+    assert mock2.call_count >= 1
+    assert any(call.args and call.args[0] == "段一" for call in mock2.call_args_list)

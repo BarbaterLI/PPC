@@ -61,6 +61,18 @@
       {
         "desc": "单文件模式",
         "cmd": "ppc convert ./book.txt --one"
+      },
+      {
+        "desc": "多角色配音 + 合并同音色片段（减少请求）",
+        "cmd": "ppc convert ./chapters ./out --cast cast.yml --merge-cut"
+      },
+      {
+        "desc": "合并截断并输出字幕",
+        "cmd": "ppc convert ./chapters ./out --cast cast.yml --subtitles"
+      },
+      {
+        "desc": "LLM 自动分配发声人并落盘复用",
+        "cmd": "ppc convert ./chapters ./out --llm-assign --candidate-voices zh-CN-YunxiNeural,zh-CN-XiaoxiaoNeural --save-cast cast.yml"
       }
     ],
     "options": [
@@ -131,6 +143,54 @@
       {
         "name": "--cast",
         "desc": "多角色配音 cast.yml 路径（按角色分配音色，旁白/narrator 独立；覆盖配置 tts.cast_file）"
+      },
+      {
+        "name": "--merge-cut",
+        "desc": "按角色池合并：同一角色的多句话合批成一次 TTS 请求，再按字幕时间戳切回原位（大幅减少请求数）"
+      },
+      {
+        "name": "--merge-max-chars",
+        "desc": "合并后文本字符数上限（默认 4000）"
+      },
+      {
+        "name": "--merge-max-bytes",
+        "desc": "合并后 UTF-8 字节上限（默认 4000，服务端单连接预算 4096）"
+      },
+      {
+        "name": "--merge-max-pieces",
+        "desc": "单批片段数上限（默认 8；越大越省请求，失败重做代价越高）"
+      },
+      {
+        "name": "--subtitles",
+        "desc": "同时输出 .srt 字幕（隐含开启 --merge-cut）"
+      },
+      {
+        "name": "--llm-assign",
+        "desc": "用 OpenAI 兼容 LLM 自动分配发声人（需要 openai 库与 API Key）"
+      },
+      {
+        "name": "--llm-model",
+        "desc": "LLM 模型名（默认 gpt-4o-mini）"
+      },
+      {
+        "name": "--llm-base-url",
+        "desc": "OpenAI 兼容端点（默认 https://api.openai.com/v1）"
+      },
+      {
+        "name": "--llm-api-key",
+        "desc": "LLM API Key（默认读 PPC_LLM_API_KEY / OPENAI_API_KEY）"
+      },
+      {
+        "name": "--main-roles",
+        "desc": "主要角色→音色：JSON 串 / JSON·YAML 文件 / '角色=音色,角色=音色'"
+      },
+      {
+        "name": "--candidate-voices",
+        "desc": "候选音色池，逗号分隔（LLM 只能从中选）"
+      },
+      {
+        "name": "--save-cast",
+        "desc": "把 LLM 分配结果写入该 cast.yml 以便复用"
       }
     ],
     "see_also": [
@@ -619,7 +679,9 @@
         "desc": "跳过网络可达性探测"
       }
     ],
-    "see_also": ["bench"]
+    "see_also": [
+      "bench"
+    ]
   },
   "bench": {
     "category": "其他",
@@ -648,6 +710,8 @@
         "desc": "保存基线 JSON 到指定路径"
       }
     ],
-    "see_also": ["convert"]
+    "see_also": [
+      "convert"
+    ]
   }
 }

@@ -3,6 +3,8 @@ Flask==3.1.3
 Flask-CORS==6.0.2
 # Werkzeug: Flask 依赖，但 src/web/app.py 直接使用 HTTPException，需显式声明
 werkzeug>=3.0.0
+# 生产 WSGI 服务器（跨平台，替代 Flask 开发服务器）
+waitress>=3.0.0
 
 # 异步 HTTP 客户端 / 服务端
 # edge-tts 与 src/distributed/ 均直接使用 aiohttp，不可依赖传递引入
@@ -12,7 +14,7 @@ certifi>=2024.2.2
 
 # TTS 引擎
 # 可选 fallback 依赖 / Optional fallback dependency (customized copy lives in src/engines/edge_tts/)
-edge-tts>=7.2.8
+edge-tts>=7.3.1
 # 定制 edge_tts 副本中使用 Literal/NotRequired/Unpack，需显式声明
 typing_extensions>=4.10.0
 
@@ -60,3 +62,6 @@ pyloudnorm>=0.1.0
 
 # 云端 gradio TTS 后端（cloud_gradio 扩展；不可用时该扩展自动禁用）
 gradio_client>=2.6.0
+
+# LLM 自动分配发声人（`ppc convert --llm-assign` / tts.llm_assign；缺失时该功能禁用）
+openai>=1.40.0

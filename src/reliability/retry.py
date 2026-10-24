@@ -145,8 +145,20 @@ def _calculate_delay(config: RetryConfig, attempt: int, error: Exception | None 
             logger.debug("retry_after_extractor failed: %s", ex)
 
     if config.jitter:
-        # decorrelated jitter between base_delay and computed delay
-        delay = random.uniform(base_delay, max(delay, base_delay))
+        # S5: ``jitter`` 是**幅度**（配置语义 0–0.5），不是布尔开关。
+        # 触发条件：jitter 为真值；后果（修复前）：只要为真就执行
+        # ``uniform(base_delay, delay)`` 全域抖动，导致 jitter=0.1 与
+        # jitter=1.0 产生的退避完全相同，用户调幅度毫无效果。
+        # 兼容性：``True``（dataclass 默认值/旧调用方）保留原有全域抖动；
+        # 数值则按 ``delay * uniform(1 - j, 1 + j)`` 施加幅度，并 clamp 到
+        # [0, max_delay]（j 自身先夹紧到 0–1）。
+        if config.jitter is True:
+            delay = random.uniform(base_delay, max(delay, base_delay))
+        else:
+            amplitude = max(0.0, min(1.0, float(config.jitter)))
+            if amplitude:
+                delay = delay * random.uniform(1.0 - amplitude, 1.0 + amplitude)
+                delay = min(max(delay, 0.0), max_delay)
 
     return delay
 

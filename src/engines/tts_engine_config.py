@@ -39,13 +39,19 @@ def _normalize_rate(rate: str) -> str:
     return rate
 
 
-def build_cache_key(voice: str, text: str, rate: str, volume: str) -> str:
+def build_cache_key(voice: str, text: str, rate: str, volume: str, backend: str = "") -> str:
     """构造 TTS 缓存 key。
 
-    Key 格式: ``tts:<voice>:<sha256(text)>:<rate>:<volume>``。
+    Key 格式: ``tts:<backend>:<voice>:<sha256(text)>:<rate>:<volume>``。
+
+    必须包含**后端标识**：不同后端（内置 edge / ``openai_http`` / 扩展后端）
+    对同一文本+音色产出的音频完全不同，若共用同一 key，切换
+    ``tts.backend_plugin`` 后会命中另一后端的旧产物（静默输出错误音频，且
+    磁盘缓存跨进程持久）。``backend`` 为空时按 ``default`` 归档，保持与旧
+    缓存条目的键空间隔离（旧键不含 backend 段，不会被新逻辑误命中）。
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return f"tts:{voice}:{digest}:{rate}:{volume}"
+    return f"tts:{backend or 'default'}:{voice}:{digest}:{rate}:{volume}"
 
 
 @dataclass

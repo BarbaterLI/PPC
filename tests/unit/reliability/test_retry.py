@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import random
 import time
 from typing import Any
 
@@ -82,6 +83,54 @@ class TestCalculateDelay:
         )
         d = _calculate_delay(cfg, 0, error=ValueError("x"))
         assert d == 5.0
+
+
+class TestJitterAmplitude:
+    """S5: ``jitter`` 是幅度（0–0.5），不是布尔开关。"""
+
+    def test_zero_jitter_equals_delay_exactly(self):
+        cfg = RetryConfig(base_delay=1.0, exponential_base=2.0, max_delay=60.0, jitter=0.0)
+        for attempt in range(5):
+            expected = min(1.0 * (2.0**attempt), 60.0)
+            assert _calculate_delay(cfg, attempt) == expected
+
+    def test_amplitude_bounds(self):
+        """jitter=0.1 时退避落在 [0.9*delay, 1.1*delay]（固定随机种子）。"""
+        cfg = RetryConfig(base_delay=1.0, exponential_base=2.0, max_delay=60.0, jitter=0.1)
+        random.seed(20240)
+        for attempt in range(6):
+            expected = min(1.0 * (2.0**attempt), 60.0)
+            delay = _calculate_delay(cfg, attempt)
+            assert 0.9 * expected - 1e-9 <= delay <= 1.1 * expected + 1e-9, (
+                f"attempt={attempt}: {delay} 超出 [{0.9 * expected}, {1.1 * expected}]"
+            )
+
+    def test_amplitude_is_not_boolean(self):
+        """同一随机种子下 jitter=0.1 与 jitter=1.0 必须产生不同退避。"""
+        small = RetryConfig(base_delay=8.0, max_delay=60.0, jitter=0.1)
+        large = RetryConfig(base_delay=8.0, max_delay=60.0, jitter=1.0)
+
+        random.seed(4321)
+        d_small = _calculate_delay(small, 0)
+        random.seed(4321)
+        d_large = _calculate_delay(large, 0)
+
+        assert d_small != d_large
+        assert 0.9 * 8.0 - 1e-9 <= d_small <= 1.1 * 8.0 + 1e-9
+        assert 0.0 <= d_large <= 2.0 * 8.0 + 1e-9
+
+    def test_jitter_result_clamped_to_max_delay(self):
+        cfg = RetryConfig(base_delay=10.0, max_delay=10.0, jitter=0.5)
+        random.seed(99)
+        for _ in range(20):
+            assert _calculate_delay(cfg, 0) <= 10.0
+
+    def test_out_of_range_jitter_is_clamped(self):
+        cfg = RetryConfig(base_delay=1.0, max_delay=60.0, jitter=5.0)
+        random.seed(7)
+        for _ in range(20):
+            delay = _calculate_delay(cfg, 0)
+            assert 0.0 <= delay <= 2.0
 
 
 class TestDeadline:

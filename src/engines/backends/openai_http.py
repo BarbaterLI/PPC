@@ -27,6 +27,7 @@ from typing import Any
 
 from src.core.exceptions import NetworkError, PermanentError, TransientError
 from src.engines.tts_protocol import PROTOCOL, BackendCapabilities, backend_registry
+from src.utils.files import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +136,12 @@ class OpenAIHTTPBackend:
         if not audio:
             raise TransientError("openai_http: 服务返回空音频 / empty audio response")
         if output_path is not None:
-            path = Path(output_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(audio)
-            return path
+            # 触发条件：插件后端把整段音频字节直接写目标文件。
+            # 后果（旧实现 ``write_bytes``）：进程中断会留下半截 MP3，且
+            # ``synthesize_atomic_write`` 的原子保证对插件路径失效。
+            # 改为同目录 ``.part`` + fsync + ``os.replace`` 原子落盘。
+            atomic_write_bytes(output_path, audio)
+            return Path(output_path)
         return audio
 
     # ---- HTTP 薄接缝（单测在此打桩） ----------------------------------------

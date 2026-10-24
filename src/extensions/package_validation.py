@@ -100,16 +100,50 @@ def _check_entry_file(names: list[str], manifest: dict) -> list[str]:
     return [f"入口文件 '{entry_file}' 在扩展包中不存在"]
 
 
+def _parse_version_lenient(raw: object) -> "pkg_version.Version | None":
+    """把展示用版本号解析为可比较版本；无法解析返回 ``None``。
+
+    触发条件：版本号采用 **git tag 风格**（如 ``1.2.3-rc1-pre.9``）——它
+    不是合法 PEP 440，``pkg_version.parse`` 直接抛 ``InvalidVersion``。
+    旧实现把它当成「manifest 写错」，于是**每一个**扩展安装都会收到
+    "min_ppc_version 版本号格式无效" 而装不上（尽管错的是程序自身版本）。
+
+    处理：逐段去掉最右侧的 ``-xxx`` 后缀重试，直到可解析：
+    ``1.2.3-rc1-pre.9`` → ``1.2.3-rc1`` → ``1.2.3rc1``。
+    """
+    text = str(raw).strip()
+    if not text:
+        return None
+    candidates = [text]
+    while "-" in text:
+        text = text.rsplit("-", 1)[0]
+        candidates.append(text)
+    for candidate in candidates:
+        try:
+            return pkg_version.parse(candidate)
+        except (pkg_version.InvalidVersion, TypeError):
+            continue
+    return None
+
+
 def _check_version_compatible(manifest: dict) -> list[str]:
     """检查 min_ppc_version 与当前 PPC_NEXT 版本兼容。"""
     min_ver = manifest.get("min_ppc_version", ppc_version)
     try:
-        current = pkg_version.parse(ppc_version)
-        required = pkg_version.parse(min_ver)
+        # 触发条件：manifest 里写作 `min_ppc_version: 12.0` 时 YAML 解析为
+        # float；packaging.parse 只接受字符串，会抛 TypeError。
+        # 后果：TypeError 不被下面的 InvalidVersion 捕获，validate_package
+        # 崩溃 → ExtensionInstaller.install 直接抛异常，扩展装不上。
+        # 因此先 str() 归一化（12.0 -> "12.0"），再解析。
+        current = _parse_version_lenient(ppc_version)
+        required = _parse_version_lenient(min_ver)
+        if current is None or required is None:
+            return [f"min_ppc_version 版本号格式无效: {min_ver!r}（当前版本 {ppc_version}）"]
         if current < required:
             return [f"当前 PPC_NEXT 版本 {ppc_version} 低于扩展要求的最低版本 {min_ver}"]
-    except pkg_version.InvalidVersion as exc:
-        return [f"版本号格式无效: {exc}"]
+    except (pkg_version.InvalidVersion, TypeError) as exc:
+        # 非法版本号（如 abc / 空值）只产出可读的校验错误，不抛出异常
+        return [f"min_ppc_version 版本号格式无效: {min_ver!r} ({exc})"]
     return []
 
 

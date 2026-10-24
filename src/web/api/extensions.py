@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,15 @@ extension_pages_bp = Blueprint("extension_pages", __name__, url_prefix="/extensi
 
 _loader: "ExtensionLoader | None" = None
 _loader_loaded: bool = False
+# 首次加载的并发保护。Web 服务以 ``threaded=True`` 运行（见 src/web/app.py），
+# 多个请求线程会同时执行 ``get_loader(ensure_loaded=True)``；
+# 触发条件：两个以上线程在 ``_loader_loaded`` 仍为 False 时并发进入。
+# 后果（旧实现 check-then-act 无锁）：重复执行 load_all_extensions ——
+# 虽已幂等，但仍会产生重复目录扫描与竞态窗口（两次扫描之间状态可能被改写）。
+# 故用线程锁做 double-checked locking，保证全进程只真正加载一次。
+# 用 RLock：加载发生在持锁期间，若某个扩展的初始化在同线程回调本模块，
+# 普通 Lock 会自死锁。
+_loader_lock = threading.RLock()
 
 
 def get_loader(ensure_loaded: bool = False) -> "ExtensionLoader":
@@ -29,23 +39,28 @@ def get_loader(ensure_loaded: bool = False) -> "ExtensionLoader":
 
     多个端点共用同一个 loader 实例，确保 enable/disable 状态在
     get_loaded_extensions() 调用时可见。当 ``ensure_loaded=True`` 时
-    会在首次调用时同步加载全部已发现扩展（幂等）。
+    会在首次调用时同步加载全部已发现扩展（幂等 + 线程安全：并发首次请求
+    只会真正加载一次）。
     """
     global _loader, _loader_loaded
     if _loader is None:
-        from src.extensions.loader import ExtensionLoader, build_loader_from_config
+        with _loader_lock:
+            if _loader is None:  # double-check：等锁期间可能已被别的线程建好
+                from src.extensions.loader import ExtensionLoader, build_loader_from_config
 
-        _loader = build_loader_from_config() or ExtensionLoader()
+                _loader = build_loader_from_config() or ExtensionLoader()
     if ensure_loaded and not _loader_loaded:
-        from src.extensions.loader import extensions_enabled_by_config
+        with _loader_lock:
+            if not _loader_loaded:  # double-check：等锁期间可能已被别的线程加载
+                from src.extensions.loader import extensions_enabled_by_config
 
-        if extensions_enabled_by_config():
+                if extensions_enabled_by_config():
 
-            async def _load_all():
-                await _loader.load_all_extensions()
+                    async def _load_all():
+                        await _loader.load_all_extensions()
 
-            run_async(_load_all())
-        _loader_loaded = True
+                    run_async(_load_all())
+                _loader_loaded = True
     return _loader
 
 

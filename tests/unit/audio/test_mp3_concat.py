@@ -69,6 +69,64 @@ def test_probe_rejects_non_mp3() -> None:
     assert probe_mp3(b"tiny") is None
 
 
+# ---------------------------------------------------------------- V5：Xing 越界
+
+
+def _small_frame_with_tag(tag: bytes, tag_off: int, version: int = 2, sr_idx: int = 1, kbps: int = 48) -> bytes:
+    """构造单个**完整**小帧，并把 *tag* 写进帧内 *tag_off* 处。
+
+    version=2/sr_idx=1(24kHz)/48kbps → 帧长 72*48000/24000 = 144 字节
+    （正是 edge-tts 的 24kHz/48kbps 输出帧长），tag 落在尾部时
+    旧实现会把 ``unpack_from`` 读到帧外。
+    """
+    frame = bytearray(_frame(version, sr_idx, kbps))
+    frame[tag_off : tag_off + len(tag)] = tag
+    return bytes(frame)
+
+
+def test_xing_info_tolerates_truncated_field() -> None:
+    """V5：Xing 字段被帧尾截断 → 返回 (None, None)，不抛 struct.error。
+
+    触发条件：首帧短（144 字节）且帧尾恰好出现 ``Xing`` 字样（音频数据或
+    垃圾区），使 flags/bytes 字段越过帧尾。
+    后果（旧实现）：``struct.unpack_from`` 抛 ``struct.error`` 逃出
+    ``probe_mp3``，合并链路直接崩溃而非走「不可探测」降级。
+    """
+    from src.audio.mp3_probe import _xing_info
+
+    frame = _small_frame_with_tag(b"Xing", 130)
+    # flags 位声明 "有 bytes 字段"，但 idx+12..16 已越过 144 字节帧尾
+    frame = frame[:134] + b"\x00\x00\x00\x02" + frame[138:]
+
+    assert _xing_info(frame, 0, len(frame)) == (None, None)
+
+
+def test_probe_does_not_raise_on_xing_near_frame_end() -> None:
+    """V5：可探测的帧 + 帧尾 Xing → 走 walk 降级，不抛异常。"""
+    frame = bytearray(_small_frame_with_tag(b"Xing", 130))
+    frame[134:138] = b"\x00\x00\x00\x02"  # flags: has bytes
+    data = bytes(frame)
+
+    probe = probe_mp3(data)  # 旧实现此处抛 struct.error
+
+    assert probe is not None
+    assert probe.frame_count == 1
+    assert probe.method == "walk"
+
+
+def test_xing_info_tolerates_truncated_vbri() -> None:
+    """V5：VBRI 帧数越界（帧长 52 字节 < idx+18）→ 返回 (None, None)。"""
+    from src.audio.mp3_probe import _xing_info
+
+    # MPEG2.5 / 11.025kHz / 8kbps → 帧长 52 字节；VBRI 放在帧尾
+    frame = bytearray(_frame(0, 0, 8))
+    frame[55:59] = b"VBRI"  # 越界写：把 VBRI 接到帧尾之外（模拟垃圾区标签）
+    data = bytes(frame)
+
+    assert _xing_info(data, 0, max(len(data), 96)) == (None, None)
+    assert probe_mp3(data) is not None  # 仍可探测（walk 路径）
+
+
 def test_concat_byte_exact_and_silence_included(tmp_path: Path) -> None:
     a, b = tmp_path / "a.mp3", tmp_path / "b.mp3"
     a.write_bytes(_mp3(10))
@@ -162,3 +220,45 @@ def test_merger_falls_back_on_corrupt_segment(tmp_path: Path) -> None:
     result = merger.merge([a, bad], out, silence_ms=0, normalize=False)
     assert called  # 降级回 pydub（其内部对坏文件报错）
     assert not result.success
+
+
+def _id3v2(body: bytes) -> bytes:
+    """构造最小 ID3v2.3 标签（synchsafe 长度）。"""
+    return b"ID3\x03\x00\x00" + bytes([
+        (len(body) >> 21) & 0x7F, (len(body) >> 14) & 0x7F, (len(body) >> 7) & 0x7F, len(body) & 0x7F
+    ]) + body
+
+
+def test_concat_keeps_first_id3v2_and_strips_later_ones(tmp_path: Path) -> None:
+    """首个文件的 ID3v2 保留（模块 docstring 承诺），后续文件的 ID3v2 被剥离。"""
+    tag_a = _id3v2(b"TIT2\x00\x00\x00\x04\x00\x00\x03AAA")
+    tag_b = _id3v2(b"TIT2\x00\x00\x00\x04\x00\x00\x03BBB")
+    a, b = tmp_path / "a.mp3", tmp_path / "b.mp3"
+    a.write_bytes(tag_a + _mp3(10))
+    b.write_bytes(tag_b + _mp3(10))
+    out = tmp_path / "c.mp3"
+
+    r = concat_mp3_files([a, b], out, silence_ms=0)
+    assert r.success, r.degraded_reason
+
+    data = out.read_bytes()
+    # 首段 ID3v2 完整保留在输出头部
+    assert find_id3v2_size(data) == len(tag_a)
+    assert data[: len(tag_a)] == tag_a
+    # 后续文件的标签被剥离（帧流紧接首段帧，无第二个 ID3）
+    assert b"BBB" not in data
+    assert data[len(tag_a):] == _mp3(10) + _mp3(10)
+    # 输出仍是可探测的标准 MP3，帧数不变
+    probe = probe_mp3(data)
+    assert probe is not None and probe.frame_count == 20
+
+
+def test_concat_without_first_id3_writes_pure_frames(tmp_path: Path) -> None:
+    """首段无 ID3v2 时输出不含标签，保持纯帧流。"""
+    a, b = tmp_path / "a.mp3", tmp_path / "b.mp3"
+    a.write_bytes(_mp3(10))
+    b.write_bytes(_id3v2(b"TIT2\x00\x00\x00\x04\x00\x00\x03BBB") + _mp3(10))
+    out = tmp_path / "c.mp3"
+
+    assert concat_mp3_files([a, b], out, silence_ms=0).success
+    assert out.read_bytes() == _mp3(10) + _mp3(10)

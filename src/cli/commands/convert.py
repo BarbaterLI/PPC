@@ -46,6 +46,20 @@ class ConvertOptions:
     book: bool = False
     book_title: str | None = None
     cast: str | None = None
+    # 多角色合并优化（合并同音色片段 + 字幕时间截断）
+    merge_cut: bool = False
+    merge_max_chars: int | None = None
+    merge_max_bytes: int | None = None
+    merge_max_pieces: int | None = None
+    subtitles: bool = False
+    # LLM 自动分配发声人
+    llm_assign: bool = False
+    llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    main_roles: str | None = None
+    candidate_voices: str | None = None
+    save_cast: str | None = None
 
 
 def _normalize_rate(rate: str) -> str:
@@ -61,6 +75,121 @@ def _normalize_rate(rate: str) -> str:
             hint="rate 必须带正负号前缀和百分号,例如 --rate +40% 或 --rate -10%",
         )
     return rate_val
+
+
+def _parse_role_map(value: str) -> dict[str, str]:
+    """解析「角色→音色」映射：JSON 字符串 / JSON·YAML 文件 / ``角色=音色,角色2=音色2``。"""
+    import json
+
+    raw = (value or "").strip()
+    if not raw:
+        return {}
+
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise CLIError(E.E_BUSINESS, f"--main-roles JSON 解析失败: {e}") from None
+        if not isinstance(data, dict):
+            raise CLIError(E.E_BUSINESS, "--main-roles 必须是 JSON 对象（角色 → 音色）")
+        return {str(k).strip(): str(v).strip() for k, v in data.items() if k and v}
+
+    path = Path(raw)
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        try:
+            if path.suffix.lower() in (".yml", ".yaml"):
+                import yaml
+
+                data = yaml.safe_load(text) or {}
+            else:
+                data = json.loads(text)
+        except Exception as e:  # noqa: BLE001
+            raise CLIError(E.E_BUSINESS, f"--main-roles 文件解析失败: {e}") from None
+        if isinstance(data, dict) and isinstance(data.get("roles"), dict):
+            data = data["roles"]
+        if not isinstance(data, dict):
+            raise CLIError(E.E_BUSINESS, "--main-roles 文件应为映射（角色 → 音色）")
+        return {str(k).strip(): str(v).strip() for k, v in data.items() if k and v}
+
+    # 内联简写：角色=音色,角色2=音色2
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        if "=" not in pair:
+            continue
+        k, v = pair.split("=", 1)
+        if k.strip() and v.strip():
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _apply_llm_assign(
+    options: "ConvertOptions",
+    output_dir: Path,
+    config: "PPCConfig",
+    output_formatter: "OutputFormatter",
+) -> None:
+    """转换前用 LLM 生成 cast 并注入 ``tts.cast_file``。
+
+    失败（未装 openai / 无 key / 网络或额度问题）只警告并降级为现有 cast，
+    绝不阻断转换。
+    """
+    if not getattr(config.tts.llm_assign, "enabled", False):
+        return
+
+    from ...text.cast import Cast
+    from ...text.llm_assign import LLMSpeakerAssignError, LLMSpeakerAssigner
+
+    texts: list[str] = []
+    if options.one:
+        try:
+            texts.append(options.input.read_text(encoding="utf-8", errors="replace"))
+        except OSError as e:
+            output_formatter.warning(f"LLM 分配跳过：读取输入失败 {e}")
+            return
+    else:
+        pattern = "**/*.txt" if options.recursive else "*.txt"
+        for txt in sorted(options.input.glob(pattern)):
+            try:
+                texts.append(txt.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+
+    if not texts:
+        output_formatter.warning("LLM 分配跳过：没有可读取的文本")
+        return
+
+    base_cast = None
+    if config.tts.cast_file:
+        try:
+            base_cast = Cast.load(config.tts.cast_file)
+        except Exception:  # noqa: BLE001
+            base_cast = None
+
+    assigner = LLMSpeakerAssigner(config.tts.llm_assign)
+    try:
+        output_formatter.info("LLM 分配发声人：分析文本中…")
+        cast = assigner.assign("\n".join(texts), base_cast=base_cast)
+    except LLMSpeakerAssignError as e:
+        output_formatter.warning(f"LLM 分配失败，沿用现有音色配置: {e}")
+        return
+    except Exception as e:  # noqa: BLE001
+        output_formatter.warning(f"LLM 分配异常，沿用现有音色配置: {e}")
+        return
+
+    persist = str(getattr(config.tts.llm_assign, "persist_cast", "") or "")
+    target = persist or str(output_dir / ".llm_cast.yml")
+    try:
+        assigner.persist(cast, target)
+        config.tts.cast_file = target
+    except Exception as e:  # noqa: BLE001
+        output_formatter.warning(f"cast 写入失败，LLM 分配不生效: {e}")
+        return
+
+    output_formatter.info(f"cast 已写入: {target}")
+    output_formatter.info(
+        f"LLM 分配完成: {len(cast.roles)} 个角色, narrator={cast.narrator or '-'}"
+    )
 
 
 def _build_retry_policy(config: PPCConfig):
@@ -119,11 +248,35 @@ def _log_convert_details(options: ConvertOptions, output_dir: Path, config: PPCC
         output_formatter.detail("断点续传: 已启用")
     if options.recursive:
         output_formatter.detail("递归模式: 启用")
+    if config.tts.merge_cut.enabled:
+        mc = config.tts.merge_cut
+        output_formatter.detail(
+            f"合并截断: 开启（≤{mc.max_merge_pieces} 段 / ≤{mc.max_merge_bytes}B 合并后按字幕时间切分）"
+        )
+        if mc.subtitle_output:
+            output_formatter.detail("字幕输出: 开启 (.srt)")
+    if config.tts.llm_assign.enabled:
+        output_formatter.detail(f"LLM 分配发声人: {config.tts.llm_assign.model}")
 
 
 def _validate_convert(
     options: ConvertOptions,
 ) -> tuple[Path, PPCConfig, OutputFormatter]:
+    # C3（P1）：先把并发数拦在 CLI 边界，越界立即失败（不做静默钳制）。
+    # 触发条件：``ppc convert ... -c 0``（或负数）。TTSConfig 未开启
+    # validate_assignment，下面的 ``config.tts.concurrency = ...`` 赋值可绕过
+    # pydantic 的 ge=1；0 一路传到 asyncio.Semaphore(0)，日志先打印
+    # "已启动 0 个工作协程" 然后永久挂起（无报错、无退出码）。
+    # 后果：脚本化批量转换静默卡死；Web 侧因 max(1, ...) 钳制而不受影响，
+    # 导致 CLI/Web 行为不一致。这里显式报错并给出参数错误退出码 2。
+    if options.concurrency is not None and options.concurrency < 1:
+        raise CLIError(
+            E.E_BUSINESS,
+            f"无效的并发数: {options.concurrency}，合法范围为 >= 1 的整数",
+            hint="例如 -c 1 或 -c 8；并发数太小会拖慢转换，太大可能触发服务端限流",
+            exit_code=2,
+        )
+
     output_dir: Path
     if options.one:
         if not options.input.exists():
@@ -191,6 +344,36 @@ def _validate_convert(
         config.tts.ramp_up_duration = options.ramp_up
     if options.cast is not None:
         config.tts.cast_file = options.cast
+
+    # ---- 多角色合并优化 ------------------------------------------------
+    if options.merge_cut or options.subtitles:
+        config.tts.merge_cut.enabled = True
+    if options.subtitles:
+        config.tts.merge_cut.subtitle_output = True
+    if options.merge_max_chars is not None:
+        config.tts.merge_cut.max_merge_chars = options.merge_max_chars
+    if options.merge_max_bytes is not None:
+        config.tts.merge_cut.max_merge_bytes = options.merge_max_bytes
+    if options.merge_max_pieces is not None:
+        config.tts.merge_cut.max_merge_pieces = options.merge_max_pieces
+
+    # ---- LLM 发声人分配 ------------------------------------------------
+    if options.llm_assign:
+        config.tts.llm_assign.enabled = True
+    if options.llm_model is not None:
+        config.tts.llm_assign.model = options.llm_model
+    if options.llm_base_url is not None:
+        config.tts.llm_assign.base_url = options.llm_base_url
+    if options.llm_api_key is not None:
+        config.tts.llm_assign.api_key = options.llm_api_key
+    if options.main_roles is not None:
+        config.tts.llm_assign.main_roles = _parse_role_map(options.main_roles)
+    if options.candidate_voices is not None:
+        config.tts.llm_assign.candidate_voices = [
+            v.strip() for v in options.candidate_voices.split(",") if v.strip()
+        ]
+    if options.save_cast is not None:
+        config.tts.llm_assign.persist_cast = options.save_cast
 
     _log_convert_details(options, output_dir, config, output_formatter)
 
@@ -454,6 +637,9 @@ def handle_convert(
     - one=True : 单文件模式，input 为单 .txt，output 可缺省（默认 input.parent）
     """
     output_dir, config, output_formatter = _validate_convert(options)
+
+    # LLM 发声人分配（可选）：在构建 TTSEngine 之前把 cast 落好
+    _apply_llm_assign(options, output_dir, config, output_formatter)
 
     if options.one:
         if options.book:

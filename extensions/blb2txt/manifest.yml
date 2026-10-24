@@ -1,0 +1,27 @@
+name: blb2txt
+version: 1.0.0
+description: Balabolka 文本抽取/分章工具集成 —— split 命令的格式增强器（34 种电子书格式 → txt）
+author: PPC_NEXT Extension
+extension_type: tool_integration
+package_type: python
+entry: "extension.py"
+entry_point: "extension:Blb2TxtExtension"
+min_ppc_version: "12.0.0"
+tags:
+  - blb2txt
+  - balabolka
+  - extract
+  - split
+  - ebook
+  - epub
+  - mobi
+  - txt
+permissions:
+  # 调用 blb2txt.exe
+  - subprocess
+  # 读取输入文档与可执行文件
+  - filesystem_read
+  # 写入抽取/分章产物
+  - filesystem_write
+  # 清理「自动分章」回退链中失败尝试留下的产物
+  - filesystem_delete

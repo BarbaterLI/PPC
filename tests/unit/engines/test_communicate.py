@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from src.engines.edge_tts.communicate import remove_incompatible_characters
+from src.engines.edge_tts.communicate import (
+    remove_incompatible_characters,
+    split_text_by_byte_length,
+)
 
 # ---------------------------------------------------------------------------
 # 旧实现（逐字符 ord 判断 + 列表重建），作为等价性比对的 oracle
@@ -107,3 +110,119 @@ def test_remove_incompatible_characters_keeps_printable_and_unicode():
 def test_remove_incompatible_characters_empty_string():
     """空字符串原样返回空。"""
     assert remove_incompatible_characters("") == ""
+
+
+# ---------------------------------------------------------------------------
+# 字节切分：无空格/换行时必须按 byte_length 硬切（E2 回归）
+# ---------------------------------------------------------------------------
+
+
+def test_split_text_by_byte_length_hard_cuts_long_chinese_without_spaces():
+    """无空格/换行的长中文文本，每个块都必须 ≤ byte_length 且内容无损。
+
+    原实现找不到空格/换行时把整段剩余文本传给 UTF-8 安全切分函数，该函数
+    恒返回 ``len(text)``，于是产出单个远超上限的块（9000B 中文 → 单块
+    9000B）。修复后应退化为按字节上限硬切，且不得截断多字节字符。
+    """
+    text = "这是一个没有任何空格和换行的中文长段落" * 200
+    byte_length = 4096
+
+    chunks = list(split_text_by_byte_length(text, byte_length))
+
+    assert len(chunks) > 1, "9000+ 字节文本应被切成多块，而不是单块"
+    for chunk in chunks:
+        assert chunk, "不得产出空块/超短碎片"
+        assert len(chunk) <= byte_length, (
+            f"块长度 {len(chunk)} 超过上限 {byte_length}"
+        )
+        # 每个块必须能独立按 UTF-8 解码（未截断多字节序列）
+        chunk.decode("utf-8")
+    assert b"".join(chunks) == text.encode("utf-8")
+    assert "".join(chunk.decode("utf-8") for chunk in chunks) == text
+
+
+def test_split_text_by_byte_length_still_prefers_whitespace():
+    """有空格可用时仍优先在空格处断句，而不是硬切。"""
+    text = "hello world " * 100
+    chunks = list(split_text_by_byte_length(text, 64))
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 64
+        # 优先在空格处切分时，块尾不会把单词截断
+        assert chunk == chunk.strip()
+    # 按空格拼接可还原原文的单词序列（说明没有从单词中间硬切）
+    assert " ".join(chunk.decode("utf-8") for chunk in chunks) == " ".join(text.split())
+
+
+# ---------------------------------------------------------------------------
+# V2：一条 audio.metadata 帧内的多个 boundary 事件必须全部解析
+# ---------------------------------------------------------------------------
+
+
+def _metadata_frame(events: list[dict]) -> bytes:
+    """构造 ``audio.metadata`` TEXT 帧（按服务端实际格式：头部 + CRLFCRLF + JSON）。"""
+    import json
+
+    payload = json.dumps({"Metadata": events}, ensure_ascii=False).encode("utf-8")
+    headers = f"X-RequestId:abc\r\nPath:audio.metadata\r\nX-StreamId:x\r\n\r\n".encode("utf-8")
+    return headers + payload
+
+
+def _boundary_event(kind: str, text: str, offset: int, duration: int) -> dict:
+    return {
+        "Type": kind,
+        "Data": {"Offset": offset, "Duration": duration, "text": {"Text": text}},
+    }
+
+
+class _Received:
+    """最小化 ``aiohttp.WSMessage`` 替身（只用到 ``.data``）。"""
+
+    def __init__(self, data: str) -> None:
+        self.data = data
+
+
+def test_parse_metadata_keeps_all_boundaries() -> None:
+    """V2：单帧多事件 → 全部返回（旧实现只返回首个，后续时间轴缺失）。"""
+    from src.engines.edge_tts.communicate import Communicate
+
+    communicate = Communicate("你好", "zh-CN-XiaoxiaoNeural")
+    frame = _metadata_frame(
+        [
+            _boundary_event("WordBoundary", "你", 100, 20),
+            _boundary_event("WordBoundary", "好", 120, 20),
+            _boundary_event("SentenceBoundary", "你好", 100, 40),
+        ]
+    )
+    chunks, is_turn_end = communicate._handle_text_message(_Received(frame.decode("utf-8")))
+
+    assert is_turn_end is False
+    assert [c["text"] for c in chunks] == ["你", "好", "你好"]
+    assert [c["type"] for c in chunks] == ["WordBoundary", "WordBoundary", "SentenceBoundary"]
+    # 最后一条 boundary 的 offset+duration 用于跨段补偿
+    assert communicate.state.last_duration_offset == 140
+
+
+def test_parse_metadata_single_boundary_unchanged() -> None:
+    """V2 非回归：只发一条 boundary 时，解析结果与原实现一致（单元素）。"""
+    from src.engines.edge_tts.communicate import Communicate
+
+    communicate = Communicate("你好", "zh-CN-XiaoxiaoNeural")
+    frame = _metadata_frame([_boundary_event("WordBoundary", "你", 100, 20)])
+    chunks, _ = communicate._handle_text_message(_Received(frame.decode("utf-8")))
+
+    assert len(chunks) == 1
+    assert chunks[0]["offset"] == 100
+    assert communicate.state.last_duration_offset == 120
+
+
+def test_parse_metadata_session_end_only_raises_unexpected() -> None:
+    """只有 SessionEnd（无 boundary）→ 仍按旧语义抛 UnexpectedResponse。"""
+    from src.engines.edge_tts.communicate import Communicate
+    from src.engines.edge_tts.exceptions import UnexpectedResponse
+
+    communicate = Communicate("你好", "zh-CN-XiaoxiaoNeural")
+    frame = _metadata_frame([{"Type": "SessionEnd", "Data": {}}])
+    with pytest.raises(UnexpectedResponse):
+        communicate._handle_text_message(_Received(frame.decode("utf-8")))

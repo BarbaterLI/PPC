@@ -24,6 +24,17 @@ from .mp3_probe import probe_mp3
 
 __all__ = ["BookChapter", "BookMeta", "BookResult", "merge_chapters_to_book", "build_chapter_tag"]
 
+# Xing/Info 帧除 4 字节帧头与 side info 外，还必须容纳：
+#   "Xing"(4) + flags(4) + frames(4) + bytes(4) = 16 字节编码字段
+#   100 字节 TOC（1% 粒度帧位置表）
+# 即总需求 = 4 + side_info + 16 + 100 = 120 + side_info。
+# 触发条件：帧长 < 120 + side_info（如 44.1kHz/单声道/40kbps 帧长 130、
+# side_info=17，需要 137）。后果：TOC 越界赋值会**就地扩展** bytearray，
+# 实际帧长大于帧头声明值，后续帧整体错位——`id3+N` 处不再是同步字，
+# ffmpeg 只能低分识别（"Format mp3 detected only with low score of 25"）
+# 且 TOC 定位全部偏移。故守卫必须按完整需求判断并走降级路径。
+_XING_FRAME_OVERHEAD_BYTES = 4 + 16 + 100  # 120
+
 
 @dataclass
 class BookChapter:
@@ -161,7 +172,8 @@ def merge_chapters_to_book(
     params = typed[0].params
     ms_per_frame = params.samples_per_frame * 1000.0 / params.sample_rate
     frame_len = max(1, (params.samples_per_frame // 8) * (params.bitrate_kbps * 1000) // params.sample_rate)
-    if frame_len - 4 - _side_info_len(params) < 8 + 100:
+    if frame_len < _XING_FRAME_OVERHEAD_BYTES + _side_info_len(params):
+        # 不足 120+side_info 时无法安全写入 TOC（见常量注释），降级为常规合并
         return BookResult(success=False, degraded_reason="frame-too-small-for-xing")
     gap_bytes = silent_frames_for_ms(params, silence_ms) if silence_ms > 0 else b""
     gap_frames = len(gap_bytes) // frame_len
@@ -172,18 +184,17 @@ def merge_chapters_to_book(
         start_frames: list[int] = []
         cursor_frames = 1  # 第 0 帧 = Xing 信息帧（统一合成/重写字段）
         audio_parts: list[bytes] = []
-        first = True
         for idx, (chapter, probe) in enumerate(zip(valid, typed)):
             start_frames.append(cursor_frames)
             start_ms = int((cursor_frames - 1) * ms_per_frame)
             with chapter.path.open("rb") as fh:
                 fh.seek(probe.audio_start)
                 buf = fh.read(probe.audio_end - probe.audio_start)
-                if first:
-                    mv = bytearray(buf)
-                    _overwrite_xing_header(mv, params)  # 源首帧若为 Xing：清零，由整书统一重写
-                    buf = bytes(mv)
-                    first = False
+                # 触发条件：章节源是 VBR 编码（首帧带 Xing/Info 标签）。
+                # 后果（旧实现只处理首章）：第 1..N 章的 Xing 帧原样内嵌，
+                # 解码器会把它当作「另一个流起点」→ 时长/seek 异常。
+                # 整书只允许保留文件头那一个统一重写的 Xing 帧，故逐章剥离。
+                buf = _strip_xing_header(buf, params)
             audio_parts.append(buf)
             cursor_frames += probe.frame_count
             timeline.append((chapter.title, start_ms, int((cursor_frames - 1) * ms_per_frame)))
@@ -223,19 +234,32 @@ def _xing_payload_offset(params) -> int:
     return 4 + _side_info_len(params)
 
 
-def _overwrite_xing_header(buf: bytearray, params) -> None:
-    """把源文件首帧内 Xing 字段清零（随后由整书统一重写 frames/bytes/TOC）。"""
+def _strip_xing_header(buf: bytes, params) -> bytes:
+    """剥离章节源文件**首帧**内的 Xing/Info 标签（整书只保留统一重写的那一个）。
+
+    触发条件：章节源是 VBR 编码（首帧是 Xing/Info 信息帧）。
+    后果（旧实现只对首章调用）：第 2..N 章的 Xing 帧原样内嵌，解码器会把它
+    当作「另一个流起点」，导致时长/seek 异常。
+
+    做法：把标签的 4 字节 magic 与 flags/frames/bytes 字段整体清零（不仅仅是
+    把计数值置 0——保留 magic 仍可能被当作信息帧识别）。未命中标签时原样返回
+    （零拷贝），只复制首帧，不整段复制章节。
+    """
     off = _xing_payload_offset(params)
-    idx = bytes(buf[off : off + 16]).find(b"Xing")
+    head = buf[off : off + 16]
+    idx = head.find(b"Xing")
     if idx < 0:
-        idx = bytes(buf[off : off + 16]).find(b"Info")
-        if idx < 0:
-            return
+        idx = head.find(b"Info")
+    if idx < 0:
+        return buf
     base = off + idx
-    if len(buf) >= base + 16:
-        struct.pack_into(">I", buf, base + 4, 0x7)
-        struct.pack_into(">I", buf, base + 8, 0)
-        struct.pack_into(">I", buf, base + 12, 0)
+    if base + 16 > len(buf):
+        return buf
+    frame_len = frame_len_of(params)
+    frame = bytearray(buf[:frame_len])
+    if base + 16 <= len(frame):
+        frame[base : base + 16] = b"\x00" * 16
+    return bytes(frame) + buf[frame_len:]
 
 
 def _build_xing_frame(params, total_frames: int, total_bytes: int, start_frames: list[int]) -> bytes:

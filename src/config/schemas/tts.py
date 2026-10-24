@@ -28,6 +28,47 @@ class TextNormalizationConfig(BaseModel):
     max_consecutive_empty_lines: int = Field(default=2, ge=1, le=10, description="最大连续空行数")
 
 
+class MergeCutConfig(BaseModel):
+    """多角色合并优化：同音色片段合并成一次请求 + 按字幕时间戳切回。
+
+    ``enabled=False``（默认）时完全走旧的逐片段合成路径，行为逐字节不变。
+    """
+
+    enabled: bool = Field(default=False, description="启用「合并同音色片段 + 字幕时间截断」/ Merge same-voice segments then cut by subtitle timestamps")
+    max_merge_chars: int = Field(default=12000, ge=100, le=100000, description="合并后文本字符数上限 / Max merged chars")
+    max_merge_bytes: int = Field(default=16000, ge=256, le=200000, description="合并后 UTF-8 字节数上限 / Max merged UTF-8 bytes")
+    max_merge_pieces: int = Field(default=8, ge=2, le=32, description="单次合并的片段数上限（批内 all-or-nothing）/ Max pieces per merged request")
+    only_short_segments: bool = Field(default=True, description="仅在能减少连接数时合并（短片段才合并）/ Only merge when it reduces connection count")
+    merge_scope: str = Field(
+        default="pool",
+        pattern="^(pool|adjacent)$",
+        description="合并范围：pool=按角色分池（同一角色的多句话可跨原文位置合批）/ adjacent=仅原文相邻同音色；默认 pool",
+    )
+    fallback_to_per_piece: bool = Field(default=True, description="对齐/切分失败时回退逐片段合成 / Fall back to per-piece synthesis when alignment fails")
+    subtitle_output: bool = Field(default=False, description="同时输出 .srt 字幕文件 / Also write .srt subtitles")
+    subtitle_dir: str = Field(default="", description="字幕输出目录（空=与音频同目录）/ Subtitle output directory (empty = alongside audio)")
+
+
+class LLMAssignConfig(BaseModel):
+    """用 OpenAI 兼容 LLM 自动为文本分配发声人（角色 → 音色）。"""
+
+    enabled: bool = Field(default=False, description="启用 LLM 自动分配发声人 / Enable LLM speaker assignment")
+    base_url: str = Field(default="https://api.openai.com/v1", description="OpenAI 兼容端点 / OpenAI-compatible base URL")
+    api_key: str = Field(default="", description="API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）/ API key")
+    model: str = Field(default="gpt-4o-mini", description="模型名 / Model name")
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0, description="采样温度（建议 0 保证稳定）/ Sampling temperature")
+    chunk_chars: int = Field(default=6000, ge=500, le=100000, description="单次送入 LLM 的文本块大小 / Text chunk size per LLM call")
+    timeout: float = Field(default=120.0, ge=5.0, le=600.0, description="单次请求超时（秒）/ Request timeout in seconds")
+    persist_cast: str = Field(default="", description="把分配结果写入该 cast.yml 路径（空=仅运行时生效）/ Persist assigned cast to this path")
+    candidate_voices: list[str] = Field(default_factory=list, description="候选音色池（空=沿用现有 cast/config 音色）/ Candidate voice pool")
+    main_roles: dict[str, str] = Field(
+        default_factory=dict,
+        description="用户指定的主要角色 → 音色（固定不被 LLM 改写）/ Main roles pinned to a voice",
+    )
+    narrator: str = Field(default="", description="旁白音色（空=沿用现有配置）/ Narrator voice")
+    default: str = Field(default="", description="兜底音色（空=沿用现有配置）/ Default fallback voice")
+
+
 class AntiRiskControlConfig(BaseModel):
     """Edge TTS 风控规避配置 / Anti-risk-control configuration.
 
@@ -49,7 +90,15 @@ class AntiRiskControlConfig(BaseModel):
     jitter_enabled: bool = Field(default=True, description="启用请求抖动 / Enable request jitter")
     jitter_max_seconds: float = Field(default=2.0, ge=0.0, le=10.0, description="最大抖动延迟（秒）/ Max jitter delay (seconds)")
     proxy: str = Field(default="", description="HTTP/HTTPS 代理 / HTTP/HTTPS proxy URL")
-    shared_connector: bool = Field(default=True, description="共享连接器 / Share aiohttp connector")
+    # DEPRECATED: 该开关从未真正生效（``_ensure_shared_connector`` 无调用点），
+    # 且 aiohttp 的 ``ClientSession.close()`` 会关闭传入的 connector，逐流会话
+    # 语义下共享连接器必然被首个流关死，因此不再支持。字段仅为兼容旧配置
+    # 文件而保留，保存配置时会被显式剔除（见 ``manager_io.save_config_to_file``）。
+    shared_connector: bool = Field(
+        default=True,
+        deprecated=True,
+        description="[已废弃 / deprecated] 共享连接器不再生效，保存时自动移除该键",
+    )
     voice_fallbacks: list[str] = Field(
         default_factory=list,
         description="语音回退列表 / Voice fallback list (tried in order on QuotaError)",
@@ -195,6 +244,14 @@ class TTSConfig(BaseModel):
     anti_risk_control: AntiRiskControlConfig = Field(
         default_factory=lambda: AntiRiskControlConfig(),
         description="风控规避配置 / Anti-risk-control configuration",
+    )
+    merge_cut: MergeCutConfig = Field(
+        default_factory=MergeCutConfig,
+        description="多角色合并优化（合并同音色片段 + 字幕时间截断）/ Multi-role merge-and-cut optimization",
+    )
+    llm_assign: LLMAssignConfig = Field(
+        default_factory=LLMAssignConfig,
+        description="LLM 自动分配发声人 / LLM-based speaker assignment",
     )
 
     @model_validator(mode="after")

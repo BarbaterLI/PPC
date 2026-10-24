@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import functools
 import threading
 import time
 from unittest import mock
@@ -82,6 +83,73 @@ class TestFireAndForget:
             bus.subscribe(TaskStartedEvent, sync_handler)
             bus.publish(TaskStartedEvent(task_id="t3"), fire_and_forget=True)
             assert called.is_set()
+        finally:
+            bus.shutdown()
+
+
+# -----------------------------------------------------------------------------
+# non-function callables (S2)
+# -----------------------------------------------------------------------------
+
+
+class _CallableHandler:
+    """实现了 ``__call__`` 的实例（没有 ``__name__``）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, _event: TaskStartedEvent) -> None:
+        self.calls += 1
+
+
+class TestNonFunctionCallables:
+    """``functools.partial`` / ``__call__`` 实例订阅时不得因缺少 __name__ 崩溃。"""
+
+    def test_partial_handler_can_subscribe_and_publish(self):
+        bus = EventBus()
+        try:
+            received: list[str] = []
+
+            def _record(received: list[str], event: TaskStartedEvent) -> None:
+                received.append(event.task_id)
+
+            handler = functools.partial(_record, received)
+            assert not hasattr(handler, "__name__")
+
+            unsubscribe = bus.subscribe(TaskStartedEvent, handler)
+            bus.publish(TaskStartedEvent(task_id="partial-1"))
+
+            assert received == ["partial-1"]
+            assert bus.get_stats().events_handled == 1
+
+            unsubscribe()
+            bus.publish(TaskStartedEvent(task_id="partial-2"))
+            assert received == ["partial-1"]
+        finally:
+            bus.shutdown()
+
+    def test_callable_instance_can_subscribe_and_publish(self):
+        bus = EventBus()
+        try:
+            handler = _CallableHandler()
+            bus.subscribe(TaskStartedEvent, handler)
+            bus.publish(TaskStartedEvent(task_id="callable-1"))
+            assert handler.calls == 1
+        finally:
+            bus.shutdown()
+
+    def test_partial_handler_error_is_isolated_and_logged(self):
+        """handler 抛异常仍必须被隔离，日志取名不得再抛 AttributeError。"""
+        bus = EventBus()
+        try:
+            def _boom(prefix: str, _event: TaskStartedEvent) -> None:
+                raise RuntimeError(prefix)
+
+            bus.subscribe(TaskStartedEvent, functools.partial(_boom, "boom"))
+
+            # 不得冒泡到 publish
+            bus.publish(TaskStartedEvent(task_id="boom-1"))
+            assert bus.get_stats().handler_errors == 1
         finally:
             bus.shutdown()
 

@@ -37,11 +37,23 @@ def reset_distributed_globals() -> Any:
     orig_scheduler = dist._scheduler
     orig_loop = dist._scheduler_loop
     orig_thread = dist._scheduler_thread
+    orig_node_service = dist._node_service
+    orig_node_loop = dist._node_service_loop
+    orig_node_thread = dist._node_service_thread
+    # 该文件中部分测试直接替换模块级函数（非 monkeypatch），必须一并恢复，
+    # 否则后续测试会拿到 MagicMock 的 _submit_to_loop（协程永不 await）。
+    orig_submit = dist._submit_to_loop
+    orig_cleanup = dist._cleanup_scheduler_loop
     yield
     dist._executor = orig_executor
     dist._scheduler = orig_scheduler
     dist._scheduler_loop = orig_loop
     dist._scheduler_thread = orig_thread
+    dist._node_service = orig_node_service
+    dist._node_service_loop = orig_node_loop
+    dist._node_service_thread = orig_node_thread
+    dist._submit_to_loop = orig_submit
+    dist._cleanup_scheduler_loop = orig_cleanup
 
 
 @pytest.fixture
@@ -141,3 +153,78 @@ class TestStopSchedulerResetsExecutor:
         assert dist._executor is None
         # _cleanup_scheduler_loop 应该在 _executor 清空之后才被调用。
         dist._cleanup_scheduler_loop.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: node service start/stop must close the event loop
+# ---------------------------------------------------------------------------
+
+
+class _FakeNodeService:
+    """最小 ``TTSNodeService`` 替身（避免真实启动 aiohttp / TTS 引擎）。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class TestNodeServiceLoopLifecycle:
+    """``stop_node_service`` 必须关闭启动时创建的事件循环（P2-12）。"""
+
+    def test_start_stop_closes_loop_twice(
+        self, reset_distributed_globals: None, monkeypatch: Any
+    ) -> None:
+        import time
+
+        import src.config.manager_core as manager_core
+        import src.distributed.node_server as node_server
+        from src.web.api import distributed as dist
+        from src.web.app import create_app
+
+        fake_config = MagicMock()
+        fake_config.distributed.node_max_concurrency = 2
+        fake_manager = MagicMock()
+        fake_manager.get_config.return_value = fake_config
+
+        monkeypatch.setattr(node_server, "TTSNodeService", _FakeNodeService)
+        monkeypatch.setattr(manager_core, "get_default_manager", lambda: fake_manager)
+
+        app = create_app("testing")
+        app.config["TESTING"] = True
+        loops = []
+
+        with app.test_client() as client:
+            for _ in range(2):
+                resp = client.post(
+                    "/api/distributed/node-service/start",
+                    json={"host": "127.0.0.1", "port": 0},
+                )
+                assert resp.status_code == 200, resp.get_json()
+
+                loop = dist._node_service_loop
+                assert loop is not None
+                assert not loop.is_closed()
+                loops.append(loop)
+
+                # 等待线程真正进入 run_forever，避免 stop 在启动窗口内丢失。
+                for _ in range(100):
+                    if loop.is_running():
+                        break
+                    time.sleep(0.01)
+                assert loop.is_running()
+
+                resp = client.post("/api/distributed/node-service/stop")
+                assert resp.status_code == 200, resp.get_json()
+                assert dist._node_service is None
+                assert dist._node_service_loop is None
+                assert dist._node_service_thread is None
+                assert loop.is_closed(), "stop 后事件循环必须被 close()"
+
+        assert len(loops) == 2
+        assert all(lp.is_closed() for lp in loops)

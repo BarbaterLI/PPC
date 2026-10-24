@@ -15,6 +15,8 @@ import type {
   ClusterMetricsResponse,
   TaskAssignment,
   Task,
+  PagedTasks,
+  TaskListQuery,
 } from './types'
 
 class ApiError extends Error {
@@ -304,6 +306,17 @@ export const configApi = {
 
 export const taskApi = {
   list: () => request<ApiResponse<Task[]>>('/api/tasks'),
+
+  listWithQuery: (query: TaskListQuery = {}) => {
+    const params = new URLSearchParams()
+    if (query.status) params.set('status', query.status)
+    if (query.limit !== undefined) params.set('limit', String(query.limit))
+    if (query.offset !== undefined) params.set('offset', String(query.offset))
+    const qs = params.toString()
+    return request<ApiResponse<PagedTasks>>(`/api/tasks${qs ? `?${qs}` : ''}`)
+  },
+
+  downloadUrl: (id: string) => `/api/tasks/${encodeURIComponent(id)}/download`,
 
   createConvert: (params: ConvertTaskParams) =>
     request<ApiResponse<{ task_id: string }>>('/api/tasks/convert', {

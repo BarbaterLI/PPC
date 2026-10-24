@@ -259,6 +259,38 @@ def memory_efficient(func: Callable) -> Callable:
     return wrapper
 
 
+def fill_missing(target: dict | None, source: dict | None) -> dict:
+    """把 ``source`` 中 ``target`` **任意深度**缺失的键补进 ``target``（就地）。
+
+    ``target`` 已存在的键保持其值，只对缺失键做补全；双方均为 dict 时递归。
+
+    用途：``PPCConfig.model_dump()`` 只含 schema 字段，而用户配置里可能存在
+    schema 之外的键（历史遗留），且它们可能位于**嵌套**层（例如 ``core.mode``、
+    ``core.temp_dir`` —— ``CoreConfig`` 并未声明这两个字段）。若只按顶层键补全，
+    这些嵌套键会被当作陈旧键在保存时删除：内存里还在、一落盘就从 config.yml
+    永久消失。
+
+    参数:
+        target: 待补全的字典（就地修改并返回）。
+        source: 提供缺失键的来源字典。
+
+    返回:
+        补全后的 ``target``（同一对象）。
+    """
+    if not isinstance(target, dict):
+        target = {}
+    if not isinstance(source, dict):
+        return target
+    for key, value in source.items():
+        if key not in target:
+            target[key] = value
+        else:
+            current = target[key]
+            if isinstance(value, dict) and isinstance(current, dict):
+                fill_missing(current, value)
+    return target
+
+
 def deep_merge(base: dict | None, override: dict | None) -> dict:
     """递归合并两个字典：``override`` 中的值优先级高于 ``base``。
 
@@ -287,6 +319,7 @@ __all__ = [
     "CircularBuffer",
     "memory_efficient",
     "deep_merge",
+    "fill_missing",
     "sanitize_filename",
     "detect_encoding",
     "FILENAME_SANITIZE_PATTERN",

@@ -30,7 +30,14 @@ class TTSCacheStore:
         self._ttl_provider = ttl_provider
 
     def lookup(self, cache_key: str) -> Path | None:
-        """从缓存中查找结果文件路径。"""
+        """从缓存中查找结果文件路径。
+
+        校验文件确实存在、非空，且**大小与写入时记录的一致**。
+        ``store`` 只记录路径引用而非内容副本，若该路径后来被别的文本覆盖
+        （例如缓存条目指向某输出文件，而该文件被另一次合成重写），仅凭
+        「文件存在且非空」会命中并返回错误音频。大小不符即视为被改写，
+        按未命中处理（宁可重新合成，也不返回错内容）。
+        """
         cache = self._cache_provider()
         if cache is None:
             return None
@@ -39,15 +46,30 @@ class TTSCacheStore:
         except Exception as e:  # noqa: BLE001
             logger.debug(f"缓存读取失败: {e}")
             return None
-        if not cached:
+        if not cached or not isinstance(cached, dict):
             return None
-        path_str = cached.get("path") if isinstance(cached, dict) else None
+        path_str = cached.get("path")
         if not path_str:
             return None
         path = Path(path_str)
-        if path.exists() and path.stat().st_size > 0:
-            return path
-        return None
+        if not path.exists():
+            return None
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if size <= 0:
+            return None
+        recorded_size = cached.get("size")
+        if isinstance(recorded_size, int) and recorded_size != size:
+            logger.debug(
+                "缓存条目 %s... 记录 size=%s 与文件实际 size=%s 不符（已被改写），按未命中处理",
+                cache_key[:32],
+                recorded_size,
+                size,
+            )
+            return None
+        return path
 
     def store(self, cache_key: str, path: Path) -> None:
         """将成功合成的文件路径写入缓存。"""

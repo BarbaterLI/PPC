@@ -23,8 +23,8 @@ import pytest
 
 @pytest.fixture
 def app(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Flask 应用，``edge_tts.list_voices`` 被替换为返回伪造列表。"""
-    import edge_tts
+    """Flask 应用，vendored ``src.engines.edge_tts.list_voices`` 被替换为伪造列表。"""
+    import src.engines.edge_tts as vendored_edge_tts
 
     fake_voices = [
         {
@@ -34,7 +34,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> Any:
             "Locale": "zh-CN",
         }
     ]
-    monkeypatch.setattr(edge_tts, "list_voices", AsyncMock(return_value=fake_voices))
+    monkeypatch.setattr(vendored_edge_tts, "list_voices", AsyncMock(return_value=fake_voices))
 
     from src.web.app import create_app
 

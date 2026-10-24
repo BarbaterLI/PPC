@@ -44,6 +44,10 @@ def create_app(config_name: str = "development", task_manager=None) -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
     app.extensions["task_manager"] = task_manager
 
+    from src.web.ratelimit import create_rate_limit_middleware
+
+    # 限流先于鉴权执行：未认证的高频请求同样受控，避免暴力刷写端点。
+    app.before_request(create_rate_limit_middleware())
     app.before_request(create_api_auth_middleware())
 
     cors_origins = _load_cors_origins()
@@ -111,6 +115,17 @@ def create_app(config_name: str = "development", task_manager=None) -> Flask:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
+def run_server(host: str = "127.0.0.1", port: int = 5000, debug: bool = False):
+    from src.web.auth import ensure_safe_listen_binding
+
+    ensure_safe_listen_binding(host)
     app = create_app("development" if debug else "production")
-    app.run(host=host, port=port, debug=debug, threaded=True)
+    if debug:
+        app.run(host=host, port=port, debug=True, threaded=False)
+    else:
+        try:
+            from waitress import serve
+
+            serve(app, host=host, port=port, threads=8)
+        except ImportError:
+            app.run(host=host, port=port, debug=False, threaded=True)

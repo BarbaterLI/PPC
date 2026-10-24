@@ -35,6 +35,10 @@ class ExtensionLifecycle:
         return self._loader._extension_modules
 
     @property
+    def _extension_sources(self) -> dict:
+        return self._loader._extension_sources
+
+    @property
     def _audit_logger(self) -> AuditLogger:
         return self._loader._audit_logger
 
@@ -139,6 +143,7 @@ class ExtensionLifecycle:
             module_name = self._extension_modules.pop(name, None)
             if module_name is not None:
                 sys.modules.pop(module_name, None)
+            self._extension_sources.pop(name, None)
             self._loaded_extensions.pop(name, None)
             backend_name = getattr(ext, "_ppc_backend_name", None)
             if backend_name:

@@ -129,7 +129,6 @@ class TestCircuitBreaker:
     def test_initial_state_is_closed(self):
         cb = _make_cb()
         assert cb.state == CircuitState.CLOSED
-
     def test_consecutive_failure_strategy_trips(self):
         cb = _make_cb(
             trip_strategy=TripStrategy.CONSECUTIVE_FAILURES, consecutive_failure_threshold=2, minimum_calls=100
@@ -285,6 +284,74 @@ class TestCircuitBreaker:
         _run(cb.reset())
         assert cb.state == CircuitState.CLOSED
         assert cb.stats.total_calls == 0
+
+
+# -----------------------------------------------------------------------------
+# failure_threshold wiring (S1)
+# -----------------------------------------------------------------------------
+
+
+class TestFailureThresholdWiring:
+    """``failure_threshold`` 必须参与判定（此前是完全未被读取的死配置）。"""
+
+    def test_cumulative_failures_trip_when_not_consecutive_and_rate_is_low(self):
+        """3 次失败（非连续、失败率 0.6 < 0.9）应因累计失败数达到阈值而开闸。
+
+        修复前：判定只看连续失败（阈值 10）与失败率（阈值 0.9），
+        ``failure_threshold=3`` 形同虚设，熔断器始终保持 CLOSED。
+        """
+        cb = _make_cb(
+            failure_threshold=3,
+            minimum_calls=5,
+            failure_rate_threshold=0.9,
+            consecutive_failure_threshold=10,
+            trip_strategy=TripStrategy.COMBINED,
+        )
+
+        async def boom():
+            raise ValueError("boom")
+
+        async def ok():
+            return "ok"
+
+        calls = [boom, ok, boom, ok, boom]
+        for index, fn in enumerate(calls):
+            if fn is boom:
+                with pytest.raises(ValueError):
+                    _run(cb.call(fn))
+            else:
+                _run(cb.call(fn))
+            if index < len(calls) - 1:
+                # 未达到 minimum_calls / failure_threshold 前不得提前开闸
+                assert cb.state == CircuitState.CLOSED
+
+        assert cb.state == CircuitState.OPEN
+        assert cb.stats.failed_calls == 3
+
+    def test_cumulative_failure_below_threshold_keeps_closed(self):
+        cb = _make_cb(
+            failure_threshold=3,
+            minimum_calls=5,
+            failure_rate_threshold=0.9,
+            consecutive_failure_threshold=10,
+            trip_strategy=TripStrategy.COMBINED,
+        )
+
+        async def boom():
+            raise ValueError("boom")
+
+        async def ok():
+            return "ok"
+
+        # 2 次失败 / 5 次调用：累计 2 < 3、失败率 0.4 < 0.9、连续 1 < 10
+        for fn in (boom, ok, boom, ok, ok):
+            if fn is boom:
+                with pytest.raises(ValueError):
+                    _run(cb.call(fn))
+            else:
+                _run(cb.call(fn))
+
+        assert cb.state == CircuitState.CLOSED
 
 
 # -----------------------------------------------------------------------------

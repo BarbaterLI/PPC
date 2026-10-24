@@ -10,7 +10,7 @@ from src.cli.output import get_output
 
 
 def handle_webui(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     debug: bool = False,
     api_token: str | None = None,

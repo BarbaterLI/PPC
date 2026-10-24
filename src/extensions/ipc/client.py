@@ -9,7 +9,7 @@ import socket
 import uuid
 from typing import Any
 
-from src.extensions.ipc.messages import IPCError, IPCRequest
+from src.extensions.ipc.messages import IDENTITY_MISMATCH, IPCError, IPCRequest
 from src.extensions.ipc.protocol import (
     DEFAULT_TIMEOUT,
     _derive_port,
@@ -55,6 +55,11 @@ class IPCClient:
         self._pipe_handle: Any = None
         self._channel: IPCTransport | None = None
         self._connected = False
+        # P2-16: 当前连接使用的端口偏移 + 下次连接优先尝试的偏移。
+        # 服务端拒绝身份不匹配时，下次探测从当前偏移 +1 开始，避免反复连上
+        # 同一个“别人的”服务端。
+        self._connected_offset = 0
+        self._preferred_offset = 0
 
     @property
     def transport(self) -> str:
@@ -90,11 +95,17 @@ class IPCClient:
     def _connect_socket(self) -> None:
         port = _derive_port(self._pipe_name)
         last_err: Exception | None = None
-        for offset in range(50):
+        # 从上次失败/被拒的偏移之后继续探测，并环形回绕，避免重复连到
+        # 已经确认身份不符的服务端。
+        start = self._preferred_offset % 50
+        offsets = list(range(start, 50)) + list(range(0, start))
+        for offset in offsets:
             try:
                 self._conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._conn.settimeout(self._timeout)
                 self._conn.connect(("127.0.0.1", port + offset))
+                self._connected_offset = offset
+                self._preferred_offset = offset
                 return
             except OSError as e:
                 last_err = e
@@ -143,31 +154,64 @@ class IPCClient:
         if data is None:
             data = {}
 
-        msg = IPCRequest(id=str(uuid.uuid4()), action=action, data=data)
+        # P2-16: 每个请求都携带自己的扩展标识（pipe_name），服务端据此拒绝
+        # 串到别的扩展上的连接；旧服务端会忽略该字段，保持向后兼容。
+        msg = IPCRequest(
+            id=str(uuid.uuid4()), action=action, data=data, identity=self._pipe_name
+        )
         req_bytes = (json.dumps(msg.to_dict()) + "\n").encode("utf-8")
 
-        if not self._connected:
-            self.connect()
+        for _attempt in range(50):
+            if not self._connected:
+                self.connect()
 
-        assert self._channel is not None
-        try:
-            self._channel.send(req_bytes)
-            resp_line = self._channel.receive()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
-            self._connected = False
-            raise ConnectionError(
-                f"IPC 连接断开 (name={self._pipe_name}): {e}"
-            ) from e
-        except IPCError:
-            self._connected = False
-            raise
+            assert self._channel is not None
+            try:
+                self._channel.send(req_bytes)
+                resp_line = self._channel.receive()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+                self._connected = False
+                raise ConnectionError(
+                    f"IPC 连接断开 (name={self._pipe_name}): {e}"
+                ) from e
+            except IPCError:
+                self._connected = False
+                raise
 
-        try:
-            resp_dict = json.loads(resp_line.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            raise IPCError(f"IPC 响应 JSON 解析失败: {e}") from e
+            try:
+                resp_dict = json.loads(resp_line.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise IPCError(f"IPC 响应 JSON 解析失败: {e}") from e
 
-        return resp_dict
+            if self._is_identity_mismatch(resp_dict):
+                # 触发条件：探测到的端口属于另一个扩展的服务端（名称哈希
+                # 冲突或端口顺延导致）。后果：旧实现会把请求发给对方；
+                # 现在关闭连接并从下一个端口继续探测自己的服务端。
+                self._connected = False
+                self.close()
+                self._preferred_offset = self._connected_offset + 1
+                logger.warning(
+                    "IPC 身份不匹配 (name=%s, port_offset=%s)，继续探测下一个端口",
+                    self._pipe_name,
+                    self._connected_offset,
+                )
+                if self._preferred_offset >= 50:
+                    raise IPCError(
+                        f"未找到匹配的 IPC server (name={self._pipe_name})："
+                        f"探测范围内所有服务端身份均不匹配"
+                    )
+                continue
+
+            return resp_dict
+
+        raise IPCError(f"IPC 请求失败：探测 {50} 个端口后仍未找到匹配的 server (name={self._pipe_name})")
+
+    @staticmethod
+    def _is_identity_mismatch(resp: dict[str, Any]) -> bool:
+        """判断响应是否为服务端身份校验拒绝。"""
+        if not isinstance(resp, dict) or resp.get("status") != "error":
+            return False
+        return str(resp.get("error", "")).startswith(IDENTITY_MISMATCH)
 
     def recv(self) -> dict[str, Any]:
         """低层接收：读取一行并解析为字典（供双向通信使用）。

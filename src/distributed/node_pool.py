@@ -124,23 +124,37 @@ class NodePool:
         self._on_node_status_changed: list[Callable] = []
 
     async def start(self):
-        """启动节点池"""
+        """启动节点池（幂等）。
+
+        触发条件：``start()`` 被重复调用。
+        后果：旧实现只赋值不判 ``_started`` —— 新 ``ClientSession`` 覆盖旧的
+        （未 close），``_health_check_task`` 覆盖引用（旧任务变孤儿），
+        每次重复启动都会泄漏一个 HTTP 会话 + 一个永不退出的健康检查协程。
+        """
+        if self._started:
+            logger.debug("节点池已在运行，忽略重复 start()")
+            return
+
         self._http_session = ClientSession(timeout=ClientTimeout(total=self._health_check_timeout))
         self._health_check_task = asyncio.create_task(self._health_check_loop())
         self._started = True
         logger.info("节点池已启动")
 
     async def stop(self):
-        """停止节点池"""
-        if self._health_check_task:
-            self._health_check_task.cancel()
+        """停止节点池（幂等，负责取消健康检查并关闭 HTTP 会话）。"""
+        task = self._health_check_task
+        self._health_check_task = None
+        if task is not None:
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._health_check_task
+                await task
 
-        if self._http_session:
-            await self._http_session.close()
-            self._http_session = None
+        session = self._http_session
+        self._http_session = None
+        if session is not None:
+            await session.close()
 
+        self._started = False
         logger.info("节点池已停止")
 
     async def add_node(

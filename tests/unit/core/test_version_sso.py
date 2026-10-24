@@ -30,17 +30,14 @@ def test_current_version_literal_only_in_version_py():
 
 
 def test_version_is_valid_semver():
-    parts = __version__.split(".")
-    assert len(parts) == 3, f"版本号应为 x.y.z: {__version__}"
-    assert parts[0].isdigit() and parts[1].isdigit()
-    tail = parts[2]
-    digits = ""
-    for ch in tail:
-        if ch.isdigit():
-            digits += ch
-        else:
-            break
-    assert digits, f"补丁号缺失: {__version__}"
+    """``x.y.z`` 或 ``x.y.z-<prerelease>``（tag 风格，如 12.0.1-rc2-pre.1）。"""
+    import re
+
+    core = __version__.split("-", 1)[0]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", core), f"版本号应为 x.y.z[-prerelease]: {__version__}"
+    if "-" in __version__:
+        suffix = __version__.split("-", 1)[1]
+        assert re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.\-]*", suffix), f"预发布后缀非法: {__version__}"
 
 
 def test_pyproject_version_matches():

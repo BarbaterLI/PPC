@@ -7,12 +7,27 @@ from pathlib import Path
 
 FILENAME_SANITIZE_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 DEFAULT_FILENAME_MAX_LENGTH = 100
+# 空名（原名为纯点/空格，或截断后只剩分隔符）时的安全兜底
+DEFAULT_EMPTY_FILENAME = "untitled"
 
 
 def sanitize_filename(filename: str, max_length: int = DEFAULT_FILENAME_MAX_LENGTH) -> str:
+    """清洗文件名：替换非法字符、去除首尾点/空格、按 ``max_length`` 截断。
+
+    触发条件：截断点正好落在一个 ``.`` 或空格之后（如 ``"a"*99 + ".b"`` 截断
+    到 100 → 尾部变成 ``.``；``"a"*90 + ".  yyy"`` 亦然）。
+    后果（旧实现 ``cleaned[:max_length]`` 直接返回）：Windows 不允许文件名以
+    ``.`` 或空格结尾，创建文件会失败或落成非法名；纯点/空格名还会产出空串。
+
+    修复：截断后**再**剥离尾部 ``.`` 与空格（只剥尾部，保留开头的点以便
+    隐藏文件风格的名字仍可预期）；剥离后为空则回退到安全默认值。
+    """
     cleaned = FILENAME_SANITIZE_PATTERN.sub("_", filename)
     cleaned = cleaned.strip(". ")
-    return cleaned[:max_length]
+    cleaned = cleaned[:max_length]
+    # 截断可能把尾部变成 "." 或空格 → 必须再次剥离
+    cleaned = cleaned.rstrip(". ")
+    return cleaned or DEFAULT_EMPTY_FILENAME
 
 
 def is_nuitka() -> bool:
@@ -52,6 +67,7 @@ __all__ = [
     "sanitize_filename",
     "FILENAME_SANITIZE_PATTERN",
     "DEFAULT_FILENAME_MAX_LENGTH",
+    "DEFAULT_EMPTY_FILENAME",
     "is_nuitka",
     "get_project_root",
 ]

@@ -92,3 +92,39 @@ def test_group_by_volume_metrics_field_semantics(tmp_path: Path) -> None:
     assert result.metrics.request_count == expected_request_count
     # 关键断言: 两个字段不应相等 (字节数 40 != 归档数 2)
     assert result.metrics.bytes_processed != expected_request_count
+
+
+def test_create_zip_archives_returns_total_bytes_of_all_groups(tmp_path: Path) -> None:
+    """多组归档返回值 == 所有文件大小之和（旧实现返回末组字节数）。"""
+    from src.executors.batcher_components import ArchiveWriter
+
+    files = []
+    for i in range(4):
+        p = tmp_path / f"{i:03d}.txt"
+        p.write_bytes(b"x" * 100)
+        files.append(p)
+
+    archives, total = asyncio.run(ArchiveWriter().create_zip_archives(files, tmp_path / "out.zip", max_size=250))
+
+    assert len(archives) == 2  # 4×100B 按 250B 上限切成 2 组
+    assert total == 400  # 旧实现返回 200（末组大小）
+
+
+def test_create_zip_archives_total_bytes_with_oversized_file(tmp_path: Path) -> None:
+    """单个超大文件独占归档、末组恰好 flush 时返回值仍是全部字节总和。"""
+    from src.executors.batcher_components import ArchiveWriter
+
+    big = tmp_path / "z_big.bin"
+    big.write_bytes(b"b" * 300)
+    smalls = []
+    for i in range(2):
+        p = tmp_path / f"s{i}.bin"
+        p.write_bytes(b"s" * 100)
+        smalls.append(p)
+
+    archives, total = asyncio.run(
+        ArchiveWriter().create_zip_archives([*smalls, big], tmp_path / "out.zip", max_size=250)
+    )
+
+    assert len(archives) == 2  # 一组小文件 + 一个超大文件（末组已被 flush）
+    assert total == 500  # 旧实现在此返回 0（末组 flush 后 current_size 归零）

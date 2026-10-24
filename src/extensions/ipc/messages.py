@@ -16,6 +16,11 @@ class IPCError(Exception):
     """IPC 通信错误（连接失败、响应格式错误、超时等）。"""
 
 
+# 身份校验失败的错误前缀（服务端 → 客户端）。客户端据此判定“连错端口”，
+# 继续探测下一个端口；其他错误仍按普通业务错误返回。
+IDENTITY_MISMATCH = "IPC_IDENTITY_MISMATCH"
+
+
 @dataclass
 class IPCRequest:
     """IPC 请求消息。
@@ -29,10 +34,17 @@ class IPCRequest:
     id: str = ""
     action: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    # P2-16: 客户端期望连接的扩展标识（即 pipe_name）。旧客户端不发送该字段，
+    # 服务端按原行为处理并记录 warning，保证向后兼容。为空时不写入 JSON，
+    # 保持既有消息格式不变。
+    identity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """序列化为请求字典（仅含 ``id`` / ``action`` / ``data``）。"""
-        return {"id": self.id, "action": self.action, "data": self.data}
+        """序列化为请求字典（``identity`` 仅在非空时附加）。"""
+        d = {"id": self.id, "action": self.action, "data": self.data}
+        if self.identity:
+            d["identity"] = self.identity
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> IPCRequest:
@@ -41,6 +53,7 @@ class IPCRequest:
             id=d.get("id", ""),
             action=d.get("action", ""),
             data=d.get("data") or {},
+            identity=str(d.get("identity") or ""),
         )
 
 

@@ -22,6 +22,7 @@ import os
 import shutil
 import time
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -81,13 +82,35 @@ from src.timeout import TimeoutCalculator, TimeoutConfig, TimeoutHistory
 logger = logging.getLogger(__name__)
 
 
+def _is_same_file(a: Path, b: Path) -> bool:
+    """判断两个路径是否指向同一个文件（不抛异常）。
+
+    ``Path.samefile`` 在任一路径不存在时会抛 ``OSError``；这里吞掉并回退到
+    路径字符串比较，保证调用方无需处理异常。
+
+    参数:
+        a: 路径一。
+        b: 路径二。
+
+    返回:
+        指向同一文件返回 ``True``。
+    """
+    try:
+        return a.samefile(b)
+    except OSError:
+        try:
+            return a.resolve() == b.resolve()
+        except OSError:
+            return False
+
+
 class SegmentMerger:
     """分段合并器：并发合成各分段、命中缓存跳过，校验段数后原子落盘。
 
     缓存目录：{output_path.parent}/.cache/{output_path.stem}/
     段文件命名：{stem}_seg_{i:03d}.mp3
 
-    段级进度汇报在每个 _synthesize_segment 内部完成，asyncio.gather 期间实时更新。
+    段级进度汇报在每个 _synthesize_segment 内部完成，并发段任务期间实时更新。
     """
 
     def __init__(self, engine: TTSEngine) -> None:
@@ -108,8 +131,13 @@ class SegmentMerger:
         journal = SegmentJournal.open(cache_dir)
 
         try:
-            results = await asyncio.gather(
-                *[
+            # 结构化并发：旧实现用 ``asyncio.gather(return_exceptions=False)``，
+            # 某段抛异常时 gather 立即向上抛，**其余段任务不被取消**，继续在后台
+            # 写 cache_dir —— 上层重试时便会与残留任务并发写同一缓存目录
+            # （段文件互相覆盖 / 半写文件被 journal 误判命中）。
+            # 这里改为「任一任务异常即取消其余任务并等它们真正退出」。
+            segment_tasks = [
+                asyncio.create_task(
                     self._engine._synthesize_segment(
                         i,
                         seg,
@@ -119,10 +147,44 @@ class SegmentMerger:
                         journal=journal,
                         voice=(voices[i - 1] if voices and i - 1 < len(voices) else None),
                     )
-                    for i, seg in enumerate(segments, start=1)
-                ],
-                return_exceptions=False,
-            )
+                )
+                for i, seg in enumerate(segments, start=1)
+            ]
+            results: list[tuple[int, ExecutionResult]] = []
+            if segment_tasks:
+                try:
+                    _done, pending = await asyncio.wait(
+                        segment_tasks, return_when=asyncio.FIRST_EXCEPTION
+                    )
+                except asyncio.CancelledError:
+                    # 外层被取消（超时/进程收尾）：同样不能让段任务成为孤儿。
+                    for t in segment_tasks:
+                        t.cancel()
+                    await asyncio.gather(*segment_tasks, return_exceptions=True)
+                    raise
+                if pending:
+                    # FIRST_EXCEPTION 且仍有在途 → 有任务已抛异常：取消其余并
+                    # 等待它们真正退出，保证不会有残留写盘任务与后续重试并发。
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                # 按段序取结果：异常在下方按「索引最小」的顺序重新抛出，与原
+                # gather 的直接上抛语义一致；被取消（pending）的任务跳过，
+                # 避免 CancelledError 掩盖真正的失败原因。段返回 fail 结果
+                # （非异常）时保持部分成功语义，由下方逐段判定。
+                results = []
+                first_error: BaseException | None = None
+                for t in segment_tasks:
+                    if t.cancelled():
+                        continue
+                    exc = t.exception()
+                    if exc is not None:
+                        if first_error is None:
+                            first_error = exc
+                        continue
+                    results.append(t.result())
+                if first_error is not None:
+                    raise first_error
 
             temp_files: list[Path] = [cache_dir / f"{output_path.stem}_seg_{i:03d}.mp3" for i, _ in results]
             for i, r in results:
@@ -274,7 +336,12 @@ class TTSEngine(BaseEngine[str, Path]):
             self._edge_client = EdgeTTSHttpClient(
                 anti_risk_config=anti_risk_config,
                 ua_health_filter=ua_health_filter,
-                backend_plugin=(getattr(self.tts_config, "backend_plugin", "") or None),
+                # backend_plugin 只存在于全局 PPCConfig.tts（TTSEngineConfig 不含该字段），
+                # 必须从 self.config 读取——此前误从 self.tts_config 取，getattr 恒得 ""
+                # 导致配置的后端插件永远不被传给客户端、始终静默回退 edge_tts。
+                backend_plugin=(
+                    getattr(getattr(self.config, "tts", None), "backend_plugin", "") or None
+                ),
             )
 
         # 多级缓存（默认使用全局实例）
@@ -350,16 +417,30 @@ class TTSEngine(BaseEngine[str, Path]):
         )
 
     def _build_text_normalizer(self, config: PPCConfig) -> TextNormalizer:
-        """从配置构建文本规范化器"""
+        """从配置构建文本规范化器。
+
+        字幕模式（``tts.merge_cut.subtitle_output``）下强制保留中文标点：
+        默认的「标点规范化」会把 ``。！？`` 换成半角 ``.!?``，服务端据此
+        不再切句，``SentenceBoundary`` 退化成整段一条 → 字幕时间轴失真
+        （实测 3240 字只给 1 条 cue）。该模式下不改用户配置文件，仅本次
+        构建时关闭这一项。
+        """
         text_norm_config = getattr(config.tts, "text_normalization", None)
         if text_norm_config is None:
             return TextNormalizer()
+
+        merge_cut_cfg = getattr(config.tts, "merge_cut", None)
+        keep_punctuation = bool(getattr(merge_cut_cfg, "subtitle_output", False))
+        punctuation_normalization = getattr(text_norm_config, "enable_punctuation_normalization", True)
+        if keep_punctuation and punctuation_normalization:
+            logger.info("字幕模式：关闭标点规范化（保留中文句末标点以保证分句正确）")
+            punctuation_normalization = False
 
         return TextNormalizer(
             TextNormalizationConfig(
                 enable_whitespace_normalization=getattr(text_norm_config, "enable_whitespace_normalization", True),
                 enable_linebreak_normalization=getattr(text_norm_config, "enable_linebreak_normalization", True),
-                enable_punctuation_normalization=getattr(text_norm_config, "enable_punctuation_normalization", True),
+                enable_punctuation_normalization=punctuation_normalization,
                 enable_trim_whitespace=getattr(text_norm_config, "enable_trim_whitespace", True),
                 enable_empty_line_normalization=getattr(text_norm_config, "enable_empty_line_normalization", True),
                 enable_ssml_xml_cleaning=getattr(text_norm_config, "enable_ssml_xml_cleaning", False),
@@ -403,6 +484,25 @@ class TTSEngine(BaseEngine[str, Path]):
         """从缓存中查找结果文件路径。"""
         return self._cache_store.lookup(cache_key)
 
+    def _backend_cache_tag(self) -> str:
+        """缓存键中的**后端标识**。
+
+        不同后端（内置 edge / ``openai_http`` / 扩展注册的 ``ppc.tts.v1`` 后端）
+        对同一文本与音色产出的音频完全不同，必须隔离键空间，否则切换
+        ``tts.backend_plugin`` 后会命中另一后端的缓存产物（静默输出错误音频，
+        且 L2 磁盘缓存会跨进程固化该错配）。
+
+        ``backend_plugin`` 未配置时归为 ``edge``，与已落盘的旧缓存条目
+        （键中不含后端段）保持隔离。
+
+        返回:
+            用于拼入缓存键的后端短标识。
+        """
+        plugin = str(
+            getattr(getattr(self.config, "tts", None), "backend_plugin", "") or ""
+        ).strip()
+        return plugin or "edge"
+
     def _store_cache(self, cache_key: str, path: Path) -> None:
         """将成功合成的文件路径写入缓存。"""
         self._cache_store.store(cache_key, path)
@@ -440,10 +540,18 @@ class TTSEngine(BaseEngine[str, Path]):
         所有 API 请求都经过 _api_semaphore 控制，确保总并发数严格受限。
 
         ``_private`` 接收内部参数 ``_skip_circuit_gate``（多段文件已在文件级
-        做过单次熔断 gate，内部各段不再重复入闸）与 ``_voice``（多角色轮次
-        显式音色；缺省则按 cast 首说话人探测 / 配置音色）。
+        做过单次熔断 gate，内部各段不再重复入闸）、``_voice``（多角色轮次
+        显式音色；缺省则按 cast 首说话人探测 / 配置音色）与
+        ``_semaphore_acquired``（调用方已持有 ``_api_semaphore``，此处不再
+        重复获取 —— 该信号量不可重入，且段级超时需在**拿到闸门之后**才开始
+        计时，否则排队时间会被算进超时）。
         """
         _skip_circuit_gate = bool(_private.get("_skip_circuit_gate", False))
+        _semaphore_acquired = bool(_private.get("_semaphore_acquired", False))
+        # 需要 boundary 元数据（字幕/合并切分）时必须真正走一次网络合成：
+        # 缓存命中只复制音频、不产生 WordBoundary/SentenceBoundary，
+        # 会让时间轴为空、字幕与切分失效。
+        _no_cache = bool(_private.get("_no_cache", False))
         start_time = time.time()
         # 显式音色（多角色轮次穿透）优先；否则按 cast 首说话人探测 / 配置音色。
         _explicit_voice = _private.get("_voice")
@@ -454,7 +562,8 @@ class TTSEngine(BaseEngine[str, Path]):
         # 导致下方 except asyncio.TimeoutError 处理器触发 NameError 掩盖真实超时。
         timeout_seconds = 0.0
 
-        async with self._api_semaphore:
+        gate = nullcontext() if _semaphore_acquired else self._api_semaphore
+        async with gate:
             try:
                 if not text or not text.strip():
                     return ExecutionResult.fail(error="文本内容为空", error_code=ErrorCodes.EMPTY_CONTENT.value)
@@ -471,11 +580,22 @@ class TTSEngine(BaseEngine[str, Path]):
                     normalized_text,
                     self.tts_config.rate,
                     self.tts_config.volume,
+                    self._backend_cache_tag(),
                 )
-                cached_path = self._cache_lookup(cache_key)
+                cached_path = None if _no_cache else self._cache_lookup(cache_key)
                 if cached_path is not None:
                     self.tts_stats.record_cache_hit()
                     output_path.parent.mkdir(parents=True, exist_ok=True)
+                    # 同路径重跑（输出路径与缓存条目指向同一文件）时
+                    # shutil.copy 会抛 SameFileError；此前被下面的 broad except
+                    # 吞掉并回退到重新合成，导致该主场景下缓存 100% 失效。
+                    if _is_same_file(cached_path, output_path):
+                        metrics = ExecutionMetrics(
+                            duration=time.time() - start_time,
+                            bytes_processed=output_path.stat().st_size,
+                        )
+                        logger.debug(f"TTS 缓存命中（同路径，无需复制）: key={cache_key[:32]}...")
+                        return ExecutionResult.ok(output_path, metrics)
                     try:
                         shutil.copy(cached_path, output_path)
                     except Exception as e:  # noqa: BLE001
@@ -505,6 +625,12 @@ class TTSEngine(BaseEngine[str, Path]):
                     避免熔断拒绝时遗留 ``coroutine was never awaited``
                     告警与无用的协程/连接资源。
                     """
+                    # boundary_sink 仅在合并截断路径传入：默认路径不传，
+                    # 保持与既有客户端实现（含测试里的显式子类）签名兼容。
+                    extra: dict[str, Any] = {}
+                    _boundary_sink = _private.get("_boundary_sink")
+                    if _boundary_sink is not None:
+                        extra["boundary_sink"] = _boundary_sink
                     call = self._edge_client.synthesize_to_file(
                         normalized_text,
                         output_path,
@@ -512,6 +638,7 @@ class TTSEngine(BaseEngine[str, Path]):
                         rate=self.tts_config.rate,
                         volume=self.tts_config.volume,
                         last_chunk_offset=DEFAULT_RESUME_OFFSET,
+                        **extra,
                     )
                     if disable_timeout:
                         return await call
@@ -539,7 +666,31 @@ class TTSEngine(BaseEngine[str, Path]):
 
                 actual_time = time.time() - start_time
                 self._record_timeout(normalized_text, actual_time, success=True)
-                self._store_cache(cache_key, output_path)
+
+                # 缓存写入键必须用**实际产出音频的语音**：voice_fallbacks 触发时
+                # 客户端内部已换用回退语音，若仍按请求语音归档，后续该语音的请求
+                # 会命中缓存并静默返回另一语音的音频（且写入 L2 磁盘缓存跨进程固化）。
+                # 查表仍用请求语音的 key —— 回退产物不存该 key，因此下次会重新合成
+                # （宁可重复合成，也不返回错误语音）。
+                effective_voice = (
+                    getattr(self._edge_client, "last_effective_voice", None) or voice
+                )
+                if effective_voice != voice:
+                    logger.warning(
+                        "语音回退生效：请求 %r 实际使用 %r；缓存按实际语音归档（不写入请求语音键）",
+                        voice,
+                        effective_voice,
+                    )
+                    store_key = build_cache_key(
+                        effective_voice,
+                        normalized_text,
+                        self.tts_config.rate,
+                        self.tts_config.volume,
+                        self._backend_cache_tag(),
+                    )
+                else:
+                    store_key = cache_key
+                self._store_cache(store_key, output_path)
 
                 metrics = ExecutionMetrics(
                     duration=actual_time,
@@ -759,8 +910,18 @@ class TTSEngine(BaseEngine[str, Path]):
         disable_timeout: bool,
         progress_handler: Any | None,
     ) -> ExecutionResult[Path]:
-        """轮次级多角色合成：切轮次 → 显式音色穿透 → 单段或合并。"""
+        """轮次级多角色合成：切轮次 → 显式音色穿透 → 单段或合并。
+
+        ``tts.merge_cut.enabled`` 时改走合并截断路径（同音色相邻片段合并成
+        一次请求，再按 boundary 时间戳切回各片段）；否则维持逐片段合成。
+        """
         try:
+            merge_cfg = getattr(getattr(self.config, "tts", None), "merge_cut", None)
+            if merge_cfg is not None and merge_cfg.enabled:
+                return await self._synthesize_cast_merged(
+                    text, output_path, start_time, disable_timeout, progress_handler
+                )
+
             turns = self._cast.split_turns(text)
             segments, voices = self._expand_turns(turns)
             if not segments:
@@ -784,6 +945,348 @@ class TTSEngine(BaseEngine[str, Path]):
             logger.error(f"轮次级配音合成失败: {e}")
             return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
 
+    # ------------------------------------------------------------------
+    # 多角色配音：合并同音色片段 + 字幕时间截断
+    # ------------------------------------------------------------------
+
+    async def _synthesize_cast_merged(
+        self,
+        text: str,
+        output_path: Path,
+        start_time: float,
+        disable_timeout: bool,
+        progress_handler: Any | None,
+    ) -> ExecutionResult[Path]:
+        """合并截断路径（按角色池）。
+
+        流程：切轮次 → **按音色分池**，池内每 ``max_merge_pieces`` 段编成一批
+        （同一角色的多句话可跨原文位置合批）→ 逐批合成（收集 boundary）→
+        按时间戳切回各片段 → 以**原始片段下标**命名的 ``_seg_XXX.mp3`` 落盘
+        → 按下标顺序合并，原文顺序由此还原。
+
+        片文件名与旧路径一致，故 ``SegmentJournal`` / 断点续传 / 缓存语义
+        完全不变。
+
+        任何一步无法可靠完成（boundary 缺失、对齐失败、切分失败）→ 该批
+        回退逐片段合成，**宁可不优化，绝不切错音**。
+        """
+        from src.audio.mp3_cut import cut_by_ticks, frame_offsets
+        from src.engines.segment_timeline import BoundaryCue, SegmentTimeline
+        from src.text.merge_planner import plan_merge
+
+        cfg = self.config.tts.merge_cut
+        turns = self._cast.split_turns(text)
+        segments, voices = self._expand_turns(turns)
+        if not segments:
+            return ExecutionResult.fail(error="文本分段失败", error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
+
+        plan = plan_merge(
+            segments,
+            voices,
+            max_chars=cfg.max_merge_chars,
+            max_bytes=cfg.max_merge_bytes,
+            max_pieces=cfg.max_merge_pieces,
+            only_short=cfg.only_short_segments,
+            scope=getattr(cfg, "merge_scope", "pool"),
+        )
+        logger.info(
+            "合并截断: %d 段 → %d 请求（省 %d，%.0f%%；其中 %d 批为真合并，范围=%s）",
+            plan.segment_count,
+            plan.request_count,
+            plan.saved,
+            plan.saved_ratio * 100,
+            plan.merged_requests,
+            getattr(cfg, "merge_scope", "pool"),
+        )
+
+        cache_dir = output_path.parent / ".cache" / output_path.stem
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        journal = SegmentJournal.open(cache_dir)
+        silence_ms = int(self.tts_config.segment_silence_ms)
+
+        piece_paths: dict[int, Path] = {}
+        # 字幕：每片的绝对起点（tick）与片内 cue（相对本片起点的 tick）
+        piece_cues: dict[int, tuple[int, list[BoundaryCue]]] = {}
+        name = output_path.stem
+
+        def _seg_path(piece_idx: int) -> Path:
+            return cache_dir / f"{name}_seg_{piece_idx + 1:03d}.mp3"
+
+        def _sig_kwargs(voice: str) -> dict[str, Any]:
+            return {
+                "voice": voice,
+                "rate": self.tts_config.rate,
+                "volume": self.tts_config.volume,
+            }
+
+        def _already_done(req: Any) -> bool:
+            for k, piece_idx in enumerate(req.piece_indices):
+                p = _seg_path(piece_idx)
+                if not (p.exists() and p.stat().st_size > 0):
+                    return False
+                if not journal.verify(
+                    piece_idx + 1, p, req.pieces[k], **_sig_kwargs(req.voice)
+                ):
+                    return False
+            return True
+
+        async def _synth_one_piece(
+            piece_idx: int,
+            piece_text: str,
+            voice: str,
+            *,
+            boundary_sink: Any | None = None,
+        ) -> None:
+            """回退路径：该片段单独合成（复用既有段级缓存/超时/熔断跳过）。"""
+            _, res = await self._synthesize_segment(
+                piece_idx + 1,
+                piece_text,
+                cache_dir=cache_dir,
+                disable_timeout=disable_timeout,
+                progress_handler=progress_handler,
+                journal=journal,
+                voice=voice,
+                boundary_sink=boundary_sink,
+            )
+            if not res.success or res.data is None:
+                raise RuntimeError(res.error or f"分段 {piece_idx + 1} 合成失败")
+            piece_paths[piece_idx] = _seg_path(piece_idx)
+
+        def _record_whole_piece_cues(piece_idx: int, timeline: Any) -> None:
+            """单片场景：整段音频即本片，cue 相对本片起点已是原值。"""
+            if timeline is None or timeline.is_empty:
+                return
+            walked = frame_offsets(_seg_path(piece_idx).read_bytes())
+            if walked is None:
+                return
+            params = walked[3]
+            ticks_per_frame = 10_000_000 * params.samples_per_frame // params.sample_rate
+            total_ticks = len(walked[0]) * ticks_per_frame
+            piece_cues[piece_idx] = (0, total_ticks, list(timeline.cues))
+
+        async def _run_request(order: int, req: Any) -> None:
+            if _already_done(req):
+                for piece_idx in req.piece_indices:
+                    piece_paths[piece_idx] = _seg_path(piece_idx)
+                if progress_handler:
+                    for _ in req.piece_indices:
+                        progress_handler.on_segment_complete(success=True)
+                return
+
+            if not req.is_merged:
+                # 单片也收集时间轴：字幕输出不应依赖「是否发生合并」
+                one_timeline = SegmentTimeline() if cfg.subtitle_output else None
+                await _synth_one_piece(
+                    req.piece_indices[0],
+                    req.pieces[0],
+                    req.voice,
+                    boundary_sink=one_timeline.feed_chunk if one_timeline is not None else None,
+                )
+                if one_timeline is not None:
+                    _record_whole_piece_cues(req.piece_indices[0], one_timeline)
+                return
+
+            tmp = cache_dir / f"{name}_merge_{order:03d}.mp3"
+            timeline = SegmentTimeline()
+            async with self._api_semaphore:
+                if disable_timeout:
+                    result = await self.synthesize(
+                        req.merged_text,
+                        tmp,
+                        disable_timeout=True,
+                        _skip_circuit_gate=True,
+                        _voice=req.voice,
+                        _semaphore_acquired=True,
+                        _boundary_sink=timeline.feed_chunk,
+                        _no_cache=True,
+                    )
+                else:
+                    try:
+                        result = await asyncio.wait_for(
+                            self.synthesize(
+                                req.merged_text,
+                                tmp,
+                                disable_timeout=False,
+                                _skip_circuit_gate=True,
+                                _voice=req.voice,
+                                _semaphore_acquired=True,
+                                _boundary_sink=timeline.feed_chunk,
+                                _no_cache=True,
+                            ),
+                            timeout=self._calculate_timeout(req.merged_text),
+                        )
+                    except asyncio.TimeoutError:
+                        result = None
+
+            if result is None or not result.success or not tmp.exists():
+                if progress_handler:
+                    for _ in req.piece_indices:
+                        progress_handler.on_segment_complete(success=False, error="合并请求失败")
+                if not cfg.fallback_to_per_piece:
+                    raise RuntimeError("合并请求失败且未启用逐片段回退")
+                for k, piece_idx in enumerate(req.piece_indices):
+                    await _synth_one_piece(piece_idx, req.pieces[k], req.voice)
+                return
+
+            # 时间轴对齐 → 帧对齐切分；任一失败即回退逐片段
+            data = tmp.read_bytes()
+            starts = timeline.piece_starts(list(req.pieces))
+            slices = cut_by_ticks(data, starts) if starts else None
+            walked = frame_offsets(data)
+
+            if slices is None or len(slices) != req.piece_count or walked is None:
+                logger.info(
+                    "合并批 %d 对齐/切分失败（cue=%d），回退逐片段合成",
+                    order,
+                    len(timeline.cues),
+                )
+                if not cfg.fallback_to_per_piece:
+                    raise RuntimeError("字幕对齐失败且未启用逐片段回退")
+                for k, piece_idx in enumerate(req.piece_indices):
+                    await _synth_one_piece(piece_idx, req.pieces[k], req.voice)
+                return
+
+            # 落片 + 记 journal（同名段文件，旧路径语义不变）
+            for k, piece_idx in enumerate(req.piece_indices):
+                path = _seg_path(piece_idx)
+                path.write_bytes(slices[k])
+                journal.record(
+                    piece_idx + 1, path, req.pieces[k], **_sig_kwargs(req.voice)
+                )
+                piece_paths[piece_idx] = path
+                if progress_handler:
+                    progress_handler.on_segment_complete(success=True)
+
+            # 片内 cue 相对本片起点（用于字幕）
+            params = walked[3]
+            ticks_per_frame = 10_000_000 * params.samples_per_frame // params.sample_rate
+            total_ticks = len(walked[0]) * ticks_per_frame
+            bounds = list(starts or [])
+            bounds.append(total_ticks)
+            for k, piece_idx in enumerate(req.piece_indices):
+                lo, hi = int(bounds[k]), int(bounds[k + 1])
+                cues = [
+                    BoundaryCue(c.start_ticks - lo, min(c.end_ticks, hi) - lo, c.text)
+                    for c in timeline.cues
+                    if lo <= c.start_ticks < hi
+                ]
+                # (片内起点 tick, 片时长 tick, 相对本片的 cue)
+                piece_cues[piece_idx] = (lo, max(0, hi - lo), cues)
+
+        try:
+            tasks = [
+                asyncio.create_task(_run_request(order, req))
+                for order, req in enumerate(plan.requests)
+            ]
+            if tasks:
+                try:
+                    _done, pending = await asyncio.wait(
+                        tasks, return_when=asyncio.FIRST_EXCEPTION
+                    )
+                except asyncio.CancelledError:
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                if pending:
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                first_error: BaseException | None = None
+                for t in tasks:
+                    if t.cancelled():
+                        continue
+                    exc = t.exception()
+                    if exc is not None and first_error is None:
+                        first_error = exc
+                if first_error is not None:
+                    raise first_error
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"合并截断合成失败: {e}")
+            return ExecutionResult.fail(error=str(e), error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
+
+        temp_files = [piece_paths[i] for i in sorted(piece_paths)]
+        if len(temp_files) != plan.segment_count:
+            missing = plan.segment_count - len(temp_files)
+            return ExecutionResult.fail(
+                error=f"有 {missing} 个片段未产出音频",
+                error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value,
+            )
+
+        if cfg.subtitle_output:
+            self._write_chapter_srt(
+                output_path, plan, piece_cues, sorted(piece_paths), silence_ms
+            )
+
+        result = await self._finalize_merged_audio(
+            output_path, cache_dir, temp_files, start_time
+        )
+        if result.success and progress_handler is not None:
+            logger.info("合并截断完成: %d 段 / %d 请求", plan.segment_count, plan.request_count)
+        return result
+
+    def _write_chapter_srt(
+        self,
+        output_path: Path,
+        plan: Any,
+        piece_cues: dict[int, tuple[int, int, list[Any]]],
+        order: list[int],
+        silence_ms: int,
+    ) -> None:
+        """按最终拼接时间轴落 ``.srt``（含段间静音，时间与音频一致）。
+
+        每片的绝对起点 = 前面所有片时长之和 + 已插入的段间静音；片内每条
+        boundary 相对本片起点偏移即可换算成绝对时间。
+        """
+        try:
+            from datetime import timedelta
+
+            from src.engines.edge_tts.srt_composer import Subtitle, compose
+
+            cfg = self.config.tts.merge_cut
+            out_dir = Path(cfg.subtitle_dir) if cfg.subtitle_dir else output_path.parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            spans: list[tuple[int, int, str]] = []
+            cursor_ticks = 0
+            for piece_idx in order:
+                _rel_start, piece_ticks, cues = piece_cues.get(piece_idx, (0, 0, []))
+                # cue 已是「相对本片起点」的 tick，直接叠加本片的绝对起点
+                base = cursor_ticks
+                for cue in cues:
+                    start = max(0, base + cue.start_ticks)
+                    end = max(start + 1, base + cue.end_ticks)
+                    spans.append((start, end, cue.text))
+                # 按真实片长推进；段间还要加上合并时插入的静音
+                cursor_ticks += max(piece_ticks, 0) + silence_ms * 10_000
+
+            # 服务端相邻 boundary 的 offset+duration 间有约 50ms 重叠：
+            # 统一把上一条的结束裁剪到下一条起点，避免字幕叠字。
+            for i in range(len(spans) - 1):
+                start, end, text = spans[i]
+                next_start = spans[i + 1][0]
+                if end > next_start > start:
+                    spans[i] = (start, next_start, text)
+
+            subs = [
+                Subtitle(
+                    index=i,
+                    start=timedelta(microseconds=start / 10),
+                    end=timedelta(microseconds=end / 10),
+                    content=text,
+                )
+                for i, (start, end, text) in enumerate(spans, start=1)
+            ]
+
+            if subs:
+                srt_path = out_dir / f"{output_path.stem}.srt"
+                srt_path.write_text(compose(subs), encoding="utf-8")
+                logger.info("字幕已输出: %s（%d 条）", srt_path, len(subs))
+        except Exception as e:  # noqa: BLE001
+            # 字幕后处理失败不应让已合成的音频作废
+            logger.warning("字幕输出失败（已忽略）: %s", e)
+
+
     async def _synthesize_segment(
         self,
         index: int,
@@ -793,20 +1296,31 @@ class TTSEngine(BaseEngine[str, Path]):
         disable_timeout: bool,
         progress_handler: Any | None,
         journal: Any | None = None,
+        boundary_sink: Any | None = None,
         voice: str | None = None,
     ) -> tuple[int, ExecutionResult]:
         temp_file = cache_dir / f"{cache_dir.name}_seg_{index:03d}.mp3"
+        # 音色（多角色显式穿透优先，否则按 cast/配置解析）与合成参数构成
+        # 音频指纹：仅改 tts.voice（文本与输出字节数不变）时也会判为失配，
+        # 杜绝复用上一音色的段文件导致整书音色前后不一致。
+        seg_voice = voice or self._resolve_voice(segment)
+        sig_kwargs = {
+            "voice": seg_voice,
+            "rate": self.tts_config.rate,
+            "volume": self.tts_config.volume,
+        }
         if temp_file.exists() and temp_file.stat().st_size > 0:
             if journal is not None and journal.has(index):
-                # 内容寻址（journal 对该段已有记录）：文本 sha1 + 字节数 O(1) 校验，
-                # 免整段解码探针。分段配置或输入文本变更 → 哈希失配 → 判陈旧，
-                # 走下方重新合成，杜绝「同名段文件内容已变却被复用」的错位拼接。
-                if journal.verify(index, temp_file, segment):
+                # 内容寻址（journal 对该段已有记录）：文本 sha1 + 音色指纹 +
+                # 字节数 O(1) 校验，免整段解码探针。分段配置、输入文本或音色
+                # 变更 → 失配 → 判陈旧，走下方重新合成，杜绝「同名段文件内容
+                # 已变却被复用」的错位拼接与串音。
+                if journal.verify(index, temp_file, segment, **sig_kwargs):
                     logger.debug("段 %d journal 命中: %s", index, temp_file)
                     if progress_handler:
                         progress_handler.on_segment_complete(success=True)
                     return index, ExecutionResult.ok(temp_file)
-                logger.info("段 %d journal 失配（文本/大小已变），重新合成: %s", index, temp_file)
+                logger.info("段 %d journal 失配（文本/音色/大小已变），重新合成: %s", index, temp_file)
             else:
                 # 无 journal 条目（11.x 旧缓存 / 尚未记录）：回退解码探针，
                 # 保持既有 resume 复用语义不回退；成功后补登 journal，后续运行转 O(1)。
@@ -814,41 +1328,70 @@ class TTSEngine(BaseEngine[str, Path]):
                 if probe is not None:
                     logger.debug("段 %d 命中缓存: %s", index, temp_file)
                     if journal is not None:
-                        journal.record(index, temp_file, segment)
+                        journal.record(index, temp_file, segment, **sig_kwargs)
                     if progress_handler:
                         progress_handler.on_segment_complete(success=True)
                     return index, ExecutionResult.ok(temp_file)
                 logger.warning("段 %d 缓存文件损坏，重新合成: %s", index, temp_file)
                 # 探针失败，继续走合成路径（合成会覆盖 temp_file）
 
-        # disable_timeout=True（--one 模式）时完全禁用段级超时
-        # 注意：不在此处获取 _api_semaphore，synthesize 内部已有信号量控制。
-        # asyncio.Semaphore 不可重入，外层再获取会导致 segments >= api_concurrency 时死锁。
-        # _skip_circuit_gate=True：多段文件已在文件级入闸，各段不再重复走熔断。
-        if disable_timeout:
-            result = await self.synthesize(
-                segment, temp_file, disable_timeout=True, _skip_circuit_gate=True, _voice=voice
-            )
-        else:
-            segment_timeout = self._calculate_timeout(segment)
-            try:
-                result = await asyncio.wait_for(
-                    self.synthesize(
-                        segment, temp_file, disable_timeout=False, _skip_circuit_gate=True, _voice=voice
-                    ),
-                    timeout=segment_timeout,
+        # disable_timeout=True（--one 模式）时完全禁用段级超时。
+        # 在这里**先**获取 _api_semaphore，再进入计时：此前计时从调用
+        # ``asyncio.wait_for`` 那刻起算，而信号量在 ``synthesize`` 内部获取，
+        # 于是段数 > api_concurrency 时尾段把大量排队时间算进了超时预算 ——
+        # 表现为远小于实际合成耗时的「假超时」，且失败率随文本变长而上升。
+        # 信号量不可重入，故把「已持有」通过 _private 传下去让内层跳过获取。
+        async with self._api_semaphore:
+            # boundary_sink 仅在需要字幕/切分时传入；默认不传以保持
+            # 与既有假客户端（显式签名）的兼容性。
+            extra: dict[str, Any] = {}
+            if boundary_sink is not None:
+                extra["_boundary_sink"] = boundary_sink
+                extra["_no_cache"] = True
+            if disable_timeout:
+                result = await self.synthesize(
+                    segment,
+                    temp_file,
+                    disable_timeout=True,
+                    _skip_circuit_gate=True,
+                    _voice=voice,
+                    _semaphore_acquired=True,
+                    **extra,
                 )
-            except asyncio.TimeoutError:
-                logger.warning("段 %d 合成超时 (%.0fs, 段长=%d): %s", index, segment_timeout, len(segment), temp_file)
-                if progress_handler:
-                    progress_handler.on_segment_complete(success=False, error=f"段级超时 ({segment_timeout:.0f}s)")
-                return index, ExecutionResult.fail(
-                    error=f"段级超时 ({segment_timeout:.0f}s)",
-                    error_code="SEGMENT_TIMEOUT",
-                )
+            else:
+                segment_timeout = self._calculate_timeout(segment)
+                try:
+                    result = await asyncio.wait_for(
+                        self.synthesize(
+                            segment,
+                            temp_file,
+                            disable_timeout=False,
+                            _skip_circuit_gate=True,
+                            _voice=voice,
+                            _semaphore_acquired=True,
+                            **extra,
+                        ),
+                        timeout=segment_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "段 %d 合成超时 (%.0fs, 段长=%d): %s",
+                        index,
+                        segment_timeout,
+                        len(segment),
+                        temp_file,
+                    )
+                    if progress_handler:
+                        progress_handler.on_segment_complete(
+                            success=False, error=f"段级超时 ({segment_timeout:.0f}s)"
+                        )
+                    return index, ExecutionResult.fail(
+                        error=f"段级超时 ({segment_timeout:.0f}s)",
+                        error_code="SEGMENT_TIMEOUT",
+                    )
         if journal is not None and result.success and temp_file.exists():
             # 合成成功后记入 journal（崩溃一致性保证：有条目 ⟹ 文件已完整落盘）
-            journal.record(index, temp_file, segment)
+            journal.record(index, temp_file, segment, **sig_kwargs)
         if progress_handler:
             progress_handler.on_segment_complete(
                 success=result.success,

@@ -73,6 +73,9 @@ console = Console(legacy_windows=False)
 # 全局 --no-color 标记(由 typer_app 在解析后写入)
 no_color: bool = False
 
+# --json/--quiet 下日志专用的 stderr Console（懒创建，见 setup_logging）
+_log_console: Console | None = None
+
 
 @dataclass
 class TaskStatus:
@@ -197,6 +200,10 @@ class OutputFormatter(BrandingMixin, PanelsMixin, WizardMixin, HelpBrowserMixin)
             self.console.no_color = bool(no_color)
         with contextlib.suppress(Exception):
             console.no_color = bool(no_color)
+        # stderr 日志 Console 同步 no-color，保持 --no-color 对日志同样生效
+        with contextlib.suppress(Exception):
+            if _log_console is not None:
+                _log_console.no_color = bool(no_color)
 
     def set_no_emoji(self, no_emoji: bool):
         """Set no-emoji mode."""
@@ -768,7 +775,7 @@ def setup_logging(verbose: bool = False, quiet: bool = False, json_mode: bool = 
     Args:
         verbose: 启用 DEBUG 级别日志。
         quiet: 仅输出 WARNING 及以上级别日志。
-        json_mode: 当前仅作为占位参数(quiet 优先级最高,日志走全局 console)。
+        json_mode: ``--json`` 模式；日志改道 stderr,保证 stdout 只有 JSON。
 
     Returns:
         已配置的 ``ppc`` logger。
@@ -780,11 +787,26 @@ def setup_logging(verbose: bool = False, quiet: bool = False, json_mode: bool = 
     else:
         level = logging.INFO
 
-    # RichHandler 输出到 stderr,不干扰 JSON stdout
     from rich.logging import RichHandler
 
+    # C4（P1）：--json / --quiet 下日志必须写 stderr。
+    # 触发条件：``ppc --json <cmd>`` 或 ``ppc --quiet <cmd>`` 期间产生任意日志
+    # （WARNING/ERROR/第三方库日志）。全局 ``console`` 的写目标是 stdout，旧实现
+    # 直接 ``RichHandler(console=console)`` 与注释「输出到 stderr」相反。
+    # 后果：一条 WARNING 就混进 stdout，``ppc ... --json | jq`` 解析失败，
+    # 脚本化管道拿到非法 JSON。
+    # 修复：仅为「日志」新建 stderr Console；人类可读输出仍走 stdout 全局 console。
+    # quiet 模式同理（WARNING+ 仍会打印，同样会污染机器可读输出）。
+    global _log_console
+    log_console = console
+    if json_mode or quiet:
+        if _log_console is None:
+            _log_console = Console(stderr=True, legacy_windows=False)
+        _log_console.no_color = console.no_color
+        log_console = _log_console
+
     handler = RichHandler(
-        console=console,
+        console=log_console,
         rich_tracebacks=True,
         show_path=verbose,
         show_time=True,

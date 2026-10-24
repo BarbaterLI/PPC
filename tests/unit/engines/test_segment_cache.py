@@ -1,6 +1,7 @@
 """_merge_segments 段级缓存与并发合成。"""
 
 import asyncio
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock
 
 from src.config.presets import get_preset
@@ -64,11 +65,13 @@ def test_concurrency_limited_by_api_concurrency(tmp_path):
     active = 0
     max_active = 0
 
-    async def fake_synth(text, out_path, **_kw):
+    async def fake_synth(text, out_path, **kwargs):
         nonlocal active, max_active
-        # 模拟真实 synthesize 内部获取 _api_semaphore 的行为
-        # （_synth_one 不再获取信号量，并发控制由 synthesize 内部负责）
-        async with engine._api_semaphore:
+        # 镜像真实 synthesize 的信号量契约：段级路径已在**外层**持有
+        # _api_semaphore，并通过 _semaphore_acquired=True 通知内层跳过获取。
+        # asyncio.Semaphore 不可重入，若此处无条件再获取会死锁。
+        gate = nullcontext() if kwargs.get("_semaphore_acquired") else engine._api_semaphore
+        async with gate:
             active += 1
             max_active = max(max_active, active)
             await asyncio.sleep(0.02)

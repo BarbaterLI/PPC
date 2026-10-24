@@ -9,6 +9,7 @@ from src.config.manager_core import (
     ConfigLoadOrder,
     ConfigManager,
     get_default_config_dir,
+    get_default_manager,
 )
 from src.config.manager_notify import ConfigNotifier
 from src.config.manager_persist import ConfigPersistence
@@ -78,6 +79,7 @@ __all__ = [
     "ConfigPersistence",
     "ConfigNotifier",
     "get_default_config_dir",
+    "get_default_manager",
     "ConfigChangeEvent",
     "ConfigChangeListener",
     "ConfigLoadOrder",

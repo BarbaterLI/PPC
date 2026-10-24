@@ -231,6 +231,11 @@ class SlidingWindowCounter:
         s, f, _ = await self._counts()
         return s + f
 
+    async def get_failure_count(self) -> int:
+        """滑动窗口内的累计失败次数（供 ``failure_threshold`` 判定使用）。"""
+        _, f, _ = await self._counts()
+        return f
+
     async def reset(self) -> None:
         async with self._lock:
             self._successes = 0
@@ -577,6 +582,26 @@ class CircuitBreaker:
         total_calls = await self._sliding_window.get_total_calls()
         if total_calls < self.config.minimum_calls:
             return
+
+        # S1: 累计失败次数熔断（failure_threshold 之前是死配置）。
+        # 触发条件：trip_strategy 为 COMBINED 时，滑动窗口内累计失败次数
+        #   >= failure_threshold（与"连续失败""失败率"是 **或** 关系，
+        #   不要求失败连续、也不要求失败率高）。
+        # 后果：修复前该值从未被读取，CLI/模板里把"熔断器失败阈值"调小
+        #   对实际判定毫无影响；修复后它作为第三条独立触发条件生效。
+        # 最小样本保护：沿用上面的 minimum_calls 提前返回，避免冷启动
+        #   只有少量调用时就开闸。
+        if strategy == TripStrategy.COMBINED:
+            failure_count = await self._sliding_window.get_failure_count()
+            if failure_count >= self.config.failure_threshold:
+                await self._transition_to(CircuitState.OPEN)
+                logger.warning(
+                    "Circuit breaker %s opened: %d failures in sliding window (threshold %d)",
+                    self.name,
+                    failure_count,
+                    self.config.failure_threshold,
+                )
+                return
 
         if strategy in (TripStrategy.ERROR_RATE, TripStrategy.COMBINED):
             failure_rate = await self._sliding_window.get_failure_rate()

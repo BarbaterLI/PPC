@@ -213,7 +213,23 @@ class TestHelpers:
     def test_build_cache_key_format(self) -> None:
         key = build_cache_key("voice", "text", "+0%", "+0%")
         digest = hashlib.sha256(b"text").hexdigest()
-        assert key == f"tts:voice:{digest}:+0%:+0%"
+        # 键含 backend 段（默认 default）：不同后端产出不同音频，必须隔离键空间
+        assert key == f"tts:default:voice:{digest}:+0%:+0%"
+
+    def test_build_cache_key_includes_backend(self) -> None:
+        """后端标识必须参与键空间，否则切换 backend_plugin 会命中旧后端产物。"""
+        digest = hashlib.sha256(b"text").hexdigest()
+        edge_key = build_cache_key("voice", "text", "+0%", "+0%", "edge")
+        openai_key = build_cache_key("voice", "text", "+0%", "+0%", "openai_http")
+        assert edge_key != openai_key
+        assert edge_key == f"tts:edge:voice:{digest}:+0%:+0%"
+        assert openai_key == f"tts:openai_http:voice:{digest}:+0%:+0%"
+
+    def test_build_cache_key_default_backend_matches_legacy_namespace(self) -> None:
+        """未指定 backend 时归入 default，与旧缓存条目（无 backend 段）隔离。"""
+        assert build_cache_key("v", "t", "+0%", "+0%") == build_cache_key(
+            "v", "t", "+0%", "+0%", ""
+        )
 
     def test_build_cache_key_different_text(self) -> None:
         k1 = build_cache_key("v", "a", "+0%", "+0%")
@@ -417,8 +433,15 @@ class TestCacheHit:
             fast_engine._text_normalizer.normalize(text),
             DEFAULT_RATE,
             DEFAULT_VOLUME,
+            "edge",  # 与引擎 _backend_cache_tag() 的默认值一致
         )
-        cache.set(key, {"path": str(cached_file), "size": 100}, ttl=3600)
+        # size 必须与文件实际大小一致：lookup 现在会校验记录大小与文件大小，
+        # 不一致即视为被改写并按未命中处理（防止返回被覆盖的错误音频）。
+        cache.set(
+            key,
+            {"path": str(cached_file), "size": cached_file.stat().st_size},
+            ttl=3600,
+        )
 
         engine = TTSEngine(fast_engine.config, edge_client=fake_edge, cache=cache)
         out = tmp_path / "out.mp3"

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from src.executors.checkpoint import CheckpointManager, TaskStatus
+from src.executors.checkpoint import CheckpointManager, TaskStatus, make_task_id
 
 
 def _make_manager(tmp_path: Path) -> CheckpointManager:
@@ -28,8 +28,10 @@ def test_rebuild_pending_from_segments(tmp_path: Path):
     assert data.total_tasks == 1
     assert data.completed_tasks == 0
     assert data.pending_tasks == 1
-    assert data.tasks["chapter1"].status == TaskStatus.PENDING
-    assert data.tasks["chapter1"].voice == "zh-CN-XiaoxiaoNeural"
+    # task_id 与 TTSExecutor 批量入队统一（绝对路径 + 语音的 md5）
+    key = make_task_id(input_dir / "chapter1.txt", "zh-CN-XiaoxiaoNeural")
+    assert data.tasks[key].status == TaskStatus.PENDING
+    assert data.tasks[key].voice == "zh-CN-XiaoxiaoNeural"
 
 
 def test_rebuild_completed_from_existing_output(tmp_path: Path):
@@ -51,7 +53,8 @@ def test_rebuild_completed_from_existing_output(tmp_path: Path):
     assert data.total_tasks == 1
     assert data.completed_tasks == 1
     assert data.pending_tasks == 0
-    assert data.tasks["chapter2"].status == TaskStatus.COMPLETED
+    key = make_task_id(input_dir / "chapter2.txt", "zh-CN-YunxiNeural")
+    assert data.tasks[key].status == TaskStatus.COMPLETED
 
 
 def test_rebuild_skips_cache_without_input(tmp_path: Path):
@@ -117,4 +120,4 @@ def test_rebuild_save_writes_checkpoint(tmp_path: Path):
     assert loaded.total_tasks == 1
     assert loaded.pending_tasks == 1
     assert loaded.metadata.get("rebuilt_from_cache") == str(output_dir / ".cache")
-    assert "chapter4" in loaded.tasks
+    assert make_task_id(input_dir / "chapter4.txt", "zh-CN-XiaoxiaoNeural") in loaded.tasks

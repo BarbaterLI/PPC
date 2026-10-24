@@ -138,18 +138,29 @@ def _walk_frames(data: bytes, audio_start: int) -> tuple[list[int], int]:
 
 
 def _xing_info(data: bytes, first_pos: int, frame_size: int) -> tuple[int | None, int | None]:
-    """在第一帧中查找 Xing/Info（或 VBRI），返回 (帧数, 字节数)。"""
+    """在第一帧中查找 Xing/Info（或 VBRI），返回 (帧数, 字节数)。
+
+    触发条件：首帧被截断（帧头声明的长度大于实际剩余字节），或帧内垃圾区
+    恰好含 ``Xing``/``Info`` 字样，使匹配下标落在切片尾部。
+    后果（旧实现）：``struct.unpack_from`` 越界抛 ``struct.error`` 逃出
+    :func:`probe_mp3`，调用方拿到崩溃而非「不可探测」降级。
+    因此每个字段解析前都做长度校验，不足即返回 ``(None, None)``。
+    """
     region = data[first_pos : first_pos + frame_size]
     idx = region.find(b"Xing")
     if idx < 0:
         idx = region.find(b"Info")
     if 0 <= idx < 256:
+        if idx + 16 > len(region):  # flags(4) + frames(4) + bytes(4) 不完整
+            return None, None
         flags = struct.unpack_from(">I", region, idx + 4)[0]
         frames = struct.unpack_from(">I", region, idx + 8)[0] if flags & 0x1 else None
         total_bytes = struct.unpack_from(">I", region, idx + 12)[0] if flags & 0x2 else None
         return frames, total_bytes
     idx = region.find(b"VBRI")
     if 0 <= idx < 64:
+        if idx + 18 > len(region):  # VBRI 帧数位于 idx+14..18
+            return None, None
         frames = struct.unpack_from(">I", region, idx + 14)[0]
         return frames or None, None
     return None, None

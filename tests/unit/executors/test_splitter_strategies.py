@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
@@ -298,3 +299,76 @@ class TestSplitVolumeConfigSafety:
 
         # 配置未被修改
         assert executor.config.split.hierarchical_split is True
+
+
+# ---------------------------------------------------------------------------
+# 章节文件标题唯一性（P2-3 回归：标题被写两遍）
+# ---------------------------------------------------------------------------
+
+
+def _chapter_body() -> str:
+    """足够长（> min_chapter_length=100）的正文。"""
+    return "这一章正文内容用于填充长度以满足最小章节长度限制。" * 6
+
+
+class TestChapterFileTitleOnce:
+    def test_title_line_appears_once_per_file(self, tmp_path) -> None:
+        """分章后每个文件的正文中标题行只出现一次（旧实现会写两遍）。"""
+        executor = SplitterExecutor()
+        asyncio.run(executor.initialize())
+
+        body = _chapter_body()
+        content = f"第一章 开端\n{body}\n第二章 转折\n{body}\n"
+        src = tmp_path / "book.txt"
+        src.write_text(content, encoding="utf-8")
+
+        out_dir = tmp_path / "out"
+        result = asyncio.run(executor.execute(src, out_dir))
+        assert result.is_success, result.error
+
+        files = sorted(out_dir.glob("*.txt"))
+        assert len(files) == 2
+
+        first = files[0].read_text(encoding="utf-8")
+        assert first.count("第一章 开端") == 1
+        assert body in first
+        # 分隔线本身是格式要求，保留（位于标题行之后）
+        assert "=" * len("第一章 开端") * 2 in first
+
+        second = files[1].read_text(encoding="utf-8")
+        assert second.count("第二章 转折") == 1
+
+    def test_title_kept_once_when_preamble_merged_into_first_chapter(self, tmp_path) -> None:
+        """首章并入前导内容时（标题行不在正文首行）标题仍只出现一次。"""
+        executor = SplitterExecutor()
+        asyncio.run(executor.initialize())
+
+        body = _chapter_body()
+        content = f"这是没有匹配任何章节模式的前导序言内容。\n第一章 开端\n{body}\n第二章 转折\n{body}\n"
+        src = tmp_path / "book.txt"
+        src.write_text(content, encoding="utf-8")
+
+        out_dir = tmp_path / "out"
+        result = asyncio.run(executor.execute(src, out_dir))
+        assert result.is_success, result.error
+
+        first = sorted(out_dir.glob("*.txt"))[0].read_text(encoding="utf-8")
+        assert first.count("第一章 开端") == 1
+        assert "前导序言内容" in first  # 前导内容未被丢弃
+
+    def test_separator_disabled_writes_no_equals_line(self, tmp_path) -> None:
+        """关闭分隔线时只保留原始标题行，不额外插入任何标题副本。"""
+        executor = SplitterExecutor()
+        executor.config.split.add_title_separator = False
+        asyncio.run(executor.initialize())
+
+        body = _chapter_body()
+        src = tmp_path / "book.txt"
+        src.write_text(f"第一章 开端\n{body}\n", encoding="utf-8")
+
+        out_dir = tmp_path / "out"
+        assert asyncio.run(executor.execute(src, out_dir)).is_success
+
+        text = sorted(out_dir.glob("*.txt"))[0].read_text(encoding="utf-8")
+        assert text.count("第一章 开端") == 1
+        assert "====" not in text

@@ -375,9 +375,18 @@ def handle_bench(
     else:
         raise CLIError(E.E_BUSINESS, f"未知基准 '{which}'，可选: all|startup|merge|io")
 
+    # P2-14: ``--json`` 模式下 stdout 必须是纯 JSON。进度/落盘提示属于人类
+    # 可读信息，旧实现混入 stdout 会让 ``json.loads(ppc_output)`` 直接失败；
+    # 这里统一改走 stderr（非 JSON 模式仍由 Rich 输出到 stdout）。
+    def _human(message: str, plain: str | None = None) -> None:
+        if json_output:
+            print(plain if plain is not None else message, file=sys.stderr)
+        else:
+            console.print(message)
+
     results: dict[str, Any] = {"version_meta": {"ts": time.time()}}
     for name in selected:
-        console.print(f"[dim]▶ bench {name} ...[/dim]")
+        _human(f"[dim]▶ bench {name} ...[/dim]", f"▶ bench {name} ...")
         if name == "startup":
             results["startup"] = bench_startup(iterations)
         elif name == "merge":
@@ -388,7 +397,7 @@ def handle_bench(
     if save is not None:
         save.parent.mkdir(parents=True, exist_ok=True)
         save.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-        console.print(f"[dim]基线已保存: {save}[/dim]")
+        _human(f"[dim]基线已保存: {save}[/dim]", f"基线已保存: {save}")
 
     if json_output:
         print(json.dumps(results, ensure_ascii=False, indent=2))

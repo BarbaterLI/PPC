@@ -101,6 +101,12 @@ class ExtensionLoader:
         self._loaded_extensions: dict[str, Extension] = {}
         self._failed_extensions: list[dict[str, str]] = []
         self._extension_modules: dict[str, str] = {}
+        # 本 loader 注册过的所有动态模块名（含被同名扩展覆盖后从
+        # ``_extension_modules`` 移除的旧模块），供 clear() 兜底清理。
+        self._registered_module_names: set[str] = set()
+        # 扩展名 -> 加载来源 {"type": "file"|"package", "path": Path}。
+        # 用于单扩展重载（reload(name)）与 load_all_extensions 的幂等跳过。
+        self._extension_sources: dict[str, dict] = {}
         self._security_scanner = security_scanner or ExtensionSecurityScanner()
         self._security_level = security_level
         self._audit_logger = audit_logger or AuditLogger()
@@ -163,7 +169,32 @@ class ExtensionLoader:
         else:
             logger.warning(f"Extension directory does not exist: {directory}")
 
-    async def load_all_extensions(self) -> dict[str, Extension]:
+    async def load_all_extensions(self, force: bool = False) -> dict[str, Extension]:
+        """发现并加载所有扩展目录下的扩展（幂等）。
+
+        触发条件：``force=False`` 且某个扩展已处于已加载状态时，本方法会
+        跳过该扩展（其 ``initialize`` 副作用不重跑、executable 进程不重复
+        spawn）。旧实现无任何保护，重复调用（CLI/Web/executor 各调一次）会
+        重复注册后端并让旧实例/进程/线程失去引用永不回收。
+        后果：显式 ``force=True`` 时先 ``clear()`` 再全量加载，保持
+        “强制重新加载全部扩展”的语义。
+
+        参数:
+            force: 为 True 时卸载全部已加载扩展后重新加载
+
+        返回:
+            扩展名 -> 扩展实例（``self._loaded_extensions`` 的浅拷贝）
+        """
+        if force:
+            await self.clear()
+
+        # 已加载扩展的来源路径集合：用于跳过重复加载
+        loaded_paths = {
+            self._normalize_source_path(source["path"])
+            for source in self._extension_sources.values()
+            if source.get("path") is not None
+        }
+
         all_extensions = []
         for directory in self._extension_dirs:
             exts = self._discover_extensions(directory)
@@ -172,6 +203,11 @@ class ExtensionLoader:
         sorted_exts = self._resolve_load_order(all_extensions)
 
         for ext_info in sorted_exts:
+            if self._normalize_source_path(ext_info["path"]) in loaded_paths:
+                logger.debug(
+                    f"Extension already loaded, skipping: {ext_info['path']}"
+                )
+                continue
             if ext_info["type"] == "file":
                 await self._load_extension_from_file(ext_info["path"])
             elif ext_info["type"] == "package":
@@ -179,6 +215,27 @@ class ExtensionLoader:
 
         logger.info(f"Extensions loaded: {len(self._loaded_extensions)}, failed: {len(self._failed_extensions)}")
         return self._loaded_extensions.copy()
+
+    @staticmethod
+    def _normalize_source_path(path) -> str:
+        """把扩展来源路径归一化（便于比较 discovered 路径与记录路径）。"""
+        try:
+            return str(Path(path).resolve())
+        except OSError:  # pragma: no cover - 极端路径错误
+            return str(path)
+
+    def _record_extension_source(self, name: str, source_type: str, path) -> None:
+        """记录扩展的加载来源，供 reload(name) 单独重载使用。"""
+        if not name:
+            return
+        self._extension_sources[name] = {"type": source_type, "path": Path(path)}
+
+    async def _load_from_source(self, source: dict) -> Extension | None:
+        """按记录下来的来源重新加载单个扩展。"""
+        path = Path(source["path"])
+        if source.get("type") == "package":
+            return await self._load_extension_from_package(path)
+        return await self._load_extension_from_file(path)
 
     def _discover_extensions(self, directory: Path) -> list[dict]:
         return discover_extensions(directory)
@@ -204,7 +261,7 @@ class ExtensionLoader:
                 return f"Security scan blocked loading (risk_score={block_result.risk_score})"
             return None
 
-        return await self._load_extension_common(
+        extension = await self._load_extension_common(
             source_path=file_path,
             source_label="extension",
             extension_dir=file_path.parent,
@@ -212,6 +269,9 @@ class ExtensionLoader:
             spec_creator=spec_creator,
             scan_scope_fn=scan_scope,
         )
+        if extension is not None:
+            self._record_extension_source(extension.metadata.name, "file", file_path)
+        return extension
 
     async def _load_extension_from_package(self, package_path: Path) -> Extension | None:
         """从包目录加载扩展。"""
@@ -252,7 +312,7 @@ class ExtensionLoader:
                 package_path, declared_perms, self._security_level
             )
 
-        return await self._load_extension_common(
+        extension = await self._load_extension_common(
             source_path=package_path,
             source_label="extension package",
             extension_dir=package_path,
@@ -261,6 +321,9 @@ class ExtensionLoader:
             scan_scope_fn=scan_scope,
             manifest=manifest,
         )
+        if extension is not None:
+            self._record_extension_source(extension.metadata.name, "package", package_path)
+        return extension
 
     async def _load_executable_extension(
         self, package_path: Path, manifest: ExtensionManifest
@@ -325,6 +388,7 @@ class ExtensionLoader:
 
         # 9. 注册并返回
         self._loaded_extensions[manifest.name] = adapter
+        self._record_extension_source(manifest.name, "package", package_path)
         logger.info(f"Executable extension loaded: {manifest.name}")
         self._audit_logger.log_event(
             manifest.name, "EXTENSION_LOAD", manifest.name, AuditResult.SUCCESS
@@ -496,6 +560,15 @@ class ExtensionLoader:
                 )
         ext_name = extension.metadata.name
 
+        # P2-19: 同名扩展覆盖前先清理旧实例与旧动态模块。触发条件：
+        # 两个目录产出相同扩展名（后加载者覆盖前者）。后果：旧实现直接
+        # 覆盖 dict，旧实例的 cleanup 永不调用、旧模块名仍留在 sys.modules，
+        # 造成模块/资源泄漏。必须在新实例 initialize 之前完成，避免两个实例
+        # 同时持有同一份外部资源。
+        previous = self._loaded_extensions.get(ext_name)
+        if previous is not None and previous is not extension:
+            await self._dispose_overridden_extension(ext_name, previous)
+
         extension._context = self._build_extension_context(
             ext_name, extension.metadata.permissions, extension_dir
         )
@@ -514,11 +587,33 @@ class ExtensionLoader:
 
         self._loaded_extensions[ext_name] = extension
         self._extension_modules[ext_name] = module_name
+        self._registered_module_names.add(module_name)
         self._register_extension_backend(extension)
         logger.info(f"Extension loaded successfully: {ext_name}")
         self._audit_logger.log_event(
             ext_name, "EXTENSION_LOAD", ext_name, AuditResult.SUCCESS
         )
+
+    async def _dispose_overridden_extension(
+        self, name: str, previous: Extension
+    ) -> None:
+        """同名扩展被覆盖前，清理旧实例并把旧动态模块移出 ``sys.modules``。
+
+        触发条件：新加载的扩展与已加载扩展同名（不同目录/来源）。
+        后果：不清理会让旧实例的 ``cleanup`` 永不执行、旧模块对象常驻
+        ``sys.modules``（其全局状态/文件句柄/后台线程随覆盖泄漏）。
+        """
+        logger.warning("扩展 '%s' 被同名扩展覆盖，先清理旧实例", name)
+        try:
+            await previous.cleanup()
+        except Exception as e:  # noqa: BLE001 - 清理失败不应阻断新扩展加载
+            logger.warning("清理被覆盖扩展 '%s' 失败: %s", name, e)
+
+        old_module_name = self._extension_modules.pop(name, None)
+        if old_module_name:
+            sys.modules.pop(old_module_name, None)
+            self._registered_module_names.discard(old_module_name)
+        self._loaded_extensions.pop(name, None)
 
     def _register_extension_backend(self, extension: Extension) -> None:
         """TTS_BACKEND 型扩展自动注册进 ``ppc.tts.v1`` 后端注册表。
@@ -732,18 +827,62 @@ class ExtensionLoader:
     async def reload(self, extension_name: str | None = None) -> dict:
         """重新加载扩展（指定名称时仅重载该扩展）。
 
+        触发条件：``extension_name`` 非空时，旧实现卸载后调用
+        ``load_all_extensions()``（全量），会把所有扩展的 ``cleanup`` /
+        ``initialize`` 重跑一遍，并为 executable 扩展重新 spawn 进程，
+        旧进程/IPC 服务端/监控线程失去引用永不回收。
+        后果：现改为只卸载并重载目标扩展，其余扩展实例保持原样。
+
+        参数:
+            extension_name: 扩展名称；None 表示重载全部扩展
+
         返回:
             重载结果统计: {"reloaded": int, "failed": int}
         """
-        if extension_name is not None:
-            await self.unload(extension_name)
-        else:
-            await self.clear()
-        await self.load_all_extensions()
+        if extension_name is None:
+            await self.load_all_extensions(force=True)
+            return {
+                "reloaded": len(self._loaded_extensions),
+                "failed": len(self._failed_extensions),
+            }
+
+        # 先在 unload 之前取出来源信息（unload 会清理 _extension_sources）
+        source = self._extension_sources.get(extension_name)
+        if extension_name not in self._loaded_extensions and source is None:
+            logger.warning(f"Cannot reload unknown extension: {extension_name}")
+            return {"reloaded": 0, "failed": 1}
+
+        await self.unload(extension_name)
+
+        if source is None:
+            # 已加载但没有来源记录（例如外部直接注入的实例），只能卸载
+            logger.warning(
+                f"Extension '{extension_name}' has no recorded source, cannot reload"
+            )
+            return {"reloaded": 0, "failed": 1}
+
+        extension = await self._load_from_source(source)
+        logger.info(f"Extension reloaded: {extension_name}")
         return {
-            "reloaded": len(self._loaded_extensions),
-            "failed": len(self._failed_extensions),
+            "reloaded": 1 if extension is not None else 0,
+            "failed": 0 if extension is not None else 1,
         }
+
+    async def mark_unhealthy(self, name: str, error: str) -> bool:
+        """把扩展标记为不健康并从已加载集合移除。
+
+        触发条件：executable 扩展触达资源上限被终止（``adapter._failed``），
+        或调用方捕获 :class:`ExtensionUnhealthyError`。
+        后果：旧实现没有任何消费者读取 ``_failed``，被终止的扩展仍留在
+        ``_loaded_extensions`` 中、``process()`` 静默返回 ``None``。这里统一
+        记录失败原因并走 ``unload``（cleanup + 移除模块/后端注册）。
+        """
+        if name not in self._loaded_extensions:
+            return False
+
+        logger.warning("扩展 '%s' 标记为不健康并移除: %s", name, error)
+        self._record_failure(name, f"unhealthy: {error}")
+        return await self.unload(name)
 
     async def enable(self, name: str) -> bool:
         """启用扩展（触发 before_enable / on_enable 钩子）。"""
@@ -777,9 +916,16 @@ class ExtensionLoader:
         for module_name in self._extension_modules.values():
             sys.modules.pop(module_name, None)
 
+        # P2-19 兜底：被同名覆盖的旧模块已从 _extension_modules 移除，但模块名
+        # 仍记录在 _registered_module_names 中；不遍历这里会留下 sys.modules 残影。
+        for module_name in self._registered_module_names:
+            sys.modules.pop(module_name, None)
+
         self._loaded_extensions.clear()
         self._failed_extensions.clear()
         self._extension_modules.clear()
+        self._registered_module_names.clear()
+        self._extension_sources.clear()
         try:
             from src.engines.tts_protocol import backend_registry
 

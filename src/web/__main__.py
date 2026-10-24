@@ -15,7 +15,7 @@ def main() -> None:
         prog="python -m src.web",
         description="启动 PPC_NEXT Web 服务（含 WebUI 与 API）",
     )
-    parser.add_argument("--host", default="0.0.0.0", help="绑定地址（默认 0.0.0.0）")
+    parser.add_argument("--host", default="127.0.0.1", help="绑定地址（默认 127.0.0.1；监听非回环地址需配置 PPC_API_TOKEN）")
     parser.add_argument("--port", type=int, default=5000, help="端口（默认 5000）")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     args = parser.parse_args()

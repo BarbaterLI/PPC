@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .mp3_probe import Mp3FrameParams, Mp3Probe, probe_mp3
+from .mp3_probe import Mp3FrameParams, Mp3Probe, find_id3v2_size, probe_mp3
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +89,28 @@ def silent_frames_for_ms(params: Mp3FrameParams, silence_ms: int) -> bytes:
     return one_frame * n_frames
 
 
-def _audio_bytes(path: Path, probe: Mp3Probe) -> bytes | None:
-    """读取纯音频帧区（跳过 ID3v2，截到 audio_end）。"""
+def _audio_bytes(path: Path, probe: Mp3Probe, *, keep_id3: bool = False) -> bytes | None:
+    """读取音频帧区（后续文件跳过 ID3v2，截到 audio_end）。
+
+    ``keep_id3=True``（仅首个文件）连同文件头的 ID3v2 一起取：ID3 位于首帧
+    之前，不参与帧对齐，保留它不影响「帧流参数完全一致」的拼接前提，
+    也让输出带上首段的标题/封面等标签（与模块 docstring 的承诺一致）。
+    """
     try:
         data = path.read_bytes()
     except OSError:
         return None
-    return data[probe.audio_start : probe.audio_end]
+    if keep_id3:
+        # 要**保留** ID3v2 就必须从偏移 0 开始取（标签在首帧之前）。
+        # 此前误取 ``data[tag_size:]``——那恰好把标签整个切掉，输出仍是纯帧流，
+        # 与「保留首段 ID3」的语义相反（回归用例
+        # test_concat_keeps_first_id3v2_and_strips_later_ones 捕获）。
+        # 无 ID3v2 时仍从首帧开始，避免把探测跳过的前导垃圾带进输出。
+        tag_size = find_id3v2_size(data)
+        start = 0 if tag_size > 0 else probe.audio_start
+    else:
+        start = probe.audio_start
+    return data[start : probe.audio_end]
 
 
 def concat_mp3_files(
@@ -139,7 +154,7 @@ def concat_mp3_files(
                         return ConcatResult(success=False, degraded_reason="silent-gen-failed")
                     out.write(gap)
                     total_samples += len(gap) // _frame_len(params) * params.samples_per_frame
-                seg = _audio_bytes(f, p)
+                seg = _audio_bytes(f, p, keep_id3=(idx == 0))
                 if seg is None:
                     return ConcatResult(success=False, degraded_reason=f"read-fail:{f.name}")
                 out.write(seg)

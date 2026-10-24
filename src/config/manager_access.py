@@ -25,6 +25,8 @@ from src.config.schemas import (
     TTSConfig,
 )
 
+from src.utils.core import fill_missing
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,13 +101,16 @@ class ConfigAccessor:
 
         仅用 model_dump 的强转结果可能丢掉 schema 之外的额外 key（如历史遗留的
         ``ui:`` / ``web:`` 节）；此处先取强转后的 JSON form，再补回 raw 中存在而
-        model 未声明的顶层 key，避免丢配置、并让 ``_config_dict`` 与 ``_config``
+        model 未声明的 key，避免丢配置、并让 ``_config_dict`` 与 ``_config``
         类型一致（REST 写入的字符串会被规范化为 int/bool 等）。
+
+        补全必须是**递归**的：schema 外的键也可能位于嵌套层（``core.mode`` /
+        ``core.temp_dir`` 等 —— ``CoreConfig`` 未声明这两个字段）。此前只按顶层
+        键补回，导致这些嵌套键在 ``set()`` 调用中被静默丢弃，进而在保存时从
+        config.yml 永久消失。
         """
         normalized = model.model_dump(mode="json")
-        for k, v in raw_dict.items():
-            if k not in normalized:
-                normalized[k] = v
+        fill_missing(normalized, raw_dict)
         return normalized
 
     def _validate_section(self, config_dict: dict[str, Any], section_name: str, key: str) -> None:

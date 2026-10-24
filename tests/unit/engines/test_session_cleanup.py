@@ -89,6 +89,66 @@ def test_synth_single_voice_closes_stream_on_produced_exception_tracked():
 
 
 # ---------------------------------------------------------------------------
+# 测试 1b: 取消路径（CancelledError）也必须 aclose 流（E6 回归）
+# ---------------------------------------------------------------------------
+
+
+def test_synth_single_voice_closes_stream_on_cancellation():
+    """任务被取消时，stream.aclose() 必须被调用后原样抛出 CancelledError。
+
+    ``asyncio.CancelledError`` 继承自 ``BaseException``，原实现只有
+    ``except Exception``，取消/段级超时会跳过 ``_aclose_stream``，底层
+    ClientSession/WebSocket 只能等 asyncgen GC 才释放。
+    """
+    from src.engines.http_client import EdgeTTSHttpClient
+
+    state = {"tracking_stream": None}
+
+    class _HangingCommunicate:
+        def __init__(self, text, voice, rate="+0%", volume="+0%", **kwargs):
+            self.text = text
+            self.voice = voice
+            self.last_selected_ua = None
+
+        def stream(self):
+            async def _gen():
+                await asyncio.Event().wait()  # 永不产出，等待取消
+                yield  # pragma: no cover - 不可达，标记为异步生成器
+
+            ts = _TrackingStream(_gen())
+            state["tracking_stream"] = ts
+            return ts
+
+        async def save(self, path):
+            pass
+
+    client = EdgeTTSHttpClient(
+        communicate_factory=lambda text, voice, rate, volume: _HangingCommunicate(
+            text, voice, rate, volume
+        ),
+        list_voices_factory=None,
+    )
+
+    async def drive():
+        async def consume():
+            async for _ in client.synthesize_stream("test", "zh-CN-XiaoxiaoNeural"):
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(drive())
+
+    assert state["tracking_stream"] is not None
+    assert state["tracking_stream"].aclose_called, (
+        "取消路径必须显式 aclose 流，否则底层 ClientSession/WebSocket 泄漏"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 测试 2: TTSEngine.cleanup() 调用 edge_client.cleanup()
 # ---------------------------------------------------------------------------
 

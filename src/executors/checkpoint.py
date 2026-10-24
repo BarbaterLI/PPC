@@ -3,16 +3,31 @@
 保存和恢复任务状态，支持中断后继续执行
 """
 
+import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def make_task_id(input_file: Path | str, voice: str) -> str:
+    """生成任务规范 ID（输入文件绝对路径 + 语音）。
+
+    触发条件：检查点重建（``ppc resume``）与批量入队各自实现 ID 方案
+    （前者用文件名 stem、后者用 md5）时，同一文件会以两个 ID 注册为两个
+    任务、却指向同一输出路径与同一 ``.cache/{stem}`` 目录。后果：两个
+    worker 并发合成同一文件，重复网络请求且写入相互竞争。
+
+    因此两条路径必须调用同一函数，ID 仅由（绝对输入路径, 语音）决定。
+    """
+    resolved = Path(input_file).resolve()
+    return hashlib.md5(f"{resolved}{voice}".encode()).hexdigest()[:16]
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -137,8 +152,33 @@ class CheckpointManager:
         now = datetime.now().isoformat()
         checkpoint_id = f"checkpoint_{int(time.time())}"
 
-        counts = self._count_status(tasks)
         task_data = {task_id: self._build_checkpoint_task(task_id, task) for task_id, task in tasks.items()}
+
+        # 保留既有检查点中的已完成条目。
+        # 触发条件：resume 运行时 ``_resume_from_checkpoint`` 会跳过 completed
+        # 任务、不把它们放进 ``_tasks``，此处若只按 ``_tasks`` 全量重建，
+        # 已完成项会被抹除。后果：total/摘要少计已完成文件，进度回退。
+        # 去重按输出文件（同一任务的身份），状态优先级：completed 不被
+        # 本次的 pending/running 覆盖。
+        if self._data is not None:
+            covered_outputs = {task.output_file for task in task_data.values()}
+            for existing_id, existing in self._data.tasks.items():
+                if existing.status != TaskStatus.COMPLETED:
+                    continue
+                matches = [
+                    tid for tid, task in task_data.items() if task.output_file == existing.output_file
+                ]
+                if matches:
+                    for tid in matches:
+                        if task_data[tid].status != TaskStatus.COMPLETED:
+                            task_data[tid] = replace(existing, task_id=tid)
+                elif existing.output_file not in covered_outputs:
+                    # 本次 _tasks 中完全没有该文件（resume 跳过的已完成项）：
+                    # 原样保留，保证 total/摘要计数不丢失。
+                    task_data[existing_id] = replace(existing, task_id=existing_id)
+                    covered_outputs.add(existing.output_file)
+
+        counts = self._count_status(task_data)
 
         self._data = CheckpointData(
             checkpoint_id=checkpoint_id,
@@ -147,7 +187,7 @@ class CheckpointManager:
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             voice=voice,
-            total_tasks=len(tasks),
+            total_tasks=len(task_data),
             completed_tasks=counts["completed"],
             failed_tasks=counts["failed"],
             pending_tasks=counts["pending"],
@@ -165,8 +205,6 @@ class CheckpointManager:
         if self._data is None:
             raise RuntimeError("检查点尚未创建，请先调用 create_checkpoint()")
 
-        counts = self._count_status(tasks)
-
         for task_id, task in tasks.items():
             if task_id in self._data.tasks:
                 checkpoint_task = self._data.tasks[task_id]
@@ -178,10 +216,14 @@ class CheckpointManager:
             else:
                 self._data.tasks[task_id] = self._build_checkpoint_task(task_id, task)
 
+        # 计数必须基于合并后的完整任务表（含 create_checkpoint 保留的
+        # 已完成条目），否则每次 update 都会把已完成计数重置为 0——这正是
+        # resume 后摘要少计已完成文件的原因。
+        counts = self._count_status(self._data.tasks)
         self._data.completed_tasks = counts["completed"]
         self._data.failed_tasks = counts["failed"]
         self._data.pending_tasks = counts["pending"]
-        self._data.total_tasks = counts["completed"] + counts["failed"] + counts["pending"]
+        self._data.total_tasks = len(self._data.tasks)
         self._data.updated_at = datetime.now().isoformat()
 
         return self._data
@@ -355,7 +397,10 @@ class CheckpointManager:
                 continue
 
             output_file = output_dir / (stem + ".mp3")
-            task_id = stem
+            # 与 TTSExecutor._collect_input_tasks 使用同一 ID 方案：若这里
+            # 用 stem，resume 重建的检查点任务无法与 convert --resume 的
+            # 扫描结果去重，同一文件会被注册两次并并发写同一输出。
+            task_id = make_task_id(input_file, voice)
 
             # output 已存在且非空 -> 视为已完成
             if output_file.exists() and output_file.stat().st_size > 0:

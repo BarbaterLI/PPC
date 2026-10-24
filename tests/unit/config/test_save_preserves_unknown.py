@@ -31,3 +31,24 @@ def test_save_preserves_unknown_keys(tmp_path: Path):
 
     saved = (d / "config.yml").read_text(encoding="utf-8")
     assert "theme" in saved and "ui" in saved, f"未知键 ui 在保存时被丢弃:\n{saved[:200]}"
+
+
+def test_save_drops_deprecated_shared_connector(tmp_path: Path):
+    """已废弃的 tts.anti_risk_control.shared_connector 不得再写回 config.yml。
+
+    该开关从未真正生效（逐流 ClientSession 会关闭共享 connector），继续写出
+    会让用户误以为连接复用已开启。旧配置文件中的该键在首次保存时应被剔除。
+    """
+    d = tmp_path
+    (d / "config.yml").write_text(
+        "tts:\n  anti_risk_control:\n    shared_connector: true\n",
+        encoding="utf-8",
+    )
+
+    mgr = ConfigManager(d)
+    assert mgr.set("tts.concurrency", 4) is True  # 触发保存
+
+    saved = (d / "config.yml").read_text(encoding="utf-8")
+    assert "shared_connector" not in saved, (
+        f"已废弃的 shared_connector 仍被写出:\n{saved[:400]}"
+    )

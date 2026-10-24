@@ -7,7 +7,6 @@
 """
 
 import asyncio
-import hashlib
 import logging
 import time
 from collections import OrderedDict
@@ -26,7 +25,7 @@ from ..reliability import (
 )
 from ..utils.files import read_text_auto
 from .base import BaseExecutor
-from .checkpoint import CheckpointManager
+from .checkpoint import CheckpointManager, make_task_id
 from .quarantine import QuarantineQueue
 from .tts_worker_pool import RampUpController, WorkerPool
 
@@ -87,6 +86,11 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         self._tts_backend: str | None = tts_backend
         self._tts_proxy: str | None = tts_proxy
 
+        # 配置了 tts.backend_plugin 时是否已完成「按需加载扩展以注册后端」的尝试
+        self._backend_ensured: bool = False
+        # 为注册后端而创建的扩展加载器（持有引用以便 cleanup() 时释放扩展）
+        self._backend_loader: Any = None
+
         self._checkpoint_manager: CheckpointManager | None = None
         self._checkpoint_interval = 5
         self._tasks_since_checkpoint = 0
@@ -128,6 +132,68 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         # "Session is closed" errors under batch processing.
         self._engine: Any | None = None
 
+    async def _ensure_configured_backend(self) -> None:
+        """确保配置的 ``tts.backend_plugin`` 已在后端注册表中可用。
+
+        背景：扩展默认**仅在 ``ppc ext ...`` 调用时加载**（避免为普通命令引入
+        不必要的启动开销与安全扫描），而 ``ppc.tts.v1`` 的扩展后端是在扩展
+        加载时由加载器注册进 ``backend_registry`` 的。若不在解析前补齐，
+        ``EdgeTTSHttpClient._resolve_tts_backend`` 会因注册表缺失该后端而
+        **静默回退内置 edge_tts**（离线环境下表现为长时间无进展直至超时）。
+
+        仅在配置了 ``tts.backend_plugin`` 时执行，未配置时零开销；是幂等的，
+        多次 ``initialize()`` 只尝试一次。
+
+        依赖方向：executors 位于 engines 之上，此处对扩展加载器做**函数体内
+        延迟导入**，不引入模块级依赖，也不触碰 engines ↛ extensions 的单向约束。
+        """
+        backend_name = str(getattr(self.config.tts, "backend_plugin", "") or "").strip()
+        if not backend_name or self._backend_ensured:
+            return
+
+        from ..engines.tts_protocol import backend_registry, ensure_builtin_backends
+
+        ensure_builtin_backends()
+        if backend_registry.get(backend_name) is not None:
+            # 内置后端，或先前已由扩展加载器注册：结论已确定，无需再试。
+            self._backend_ensured = True
+            return
+
+        try:
+            from ..extensions.loader import (
+                ExtensionLoader,
+                build_loader_from_config,
+                extension_auto_load_by_config,
+            )
+
+            if not extension_auto_load_by_config():
+                logger.warning(
+                    "配置的 TTS 后端 %r 需要加载扩展，但 extensions.auto_load=false，已跳过加载",
+                    backend_name,
+                )
+                self._backend_ensured = True  # 配置层面已明确拒绝，重试无意义
+                return
+            loader = build_loader_from_config() or ExtensionLoader()
+            # 持有 loader 引用：它是扩展实例的宿主，若在此处被 GC 回收，
+            # 扩展的 cleanup() 将永远不会被调用（executable 扩展的进程/IPC/
+            # 监控线程随之泄漏）。cleanup() 中统一释放。
+            await loader.load_all_extensions()
+            self._backend_loader = loader
+        except Exception as exc:  # noqa: BLE001 - 加载失败不应阻断转换流程
+            # 注意：不在失败时置位 _backend_ensured —— 这是**瞬时**失败
+            # （导入错误、磁盘抖动等），下次 initialize() 应允许重试；
+            # 否则一次偶发失败会让该后端在整个进程生命周期内永久不可用。
+            logger.warning("为解析 TTS 后端 %r 而加载扩展失败: %s", backend_name, exc)
+            return
+
+        if backend_registry.resolve(backend_name) is None:
+            logger.warning(
+                "配置的 TTS 后端 %r 不可用（扩展未安装/未启用/未通过协议协商），"
+                "本次将回退内置 edge_tts。可用 'ppc ext list' 检查扩展状态。",
+                backend_name,
+            )
+        self._backend_ensured = True
+
     async def initialize(self):
         self._cancel_requested = False
         self._initialized = True
@@ -137,6 +203,10 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         self._text_cache_bytes = 0
         self.total_retries = 0
         self._tasks_since_checkpoint = 0
+
+        # 后端插件可能在扩展中，需在构造 TTSEngine（其构造期即解析后端名）
+        # 之前补齐注册，否则配置的后端永远不会被命中。
+        await self._ensure_configured_backend()
 
         concurrency = self.config.tts.concurrency
         if self.config.tts.ramp_up_enabled:
@@ -196,6 +266,17 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             except Exception as e:  # noqa: BLE001
                 logger.warning("清理 TTS 引擎失败 / Failed to cleanup engine: %s", e)
             self._engine = None
+
+        # 释放为注册后端而加载的扩展：调用其 cleanup()（停 executable 进程、
+        # 关 IPC、反注册后端），避免进程被回收前扩展资源一直悬空。
+        if self._backend_loader is not None:
+            try:
+                await self._backend_loader.clear()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("清理扩展后端失败 / Failed to clear backend extensions: %s", e)
+            finally:
+                self._backend_loader = None
+                self._backend_ensured = False  # 允许下次 initialize 重新加载
 
     def _remember_text(self, key: str, text: str) -> None:
         """入队阶段缓存已解码文本供 execute 复用；按总字节封顶逐出最旧。
@@ -500,7 +581,16 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             checkpoint_data.pending_tasks,
         )
 
-        for task_id, checkpoint_task in checkpoint_data.tasks.items():
+        for _stored_id, checkpoint_task in checkpoint_data.tasks.items():
+            # 旧检查点可能以文件名 stem 作为 task_id（rebuild_from_cache 旧
+            # 实现），新版统一为 make_task_id。此处一律换算成规范 ID：
+            # 否则 completed 项虽被跳过、但 pending 项会与
+            # _collect_input_tasks 计算出的新 ID 不匹配，同一文件被二次注册
+            # 并并发写同一输出（重复网络请求 + 写入竞争）。
+            task_id = make_task_id(
+                checkpoint_task.input_file, checkpoint_task.voice or checkpoint_data.voice
+            )
+
             if checkpoint_task.status == "completed":
                 continue
 
@@ -512,6 +602,11 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             else:
                 resume_status = checkpoint_task.status
                 resume_error = checkpoint_task.error
+
+            # 同一规范 ID 已恢复（旧检查点同时存在 stem 与 md5 两条记录）：
+            # 只保留先到者，避免同一任务重复入队/并发合成。
+            if task_id in self._tasks:
+                continue
 
             task = TTSTask(
                 id=task_id,
@@ -569,7 +664,10 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             if output_file.exists() and output_file.stat().st_size > 0:
                 continue
 
-            task_id = hashlib.md5(f"{txt_file.resolve()}{voice}".encode()).hexdigest()[:16]
+            # 与检查点重建（rebuild_from_cache）共用同一 ID 生成函数，
+            # 否则 resume 已恢复的任务不会被这里的去重命中，同一文件会被
+            # 注册为两个任务并并发写同一输出路径。
+            task_id = make_task_id(txt_file, voice)
 
             # 断点续传已恢复的任务存在则以恢复为准，跳过本文件避免重复注册
             if task_id in self._tasks:

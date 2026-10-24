@@ -18,6 +18,10 @@ from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
+# P2-11: 内置（空白/换行/标点/空行/SSML）变换不可逆，apply 前把原文存成一条
+# 特殊记录；rollback 见到该记录时直接返回快照，实现「完全还原」。
+BUILTIN_PRE_RECORD_NAME = "__builtin_pre__"
+
 # Precompiled regex patterns for performance
 _SSML_XML_PATTERN = re.compile(
     r"<(?:speak|voice|prosody|break|emphasis|say-as|phonetic|audio|p|s|sub|mark|bookmark|lang|xml:[^>]*)[^>]*>",
@@ -96,7 +100,20 @@ class RuleChainResult:
     records: list[RuleApplicationRecord] = field(default_factory=list)
 
     def rollback(self) -> str:
-        """按相反顺序回滚所有规则。"""
+        """按相反顺序回滚所有规则。
+
+        保证边界：
+
+        * 若 ``records`` 中存在 :data:`BUILTIN_PRE_RECORD_NAME` 快照记录
+          （由 :meth:`TextNormalizer.apply` 在应用内置变换前插入），则直接
+          返回该快照原文——此时是**完全还原**，结果与 ``apply`` 的输入逐字节
+          一致（内置空白/换行/标点/空行变换本身不可逆，只能靠快照还原）。
+        * 否则只回滚规则链，属于**尽力还原**：单条规则的回滚异常会被记录并
+          跳过，自定义规则若 metadata 不足以还原，结果不保证与原文一致。
+        """
+        snapshot = self._builtin_snapshot()
+        if snapshot is not None:
+            return snapshot
         current = self.text
         for record in reversed(self.records):
             rule = _RULE_REGISTRY.get(record.rule_name)
@@ -107,6 +124,15 @@ class RuleChainResult:
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"规则 {record.rule_name} 回滚失败: {e}")
         return current
+
+    def _builtin_snapshot(self) -> str | None:
+        """取出内置预处理快照原文（不存在则返回 None）。"""
+        for record in self.records:
+            if record.rule_name == BUILTIN_PRE_RECORD_NAME:
+                snapshot = record.metadata.get("text")
+                if isinstance(snapshot, str):
+                    return snapshot
+        return None
 
 
 # 全局规则注册表
@@ -189,6 +215,25 @@ def _int_to_cn(value: str) -> str:
     return ("负" + cn) if negative else cn
 
 
+def _decimal_to_cn(value: str) -> str:
+    """将整数字符串或小数字符串转写为中文（``"5"`` -> 五，``"5.5"`` -> 五点五）。
+
+    S3: ``_UNIT_PATTERN`` 明确匹配 ``\\d+(?:\\.\\d+)?``，但 ``_int_to_cn`` 只接受
+    整数；小数一旦进入 ``int()`` 就抛 ``ValueError``，异常冒泡后被 RuleChain
+    整条跳过（该文本内所有单位都无法换算）。此处按"整数部分按数值读、小数
+    部分逐位读"处理，与 TTS 中文读法一致（5.50 -> 五点五零）。
+    """
+    if "." not in value:
+        return _int_to_cn(value)
+    negative = value.startswith("-")
+    if negative:
+        value = value[1:]
+    integer_part, _, fraction_part = value.partition(".")
+    int_cn = _int_to_cn(integer_part) if integer_part else "零"
+    frac_cn = "".join(_DIGITS_CN[int(d)] for d in fraction_part if d.isdigit())
+    return ("负" if negative else "") + int_cn + "点" + frac_cn
+
+
 @dataclass
 class NumberRule:
     """数字规则: 将阿拉伯数字转写为中文读法 (支持整数/小数/负数)。"""
@@ -265,7 +310,15 @@ class UnitRule:
             number = match.group(1)
             unit = match.group(2)
             token = match.group(0)
-            cn_num = _int_to_cn(number)
+            try:
+                # S3: 支持小数（5.5kg -> 五点五kg）。触发条件：数字部分含小数点；
+                # 后果（修复前）：int("5.5") 抛 ValueError → 整条 UnitRule 被
+                # RuleChain 捕获并 continue，同一段文本里所有可换算单位一起失效。
+                cn_num = _decimal_to_cn(number)
+            except Exception as e:  # noqa: BLE001
+                # 单个匹配失败只保留该片段原文，不影响同段文本的其它匹配。
+                logger.debug(f"单位规则匹配 {token!r} 转换失败，保留原文: {e}")
+                return token
             replacement = f"{cn_num}{unit}"
             replacements.append({"original": token, "replacement": replacement})
             return replacement
@@ -496,7 +549,11 @@ class TextNormalizer:
         return self.apply(text).text
 
     def apply(self, text: str) -> RuleChainResult:
-        """应用所有启用的变换，返回带 records 的结果。"""
+        """应用所有启用的变换，返回带 records 的结果。
+
+        records 的首项固定为 :data:`BUILTIN_PRE_RECORD_NAME` 快照记录（保存
+        原始输入），使 :meth:`rollback` 能「完全还原」内置规范化。
+        """
         if not text:
             return RuleChainResult(text=text, records=[])
         result = text
@@ -525,14 +582,14 @@ class TextNormalizer:
         chain_result.records.insert(
             0,
             RuleApplicationRecord(
-                rule_name="__builtin_pre__",
+                rule_name=BUILTIN_PRE_RECORD_NAME,
                 metadata={"text": text},
             ),
         )
         return chain_result
 
     def rollback(self, result: RuleChainResult) -> str:
-        """回滚 :meth:`apply` 的结果。"""
+        """回滚 :meth:`apply` 的结果（含内置变换，完全还原为原始输入）。"""
         return result.rollback()
 
     # ------------------------------------------------------------------
@@ -625,6 +682,7 @@ __all__ = [
     "RuleChain",
     "RuleChainResult",
     "RuleApplicationRecord",
+    "BUILTIN_PRE_RECORD_NAME",
     "NumberRule",
     "DateRule",
     "UnitRule",

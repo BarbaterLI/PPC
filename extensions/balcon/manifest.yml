@@ -1,0 +1,23 @@
+name: balcon
+version: 1.0.0
+description: Balabolka 命令行 TTS 后端（Windows SAPI 5 / Microsoft Speech Platform）—— ppc.tts.v1 标准后端
+author: PPC_NEXT Extension
+extension_type: tts_backend
+package_type: python
+entry: "extension.py"
+entry_point: "extension:BalconExtension"
+min_ppc_version: "12.0.0"
+tags:
+  - balcon
+  - balabolka
+  - tts
+  - sapi
+  - offline
+  - backend
+permissions:
+  # 调用 balcon.exe 与 ffmpeg.exe
+  - subprocess
+  # 读取 balcon.exe / ffmpeg 与输入文本
+  - filesystem_read
+  # 写入合成产出的 MP3
+  - filesystem_write

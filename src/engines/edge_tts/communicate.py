@@ -14,6 +14,7 @@ from typing import (
     ContextManager,
     Dict,
     Generator,
+    List,
     Optional,
     Tuple,
     Union,
@@ -230,15 +231,22 @@ def split_text_by_byte_length(
         split_at = _find_last_newline_or_space_within_limit(text, byte_length)
 
         if split_at < 0:
-            ## No newline or space found, so we need to find a safe UTF-8 split point
-            split_at = _find_safe_utf8_split_point(text)
+            # 触发条件：前 ``byte_length`` 字节内没有任何空格/换行（中文长段落、
+            # 无标点的连续文本很常见）。原实现把**整段剩余文本**传给
+            # ``_find_safe_utf8_split_point``，该函数总是返回 ``len(text)``，
+            # 于是这里产出一个远超上限的单块（实测 9000B 中文 → 单个 9000B 块），
+            # WebSocket 请求体会超限或被服务端拒绝。
+            # 修复：只在 ``text[:byte_length]`` 范围内找 UTF-8 字符边界，即
+            # 退化为「按字节上限硬切」，同时保证不会截断多字节序列。
+            split_at = _find_safe_utf8_split_point(text[:byte_length])
 
         # Adjust the split point to avoid cutting in the middle of an xml entity, such as '&amp;'
         split_at = _adjust_split_point_for_xml_entity(text, split_at)
 
-        if split_at < 0:
-            # This should not happen if byte_length is reasonable,
-            # but guards against edge cases.
+        if split_at <= 0:
+            # ``byte_length`` 小于单个字符的字节数（如 3 字节汉字配 2 字节上限），
+            # 或文本以未闭合的 ``&`` 实体开头导致切分点被回退到 0。
+            # 此时无法既满足上限又不产生碎片，直接报错而不是死循环/产出超限块。
             raise ValueError(
                 "Maximum byte length is too small or "
                 "invalid text structure near '&' or invalid UTF-8"
@@ -430,7 +438,19 @@ class Communicate:
         # Store current state of TTS.
         self.state: CommunicateState = CommunicateState()
 
-    def _parse_metadata(self, data: bytes) -> TTSChunk:
+    def _parse_metadata(self, data: bytes) -> List[TTSChunk]:
+        """解析一条 ``audio.metadata`` 帧，返回其中**全部** boundary 块。
+
+        触发条件：服务端把多个 ``WordBoundary``/``SentenceBoundary`` 事件
+        合并进同一条 TEXT 帧下发（协议未承诺单条下发；此处做防御性加固）。
+        后果（旧实现）：只解析第一条就 return，后续 boundary 被静默丢弃 →
+        逐字高亮/字幕时间轴缺字。遍历全部事件后，若服务端实际只发一条，
+        返回长度为 1 的列表，行为与旧实现完全一致（非回归）。
+
+        未知类型仍按旧语义处理：**首个**有效 boundary 之前出现未知类型即抛
+        :class:`UnknownResponse`；之后出现则忽略（旧实现此时已 return）。
+        """
+        chunks: List[TTSChunk] = []
         for meta_obj in json.loads(data)["Metadata"]:
             meta_type = meta_obj["Type"]
             if meta_type in ("WordBoundary", "SentenceBoundary"):
@@ -438,16 +458,22 @@ class Communicate:
                     meta_obj["Data"]["Offset"] + self.state.offset_compensation
                 )
                 current_duration = meta_obj["Data"]["Duration"]
-                return {
-                    "type": meta_type,
-                    "offset": current_offset,
-                    "duration": current_duration,
-                    "text": unescape(meta_obj["Data"]["text"]["Text"]),
-                }
+                chunks.append(
+                    {
+                        "type": meta_type,
+                        "offset": current_offset,
+                        "duration": current_duration,
+                        "text": unescape(meta_obj["Data"]["text"]["Text"]),
+                    }
+                )
+                continue
             if meta_type in ("SessionEnd",):
                 continue
-            raise UnknownResponse(f"Unknown metadata type: {meta_type}")
-        raise UnexpectedResponse("No WordBoundary metadata found")
+            if not chunks:
+                raise UnknownResponse(f"Unknown metadata type: {meta_type}")
+        if not chunks:
+            raise UnexpectedResponse("No WordBoundary metadata found")
+        return chunks
 
     def _compensate_offset(self) -> None:
         """Update inter-chunk offset_compensation from cumulative CBR audio bytes.
@@ -512,11 +538,11 @@ class Communicate:
 
     def _handle_text_message(
         self, received
-    ) -> Tuple[Optional[TTSChunk], bool]:
+    ) -> Tuple[Optional[List[TTSChunk]], bool]:
         """Handle a TEXT websocket message.
 
-        Returns ``(chunk, is_turn_end)``: the parsed metadata chunk to
-        yield (or None), and whether the stream turn has ended.
+        Returns ``(chunks, is_turn_end)``: 该帧解析出的全部 metadata 块
+        （可能为空 → None），以及本轮流是否结束。
         """
         encoded_data: bytes = received.data.encode("utf-8")
         parameters, data = get_headers_and_data(
@@ -529,9 +555,8 @@ class Communicate:
             parsed_metadata = self._parse_metadata(data)
 
             # Update the last duration offset for use by the next SSML request.
-            self.state.last_duration_offset = (
-                parsed_metadata["offset"] + parsed_metadata["duration"]
-            )
+            last = parsed_metadata[-1]
+            self.state.last_duration_offset = last["offset"] + last["duration"]
             return parsed_metadata, False
         if path == b"turn.end":
             # Compute inter-chunk offset from actual CBR
@@ -630,8 +655,11 @@ class Communicate:
                     parsed_metadata, is_turn_end = self._handle_text_message(received)
                     if is_turn_end:
                         break
-                    if parsed_metadata is not None:
-                        yield parsed_metadata
+                    if parsed_metadata:
+                        # 一帧可能携带多个 boundary 事件：逐个 yield，
+                        # 避免只取首个导致后续时间轴缺失。
+                        for item in parsed_metadata:
+                            yield item
                 elif received.type == aiohttp.WSMsgType.BINARY:
                     data = self._parse_audio_message(received)
                     if data is None:

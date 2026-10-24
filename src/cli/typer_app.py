@@ -206,7 +206,7 @@ def help_cmd(
 
 @app.command("webui")
 def webui_cmd(
-    host: str = typer.Option("0.0.0.0", "--host", help="监听地址（默认 0.0.0.0）"),
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址（默认 127.0.0.1；监听非回环地址需配置 --api-token）"),
     port: int = typer.Option(5000, "--port", "-p", help="监听端口（默认 5000）"),
     debug: bool = typer.Option(False, "--debug", help="Flask 调试模式（启用时 threaded=False）"),
     api_token: str | None = typer.Option(
@@ -227,7 +227,13 @@ def webui_cmd(
     """
     from .commands.webui import handle_webui
 
-    handle_webui(host=host, port=port, debug=debug, api_token=api_token)
+    # P2-15: ``run_webui`` 在“非回环地址且无 token”时返回 1，但旧实现丢弃了
+    # 返回值——打印拒绝提示后进程仍以 0 退出，脚本无法感知启动失败。
+    # 触发条件：绑定 0.0.0.0/局域网地址且未配置 --api-token；
+    # 后果：必须把非零返回透传为进程退出码。
+    exit_code = handle_webui(host=host, port=port, debug=debug, api_token=api_token)
+    if exit_code:
+        raise typer.Exit(code=exit_code)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +284,34 @@ def convert(
     cast: str | None = typer.Option(
         None, "--cast", help="多角色配音 cast.yml 路径（按角色分配音色，旁白/narrator 独立；覆盖配置 tts.cast_file）"
     ),
+    merge_cut: bool = typer.Option(
+        False,
+        "--merge-cut",
+        help="按角色池合并：同一角色的多句话合批成一次 TTS 请求，再按字幕时间戳切回原位（大幅减少请求数）",
+    ),
+    merge_max_chars: int | None = typer.Option(
+        None, "--merge-max-chars", min=100, help="合并后文本字符数上限（默认 4000）"
+    ),
+    merge_max_bytes: int | None = typer.Option(
+        None, "--merge-max-bytes", min=256, help="合并后 UTF-8 字节上限（默认 4000，服务端单连接预算 4096）"
+    ),
+    merge_max_pieces: int | None = typer.Option(
+        None, "--merge-max-pieces", min=2, max=32, help="单次合并的片段数上限（默认 4）"
+    ),
+    subtitles: bool = typer.Option(False, "--subtitles", help="同时输出 .srt 字幕（隐含开启 --merge-cut）"),
+    llm_assign: bool = typer.Option(
+        False, "--llm-assign", help="用 OpenAI 兼容 LLM 自动分配发声人（需要 openai 库与 API Key）"
+    ),
+    llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型名（默认 gpt-4o-mini）"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url", help="OpenAI 兼容端点（默认 https://api.openai.com/v1）"),
+    llm_api_key: str | None = typer.Option(None, "--llm-api-key", help="LLM API Key（默认读 PPC_LLM_API_KEY / OPENAI_API_KEY）"),
+    main_roles: str | None = typer.Option(
+        None, "--main-roles", help="主要角色→音色：JSON 串 / JSON·YAML 文件 / '角色=音色,角色=音色'"
+    ),
+    candidate_voices: str | None = typer.Option(
+        None, "--candidate-voices", help="候选音色池，逗号分隔（LLM 只能从中选）"
+    ),
+    save_cast: str | None = typer.Option(None, "--save-cast", help="把 LLM 分配结果写入该 cast.yml 以便复用"),
 ):
     """批量 TTS 转换
 
@@ -321,6 +355,18 @@ def convert(
             book=book,
             book_title=book_title,
             cast=cast,
+            merge_cut=merge_cut,
+            merge_max_chars=merge_max_chars,
+            merge_max_bytes=merge_max_bytes,
+            merge_max_pieces=merge_max_pieces,
+            subtitles=subtitles,
+            llm_assign=llm_assign,
+            llm_model=llm_model,
+            llm_base_url=llm_base_url,
+            llm_api_key=llm_api_key,
+            main_roles=main_roles,
+            candidate_voices=candidate_voices,
+            save_cast=save_cast,
         )
     )
 

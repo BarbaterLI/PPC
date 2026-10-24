@@ -78,9 +78,14 @@ class _UAVerificationState:
 
     Tracks UAs marked during this synthesis so marks can be revoked if
     all UAs fail (server-side issue, not UA-specific).
+
+    ``tried`` records the distinct UAs already attempted in this run so
+    that "tried N different UAs without success" is a reachable state
+    and the next retry is steered to an untried UA.
     """
 
     marked: list[str] = field(default_factory=list)
+    tried: set[str] = field(default_factory=set)
     attempts: int = 0
     max_attempts: int = 0
 
@@ -117,6 +122,12 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         # 路径；否则走默认的本地 edge_tts 路径（完全向后兼容）。
         self._tts_backend_plugins: list = list(tts_backend_plugins or [])
         self._backend_plugin_name: str | None = backend_plugin
+
+        # 实际产出音频的语音名（可能因 QuotaError 回退而与请求语音不同）。
+        # 由 ``_synthesize`` 在流成功结束时写入，供引擎构造**缓存写入键**使用：
+        # 回退产物绝不能存到「请求语音」的 key 下，否则后续该语音的请求会命中
+        # 缓存并静默返回另一语音的音频（且经 L2 磁盘缓存跨进程固化）。
+        self.last_effective_voice: str | None = None
 
         # Backend selection — driven by the three-state ``backend`` field
         # (auto | builtin | env). The legacy boolean ``prefer_builtin`` is
@@ -179,33 +190,14 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                 no_audio_threshold=self._anti_risk_config.ua_no_audio_threshold,
             )
 
-        # 共享连接器已废弃：aiohttp 的 ClientSession.close() 会关闭传入的
-        # connector，导致逐流会话关闭共享连接（见 _make_communicate 注释）。
-        # 这里不再创建任何连接器，属性恒为 None 以免遗留绑定到陈旧事件循环
-        # 的连接器（曾导致 "Event loop is closed"）。
-        self._shared_connector: Any | None = None
+        # 共享连接器（``anti_risk_control.shared_connector``）已废弃：
+        # aiohttp 的 ``ClientSession.close()`` 会关闭传入的 connector，而后端
+        # ``Communicate._stream`` 是逐流用 ``async with ClientSession(...)``
+        # 创建会话的——共享 connector 会被第一个结束的流关死（详见
+        # ``_make_communicate`` 注释）。因此本客户端不再创建/持有任何
+        # 跨流连接器，``shared_connector`` 配置项仅为兼容旧配置文件保留。
 
         logger.info("EdgeTTSHttpClient 后端 / backend: %s", self._backend_name)
-
-    def _ensure_shared_connector(self) -> Any | None:
-        """Lazily create the shared connector within a running event loop.
-
-        ``aiohttp.TCPConnector`` requires a running event loop at construction
-        time (aiohttp >= 3.10).  When the client is instantiated synchronously
-        the eager creation in ``__init__`` fails gracefully; this method
-        retries creation on the first ``_synthesize`` / ``_list_voices`` call,
-        which always runs inside an async context.
-        """
-        if (
-            self._anti_risk_config.shared_connector
-            and self._anti_risk_config.enabled
-            and self._shared_connector is None
-        ):
-            try:
-                self._shared_connector = aiohttp.TCPConnector(limit=10)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("共享连接器初始化失败 / Shared connector init failed: %s", e)
-        return self._shared_connector
 
     def _resolve_tts_backend(self, backend_name: str | None) -> Any | None:
         """按名称解析 ``ppc.tts.v1`` 后端。
@@ -227,7 +219,15 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         ensure_builtin_backends()
         return backend_registry.resolve(backend_name)
 
-    def _make_communicate(self, text: str, voice: str, rate: str, volume: str) -> Any:
+    def _make_communicate(
+        self,
+        text: str,
+        voice: str,
+        rate: str,
+        volume: str,
+        *,
+        exclude_uas: set[str] | None = None,
+    ) -> Any:
         # Test hook has highest priority
         if self._communicate_factory is not None:
             return self._communicate_factory(text, voice, rate, volume)
@@ -242,6 +242,8 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         # connector 传进去，第一个流结束时 session.close() 就会把它关死，
         # 导致复用同一 client 的后续流全部报 "Session is closed"。
         # 因此这里传 ``connector=None``，让每个流拥有并自行关闭自己的 connector。
+        # 这也是 ``anti_risk_control.shared_connector`` 被废弃的原因：在该语义下
+        # 共享连接器必然被首个流的 session.close() 关死，无法安全复用。
         kwargs: dict[str, Any] = {
             "rate": rate,
             "volume": volume,
@@ -271,8 +273,8 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                 communicate,
                 anti_risk_config=self._anti_risk_config,
                 muid_manager=self._muid_manager,
-                shared_connector=self._shared_connector,
                 ua_health_filter=self._ua_health_filter,
+                exclude_uas=exclude_uas,
             )
         return communicate
 
@@ -297,6 +299,17 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         When ``voice_fallbacks`` is empty, delegates directly to
         :meth:`_synthesize_single_voice` to preserve the original
         single-voice behavior with no extra overhead.
+
+        **已产出音频后禁止回退**：一旦本次尝试已经向下游 yield 过任何块
+        （``emitted_any``），再换音色重来会让同一输出文件的前段是音色 A、
+        后段是音色 B（缓存又按 effective voice 归档，事后无法察觉）。
+        此时直接把 :class:`QuotaError` 上抛，由上层整段重试。
+
+        Side effect: :attr:`last_effective_voice` is updated to the voice that
+        actually produced the audio. The engine uses it as the **cache key
+        voice** so that a fallback result is never stored under the requested
+        (failed) voice — otherwise later requests for that voice would hit the
+        cache and silently return a different voice's audio.
         """
         fallbacks = self._anti_risk_config.voice_fallbacks
         if not fallbacks:
@@ -304,16 +317,24 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                 text, voice, rate=rate, volume=volume
             ):
                 yield chunk
+            self.last_effective_voice = voice
             return
 
         voices_to_try = [voice, *fallbacks]
         last_quota_exc: QuotaError | None = None
         for idx, current_voice in enumerate(voices_to_try):
+            # 触发条件：服务端在已经下发若干音频块后才返回 429 / QuotaError。
+            # 后果（旧实现）：循环继续换下一个音色并继续 yield，同一个输出
+            # 文件里前段是音色 A、后段是音色 B，且无法事后察觉。
+            # 因此只要本次尝试已产出过块，就不得回退，直接上抛 QuotaError。
+            emitted_any = False
             try:
                 async for chunk in self._synthesize_single_voice(
                     text, current_voice, rate=rate, volume=volume
                 ):
+                    emitted_any = True
                     yield chunk
+                self.last_effective_voice = current_voice
                 return  # Success — exit the fallback loop.
             except Exception as exc:
                 classified = self._classify_exception(exc)
@@ -321,6 +342,14 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                     # Non-QuotaError: re-raise the original exception;
                     # ``synthesize_stream`` will classify it for callers.
                     raise
+                if emitted_any:
+                    logger.warning(
+                        "已产出音频后遇配额错误，放弃音色回退 / aborting voice "
+                        "fallback after partial audio: voice=%s, error=%s",
+                        current_voice,
+                        classified,
+                    )
+                    raise classified
                 last_quota_exc = classified
                 is_last = idx == len(voices_to_try) - 1
                 if is_last:
@@ -410,40 +439,68 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         if self._muid_manager is not None:
             self._muid_manager.invalidate()
         current_ua = getattr(communicate, "last_selected_ua", None)
-        if current_ua is not None:
-            marked = self._ua_health_filter.record_no_audio(current_ua)
-            if marked:
-                # Track for potential revocation if all UAs fail.
-                verification.marked.append(current_ua)
-            if marked and verification.attempts < verification.max_attempts:
-                verification.attempts += 1
-                logger.info(
-                    "NoAudioReceived 达阈值，切换 UA 验证 / "
-                    "NoAudioReceived threshold reached, switching UA "
-                    "(verification %d/%d, excluded UA: %s)",
-                    verification.attempts,
-                    verification.max_attempts,
-                    current_ua[:50] + "..." if len(current_ua) > 50 else current_ua,
-                )
-                # Close the abandoned stream and retry — the
-                # marked UA is now excluded by filter_healthy().
-                await self._aclose_stream(stream)
-                return True
+        if current_ua is None:
+            return False
 
-        # Verification attempts exhausted (or not marked).
-        # If we used all verification attempts and still fail,
-        # the failure is server-side — revoke all marks set
-        # during this synthesis so UAs aren't penalized.
-        # Guard with ``verification.attempts > 0`` so that
-        # ``ua_switch_on_no_audio=False`` (max_attempts=0)
-        # does NOT immediately revoke a just-set mark.
-        if verification.attempts > 0 and verification.attempts >= verification.max_attempts and verification.marked:
+        marked = self._ua_health_filter.record_no_audio(current_ua)
+        if marked and current_ua not in verification.marked:
+            # Track for potential revocation if all UAs fail.
+            verification.marked.append(current_ua)
+
+        # 是否继续换 UA 验证：
+        # - 首次（``attempts == 0``）只在当前 UA **真正达到阈值**时启动，
+        #   避免一次瞬时 NoAudioReceived 就无谓轮换；
+        # - 已处于验证流程（``attempts > 0``）时，后续任何 NoAudioReceived
+        #   都继续换 UA。这是原缺陷的根因：新选 UA 的计数恒从 1 开始，永远
+        #   达不到 ``ua_no_audio_threshold``，若仍以 ``marked`` 为门槛，
+        #   attempts 永远停在 1，撤销分支（unmark_unhealthy）不可达 →
+        #   服务端级故障时可用 UA 池被永久缩小。
+        if verification.attempts > 0 or marked:
+            verification.tried.add(current_ua)
+            if verification.attempts < verification.max_attempts:
+                remaining = [
+                    ua
+                    for ua in self._anti_risk_config.user_agents
+                    if ua not in verification.tried
+                ]
+                # 首次（阈值触发）即使池中已无其他 UA 也重试一次：上面已
+                # 废止 MUID，重试会携带新 MUID，可绕开被屏蔽的 MUID；
+                # 后续则仅在确实还有「没试过的 UA」时才继续，避免在同一
+                # UA 上反复打转却计为多次尝试。
+                if remaining or verification.attempts == 0:
+                    verification.attempts += 1
+                    logger.info(
+                        "NoAudioReceived 达阈值，切换 UA 验证 / "
+                        "NoAudioReceived threshold reached, switching UA "
+                        "(verification %d/%d, excluded UA: %s)",
+                        verification.attempts,
+                        verification.max_attempts,
+                        current_ua[:50] + "..." if len(current_ua) > 50 else current_ua,
+                    )
+                    # Close the abandoned stream and retry — ``tried`` is
+                    # passed to the adapter so the next selection skips
+                    # already-attempted UAs.
+                    await self._aclose_stream(stream)
+                    return True
+
+        # Verification attempts exhausted (or no alternate UA available).
+        # Only revoke when we actually tried **at least two distinct** UAs:
+        # with a single-UA pool the failure is not evidence of a server-side
+        # fault, and revoking would discard a valid threshold mark (also
+        # breaks MUID-rotation retries on single-UA pools).
+        if (
+            verification.attempts > 0
+            and verification.attempts >= verification.max_attempts
+            and len(verification.tried) >= 2
+            and verification.marked
+        ):
             logger.info(
                 "所有 UA 均 NoAudioReceived，撤销标记（服务端问题）/ "
                 "All UAs got NoAudioReceived, revoking marks (server-side issue)"
             )
             for ua in verification.marked:
                 self._ua_health_filter.unmark_unhealthy(ua)
+            verification.marked.clear()
         return False
 
     async def _retry_on_connect_failure(
@@ -522,7 +579,16 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         total_max = max(max_attempts, verification.max_attempts + 1)
 
         for attempt in range(1, total_max + 1):
-            communicate = self._make_communicate(text, voice, rate, volume)
+            communicate = self._make_communicate(
+                text,
+                voice,
+                rate,
+                volume,
+                # 已验证失败的 UA 从本次选择的候选池中排除，保证每次重试
+                # 真正落到一个新的 UA 上（否则 attempts 可能在同一 UA 上累加，
+                # "试过 N 个不同 UA" 的条件仍不可达）。
+                exclude_uas=verification.tried,
+            )
             stream = communicate.stream()
             produced = False
             try:
@@ -539,6 +605,15 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                         )
                     produced = True
                 return
+            except asyncio.CancelledError:
+                # 触发条件：外层任务被取消（段级超时 / 用户中断）时，
+                # ``wait_for`` 抛出的 CancelledError 继承自 BaseException，
+                # 原来的 ``except Exception`` 捕获不到，流不会被 aclose，
+                # 底层 ClientSession/WebSocket 只能等 asyncgen GC 才关闭，
+                # 高并发下会长期占用连接甚至报 "Session is closed"。
+                # 这里显式关闭后原样抛出，保证取消语义不变。
+                await self._aclose_stream(stream)
+                raise
             except Exception as exc:
                 if (
                     not produced
@@ -644,9 +719,13 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         return voices
 
     async def cleanup(self) -> None:
-        """Release shared resources."""
-        if self._shared_connector is not None and not self._shared_connector.closed:
-            await self._shared_connector.close()
+        """Release shared resources.
+
+        共享连接器已废弃（见 ``_make_communicate`` 注释：aiohttp 的
+        ``ClientSession.close()`` 会关闭传入的 connector），本客户端不再
+        持有任何跨流共享资源。保留空实现以兼容 ``TTSEngine.cleanup()``
+        的调用契约，重复调用无副作用。
+        """
 
 
 __all__ = [

@@ -22,6 +22,16 @@ from src.extensions.security import AuditLogger
 logger = logging.getLogger(__name__)
 
 
+class ExtensionUnhealthyError(RuntimeError):
+    """可执行扩展已被判定为不健康（资源超限被终止 / IPC 连接丢失）。
+
+    触发条件：``ResourceMonitor`` 因 CPU/内存/超时上限终止进程并置
+    ``adapter._failed = True``，或 IPC 连接断开。
+    后果：调用方必须能感知失败，而不是把 ``process()`` 的 ``None`` 当成
+    正常空结果；上层可据此调用 ``ExtensionLoader.mark_unhealthy()`` 移除扩展。
+    """
+
+
 class ExecutableExtensionAdapter(Extension):
     """executable 类型扩展适配器。
 
@@ -279,8 +289,19 @@ class ExecutableExtensionAdapter(Extension):
             **kwargs: 关键字参数（如 ``context``）
 
         返回:
-            exe 返回的处理结果；stub 模式或 IPC 错误时返回 ``None``
+            exe 返回的处理结果；stub 模式返回 ``None``
+
+        异常:
+            ExtensionUnhealthyError: 扩展已被资源监控终止或 IPC 连接丢失。
+                旧实现静默返回 ``None``，上层无法区分“正常空结果”和
+                “扩展已被杀”，失败扩展会一直留在 ``_loaded_extensions``。
         """
+        if self._failed:
+            raise ExtensionUnhealthyError(
+                f"Executable extension '{self.metadata.name}' is unhealthy "
+                f"(resource limit exceeded or IPC failure); refusing to process"
+            )
+
         if self._ipc_client is not None:
             # 构造请求数据：位置参数与关键字参数合并
             data: dict[str, Any] = {}
@@ -289,6 +310,13 @@ class ExecutableExtensionAdapter(Extension):
             if kwargs:
                 data["kwargs"] = dict(kwargs)
             response = self._send_ipc("process", data)
+            if self._failed:
+                # _send_ipc 在连接异常时已置 _failed；此处必须显式抛出，
+                # 否则调用方仍然只看到 None（与旧缺陷相同的静默失败）。
+                raise ExtensionUnhealthyError(
+                    f"Executable extension '{self.metadata.name}' IPC failed "
+                    f"while processing"
+                )
             if response is not None and response.get("status") == "ok":
                 return response.get("result")
             return None

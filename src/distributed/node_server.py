@@ -238,11 +238,12 @@ class TTSNodeService:
         :class:`TTSEngine` (which still uses ``edge_tts.Communicate``
         underneath for single-text synthesis).
         """
+        response: web.Response | None = None
         try:
             async with self._semaphore:
                 await self._increment_concurrency()
                 try:
-                    return await self._synthesize(request)
+                    response = await self._synthesize(request)
                 finally:
                     await self._decrement_concurrency()
         except asyncio.CancelledError:
@@ -251,14 +252,39 @@ class TTSNodeService:
             logger.error("请求处理异常: %s", e)
             return web.json_response({"error": "internal server error"}, status=500)
 
+        # 与 /convert 一致：把 worker 侧实时并发回传给 master，供负载均衡使用。
+        response.headers["X-Current-Concurrency"] = str(self._current_concurrency)
+        return response
+
     async def handle_convert(self, request: web.Request) -> web.Response:
         """New convert endpoint backed by ProcessingUnit.
 
         Accepts a JSON body with the same fields as ``ConvertRequest``
         and returns a JSON ``ConvertResult``. The work is performed by
         the same ``TTSExecutor`` that ``ppc convert`` uses.
+
+        触发条件：节点收到 ``/api/v1/convert`` 请求。
+        后果：旧实现不增减 ``current_concurrency``，master 上报恒为 0，
+        ``NodeInfo.is_available`` 永不饱和、基于连接的负载均衡退化为固定选择，
+        ``remove_node`` 的 drain 也会立即通过。现在与 ``/synthesize`` 一样在
+        处理前后计数（``try/finally`` 保证异常/取消也回退），并通过
+        ``X-Current-Concurrency`` 响应头把实时值回传给 master。
         """
         start_time = time.time()
+        async with self._semaphore:
+            await self._increment_concurrency()
+            try:
+                response = await self._handle_convert_inner(request, start_time)
+            finally:
+                await self._decrement_concurrency()
+
+        response.headers["X-Current-Concurrency"] = str(self._current_concurrency)
+        return response
+
+    async def _handle_convert_inner(
+        self, request: web.Request, start_time: float
+    ) -> web.Response:
+        """``handle_convert`` 的实际处理逻辑（不含并发计数）。"""
         try:
             try:
                 payload = await request.json()
@@ -378,9 +404,9 @@ class TTSNodeService:
                 self._stats.peak_concurrency = self._current_concurrency
 
     async def _decrement_concurrency(self):
-        """减少当前并发计数"""
+        """减少当前并发计数（下限为 0，避免异常路径出现负值）"""
         async with self._concurrency_lock:
-            self._current_concurrency -= 1
+            self._current_concurrency = max(0, self._current_concurrency - 1)
             self._stats.current_concurrency = self._current_concurrency
 
     async def _synthesize(self, request: web.Request) -> web.Response:

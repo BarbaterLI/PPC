@@ -169,6 +169,11 @@ _DANGEROUS_FUNCTIONS = {
     "importlib.import_module": (SecuritySeverity.MEDIUM, "DYNAMIC_IMPORT", "importlib.import_module dynamically loads modules"),
 }
 
+# subprocess 中会执行命令的函数名（导入别名后仍需按真实点分名识别）
+_SUBPROCESS_EXEC_FUNCS = {
+    "call", "Popen", "run", "check_output", "check_call", "getoutput"
+}
+
 _NETWORK_MODULES = {"requests", "urllib", "urllib.request", "urllib3", "aiohttp", "httpx", "socket"}
 _NETWORK_FUNCTIONS = {
     "requests.get", "requests.post", "requests.put", "requests.delete",
@@ -261,7 +266,14 @@ class ExtensionSecurityScanner:
             return results
 
         for py_file in sorted(dir_path.rglob("*.py")):
-            if py_file.is_file() and not py_file.name.startswith("_"):
+            # 必须扫描 __init__.py：包扩展的加载入口正是它（loader 以
+            # ``spec_from_file_location(module_name, __init__.py)`` 构建模块），
+            # 若按「下划线开头即跳过」过滤，恶意代码写进 __init__.py 就完全
+            # 绕过静态扫描并在 exec_module 阶段先于任何校验执行。
+            # 仍跳过其它私有模块（_foo.py）与 __pycache__。
+            if py_file.is_file() and (
+                py_file.name == "__init__.py" or not py_file.name.startswith("_")
+            ):
                 results.append(self.scan_file(py_file))
 
         return results
@@ -336,6 +348,54 @@ class _SecurityASTVisitor(ast.NodeVisitor):
         """
         self._result = result
         self._file_display = file_display
+        # 导入别名表：本地绑定名 -> 真实点分名。
+        # 触发条件：`import os as o` / `from os import system` /
+        # `from subprocess import run as r` 等写法；若不还原，规则只匹配
+        # 完整点分名（os.system），别名调用会被完全放过。
+        # 后果：恶意扩展可用一行别名导入绕过全部函数级规则。
+        self._aliases: dict[str, str] = {}
+        self._aliases_collected = False
+
+    def visit(self, node: ast.AST) -> None:
+        """遍历入口：先收集全文件导入别名，再做规则匹配。
+
+        触发条件：import 语句出现在调用之后（如函数内延迟导入）时，
+        单次前序遍历会漏掉别名。
+        后果：漏检。因此先对整棵树做一次导入别名预扫描。
+        """
+        if not self._aliases_collected:
+            self._aliases_collected = True
+            for child in ast.walk(node):
+                if isinstance(child, (ast.Import, ast.ImportFrom)):
+                    self._record_import_aliases(child)
+        super().visit(node)
+
+    def _record_import_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
+        """记录 import / from-import 的本地名到真实点分名的映射。
+
+        覆盖三种形式：``import X as a``、``from X import Y``、
+        ``from X import Y as a``。相对导入（``from . import Y``）的真实
+        模块名无法静态确定，跳过以避免误报。
+        """
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    # import os.path as osp -> osp 绑定到 os.path
+                    self._aliases[alias.asname] = alias.name
+                else:
+                    # import os.path 只绑定顶层名 os
+                    base = alias.name.split(".")[0]
+                    self._aliases.setdefault(base, base)
+            return
+
+        # ImportFrom
+        if node.level or not node.module:
+            return
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local = alias.asname or alias.name
+            self._aliases[local] = f"{node.module}.{alias.name}"
 
     def _get_location(self, node: ast.AST) -> str:
         """获取节点位置信息。
@@ -377,7 +437,7 @@ class _SecurityASTVisitor(ast.NodeVisitor):
         )
 
     def _get_full_name(self, node: ast.AST) -> str | None:
-        """获取属性访问的完整名称，如 os.system。
+        """获取属性访问的完整名称（已按导入别名还原）。
 
         参数:
             node: AST 节点
@@ -386,7 +446,7 @@ class _SecurityASTVisitor(ast.NodeVisitor):
             完整名称或 None
         """
         if isinstance(node, ast.Name):
-            return node.id
+            return self._resolve_alias(node.id)
         if isinstance(node, ast.Attribute):
             parts: list[str] = []
             current: ast.AST | None = node
@@ -395,8 +455,76 @@ class _SecurityASTVisitor(ast.NodeVisitor):
                 current = current.value
             if isinstance(current, ast.Name):
                 parts.append(current.id)
-                return ".".join(reversed(parts))
+                return self._resolve_alias(".".join(reversed(parts)))
         return None
+
+    def _resolve_alias(self, dotted_name: str) -> str:
+        """把点分名的首段按导入别名还原为真实模块名。
+
+        例如别名表 ``{"o": "os"}`` 时 ``o.system`` -> ``os.system``。
+        """
+        head, sep, rest = dotted_name.partition(".")
+        real = self._aliases.get(head)
+        if not real:
+            return dotted_name
+        return f"{real}.{rest}" if sep else real
+
+    def _get_value_name(self, node: ast.AST) -> str | None:
+        """解析表达式对应的真实点分名（支持嵌套 getattr 字符串访问）。"""
+        name = self._get_full_name(node)
+        if name is not None:
+            return name
+        if isinstance(node, ast.Call):
+            return self._resolve_getattr_target(node)
+        return None
+
+    def _resolve_getattr_target(self, call: ast.Call) -> str | None:
+        """解析 ``getattr(os, "system")`` 形式的字符串属性访问目标名。
+
+        触发条件：函数名为 getattr 且前两个参数可静态确定为
+        「模块名 + 字符串属性」。
+        后果：若不解析，``getattr(os, "system")(cmd)`` 不产生任何告警。
+        """
+        if self._get_full_name(call.func) not in {"getattr", "builtins.getattr"}:
+            return None
+        if len(call.args) < 2:
+            return None
+        base = self._get_value_name(call.args[0])
+        attr = self._get_string_value(call.args[1])
+        if base is None or attr is None or not attr.isidentifier():
+            return None
+        return f"{base}.{attr}"
+
+    def _report_dynamic_attribute(self, node: ast.Call, target: str) -> None:
+        """对命中危险规则的字符串属性访问（getattr）给出保守告警。
+
+        rule_id 统一加 ``GETATTR_`` 前缀，避免被扩展声明的权限直接抑制
+        （声明 SUBPROCESS 权限不应豁免动态取命令执行函数）。
+        """
+        normalized = target[len("builtins."):] if target.startswith("builtins.") else target
+
+        rule = _DANGEROUS_FUNCTIONS.get(normalized)
+        if (
+            rule is None
+            and normalized.startswith("subprocess.")
+            and normalized.split(".")[-1] in _SUBPROCESS_EXEC_FUNCS
+        ):
+            rule = (
+                SecuritySeverity.HIGH,
+                "SUBPROCESS_DYNAMIC_CALL",
+                f"通过 getattr 动态获取 {normalized} 执行子进程",
+            )
+        if rule is None:
+            return
+
+        severity, rule_id, message = rule
+        self._add_issue(
+            node,
+            severity,
+            f"GETATTR_{rule_id}",
+            f"通过字符串属性访问获取危险函数: {message}",
+            _get_suggestion_for_function(normalized),
+        )
 
     def _has_keyword_arg(self, node: ast.Call, arg_name: str, value: Any) -> bool:
         """检查函数调用是否包含指定的关键字参数。
@@ -510,15 +638,19 @@ class _SecurityASTVisitor(ast.NodeVisitor):
         """
         func_name = self._get_full_name(node.func)
 
+        # getattr 字符串属性访问：`getattr(os, "system")(cmd)` 这类写法
+        # 的函数名无法静态解析为 os.system，必须单独做保守告警。
+        getattr_target = self._resolve_getattr_target(node)
+        if getattr_target is not None:
+            self._report_dynamic_attribute(node, getattr_target)
+
         if func_name:
             if func_name in _DANGEROUS_FUNCTIONS:
                 severity, rule_id, message = _DANGEROUS_FUNCTIONS[func_name]
                 suggestion = _get_suggestion_for_function(func_name)
                 self._add_issue(node, severity, rule_id, message, suggestion)
 
-            if func_name.startswith("subprocess.") and func_name.split(".")[-1] in {
-                "call", "Popen", "run", "check_output", "check_call", "getoutput"
-            }:
+            if func_name.startswith("subprocess.") and func_name.split(".")[-1] in _SUBPROCESS_EXEC_FUNCS:
                 self._result.required_permissions.add("SUBPROCESS")
                 has_shell_true = self._has_keyword_arg(node, "shell", True)
                 if has_shell_true:

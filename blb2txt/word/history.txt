@@ -1,0 +1,551 @@
+﻿Balabolka (Text Extract Utility)
+Copyright (c) 2013-2026 Ilya Morozov
+All Rights Reserved
+
+
+*** History ***
+
+2026-06-06     v1.120
+[-] Fixed the text extracting for EPUB and MOBI files.
+
+
+2026-05-23     v1.119
+[-] Fixed the text extracting for EPUB files.
+
+
+2025-09-13     v1.118
+[*] Updated the text extracting from DOCX and ODT files.
+
+
+2025-06-28     v1.117
+[-] Fixed the text extracting for DOCX, FB2, FB3, ODP, ODT and PPTX files.
+[*] Updated the superscript/subscript extracting for AZW3, DOCX, FB2, FB3, HTML, ODP and ODT files.
+
+
+2025-06-07     v1.116
+[+] Added the text extracting for TXTZ files.
+[-] Fixed the text extracting for AZW3, EPUB, MOBI and PDB files.
+[*] Updated the Polish translation of README file (thanks to Fresta).
+
+
+2024-10-22     v1.115
+[-] Fixed the text extracting for FB2 and FB3 files.
+
+
+2024-06-15     v1.114
+[-] Fixed the text extracting for PDF files.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2023-12-13     v1.113
+[+] Added the option to set the configuration file name.
+
+
+2023-12-06     v1.112
+[-] Fixed the data writing to STDOUT.
+
+
+2023-10-02     v1.111
+[-] Fixed the extracting of a book cover image for EPUB files.
+[*] The file name of the cover image will be the same as the input file name.
+
+
+2023-09-09     v1.110
+[-] Fixed the text extracting for EPUB files.
+
+
+2023-05-20     v1.109
+[-] Fixed the text extracting for EPUB files.
+[-] Fixed the reading data from STDIN.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2023-02-04     v1.108
+[-] Fixed the text extracting for DOCX files.
+
+
+2022-12-10     v1.107
+[-] Fixed the text extracting for EPUB files.
+[*] Updated the text splitting.
+
+
+2022-10-22     v1.106
+[+] Added the option to clone the Created/Modified/Accessed time for files.
+
+
+2022-09-18     v1.105
+[-] Fixed the text extracting for EPUB and LIT files.
+
+
+2022-04-16     v1.104
+[-] Fixed small bugs.
+
+
+2021-07-24     v1.103
+[+] Added the option to create an output subfolder for each input file.
+
+
+2021-07-03     v1.102
+[+] Added the option to display progress information in a console window.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2021-05-23     v1.101
+[+] Added the support of the %Title% variable in the pattern for output file name. This variable allows to insert the title of the HTML document to the output file name.
+
+
+2021-04-16     v1.100
+[+] Added the option to set an extension for output filenames.
+[+] Added the option for table extracting from DOCX/FB2/FB3/ODT files.
+[*] Updated the text extracting for DOCX/FB2/FB3/HTML/ODT files.
+
+
+2021-04-08     v1.99
+[+] Added the option to open a file with a list of input filenames.
+
+
+2021-01-24     v1.98
+[-] Fixed the using of IFilter for files inside archives.
+
+
+2021-01-22     v1.97
+[-] Fixed the text extracting for RAR files.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2021-01-15     v1.96
+[+] Added the options to process archive files. The application needs 7z.dll (32bit) for such operations. 7z.dll is a part of 7-Zip software.
+
+
+2020-12-10     v1.95
+[+] Added the option to search input files in subfolders.
+
+
+2020-07-04     v1.94
+[-] Fixed the document type detecting for unknown filename extensions.
+
+
+2020-05-31     v1.93
+[-] Fixed the summary extracting for FB2/FB3 files.
+
+
+2020-05-30     v1.92
+[*] The option "--skip-summary" ("-ss") was modified to "--extract-summary" ("-es").
+[*] The summary extraction for FB2/FB3 files is turned off by default.
+
+
+2020-05-23     v1.91
+[*] Updated the text extracting for EPUB files.
+
+
+2020-05-10     v1.90
+[*] LibreOffice Writer is used for text extracting from old Microsoft Word 6.0/95 documents (if LibreOffice is installed).
+
+
+2020-04-16     v1.89
+[-] Fixed the text extracting for FB2 files.
+
+
+2020-03-01     v1.88
+[-] Fixed the text extracting for EPUB files.
+[-] Fixed the applying of regular expressions to German documents.
+
+
+2020-02-08     v1.87
+[+] Small improvements.
+
+
+2019-12-29     v1.86
+[-] Fixed the text extracting for Markdown files.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2019-12-20     v1.85
+[+] Added the text extracting for Markdown files (the Markdown formatting will be removed from text files).
+
+
+2019-12-15     v1.84
+[*] Improved the document type detecting for EML files.
+[*] Updated the text extracting for FB2 and FB3 files.
+
+
+2019-11-16     v1.83
+[+] Added the options to insert text into notes when the application extracts data from DOCX, FB2, FB3 and ODT files.
+[+] Added the option to set the input file type (in order to ignore the extension of the file name).
+[+] Updated the German translation of README file (thanks to Regine Mueller).
+
+
+2019-11-09     v1.82
+[+] Added the support of the %FileName% variable in the pattern for output file name. This variable allows to insert the input file name to the output file name.
+[+] Added the document type detecting for unknown extensions of filenames.
+
+
+2019-09-16     v1.81
+[-] Fixed the text extracting for EPUB, HTML and MHT files.
+
+
+2019-07-20     v1.80
+[+] Small improvements.
+
+
+2019-03-22     v1.79
+[*] Updated the text extracting for DOCX, CHM, EPUB, HTML, ODP, ODT and PPTX files.
+[-] Fixed the text extracting for CHM files.
+
+
+2019-03-10     v1.78
+[*] For text splitting the output target file size must be set as a number of characters (not as a number of kilobytes).
+[*] Added the option for minimal size of text parts.
+[*] The option "-m" was renamed to "-j".
+
+
+2019-02-23     v1.77
+[+] Added the option to add a period if there is no punctuation at the end of the paragraph.
+
+
+2019-02-09     v1.76
+[+] Added the text extracting for ODP and PPT files.
+
+
+2019-02-02     v1.75
+[+] Added the text extracting for PPTX files.
+
+
+2018-12-26     v1.74
+[+] Added the option to highlight headings.
+[-] Fixed small bugs.
+
+
+2018-12-21     v1.73
+[+] Added the option to remove text in round brackets.
+
+
+2018-12-08     v1.72
+[+] Added the option to remove comments (single-line and multiline).
+
+
+2018-11-17     v1.71
+[+] Added the option to remove page numbers.
+[*] Pages are extracted from DjVu files as PNG images.
+
+
+2018-11-10     v1.70
+[+] Pages are extracted from DjVu files as TIFF images.
+
+
+2018-11-02     v1.69
+[+] Added the text/image extracting for FB3 files.
+[+] Added the option for extracting of a book cover image.
+[*] Updated the text extracting for FB2 files.
+[*] The option "--skip-fb2-summary" ("-sfs") was renamed to "--skip-summary" ("-ss").
+
+
+2018-10-21     v1.68
+[+] Added the option for extracting of images.
+
+
+2018-10-15     v1.67
+[-] Fixed the applying of rules.
+
+
+2018-10-12     v1.66
+[+] Added the options for extracting of header fields from EML files.
+[+] Added the option to set a full name of the output file.
+[-] Fixed the text extracting for EML files.
+
+
+2018-10-08     v1.65
+[*] Updated the applying of rules.
+
+
+2018-10-06     v1.64
+[*] Updated the applying of rules.
+
+
+2018-09-21     v1.63
+[*] Error messages were updated.
+[-] Fixed the text extracting for DjVu files.
+
+
+2018-09-07     v1.62
+[*] Updated the text splitting.
+
+
+2018-09-02     v1.61
+[*] Updated the text extracting for DOCX, FB2 and ODT files.
+
+
+2018-08-21     v1.60
+[+] Small improvements.
+
+
+2018-07-30     v1.59
+[*] The options for table of contents were separated: one option for extracting of TOC from the document, another option for generating of new TOC.
+[*] The options for table of contents (extracting or generating) can be used together. The application will try to extract TOC from the document; if TOC is absent, the new TOC will be generated.
+[-] Fixed the text extracting for PDF files.
+
+
+2018-06-20     v1.58
+[*] Improved the code page detecting for plain text files.
+
+
+2018-06-02     v1.57
+[+] Added the support of the %Header% variable in the pattern for output file name. This variable allows to insert the headers from the table of contents to the file names (if text is split by named bookmarks).
+
+
+2018-05-27     v1.56
+[*] Updated the text extracting for AZW and MOBI files.
+[*] Text formatting was improved.
+
+
+2018-05-12     v1.55
+[*] The multi-line modifier is specified by default for regular expressions.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2018-04-26     v1.54
+[+] Small improvements.
+
+
+2018-04-22     v1.53
+[+] Added the options to split text by table of contents. The application extracts information about chapters from a document or creates a new table of contents for the extracted text.
+[*] Updated the text extracting for EPUB files.
+
+
+2018-04-14     v1.52
+[+] Added the support of BXD format for dictionaries.
+[+] Added the option to skip notes when the application extracts text from DOCX, FB2 and ODT files.
+[*] Updated the text extracting for EPUB and FB2 files.
+
+
+2018-03-31     v1.51
+[+] Added the option to skip a summary when the application extracts text from FB2 files.
+[*] Updated the text extracting for FB2 files.
+
+
+2018-03-24     v1.50
+[+] Added the text extracting for FB2.ZIP and FBZ files.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2018-03-17     v1.49
+[+] Added the option to fix letter-spacing in words.
+
+
+2018-02-24     v1.48
+[*] If the pattern for output file name contains the %FirstLine% variable and the position of sequence number is not defined, the output file names will not contain sequence numbers.
+
+
+2017-10-28     v1.47
+[*] Updated the text extracting for EPUB and MHT files.
+[-] Fixed the text extracting for DOCX files.
+
+
+2017-09-30     v1.46
+[+] Added the text extracting for WRI files.
+[-] Fixed the text extracting for EML files.
+
+
+2017-09-24     v1.45
+[+] Added the text extracting for EML files.
+
+
+2017-09-14     v1.44
+[+] Added the text extracting for XLS, XLSX and ODS files (export to CSV format).
+
+
+2017-09-08     v1.43
+[-] Fixed the text extracting for EPUB files.
+
+
+2017-04-02     v1.42
+[-] Fixed the text extracting for HTML files.
+
+
+2017-03-21     v1.41
+[-] Fixed small bugs.
+
+
+2017-02-18     v1.40
+[-] Fixed the text extracting when a number of input files is large.
+
+
+2017-02-11     v1.39
+[+] Added the support of new operators for regular expresions (\U, \L, \E, \u, \l).
+
+
+2017-02-05     v1.38
+[+] Added the text extracting for LIT files.
+
+
+2017-01-28     v1.37
+[+] Added the text extracting for DjVu files.
+
+
+2017-01-21     v1.36
+[+] Added the support of the %Number% variable in the pattern for output file name. This variable allows to change the position of the sequence number inside the output file name.
+[*] Updated the Italian translation of README file (thanks to Giuliano Artico).
+
+
+2016-11-26     v1.35
+[+] Added the support of IFilter for unknown formats.
+[-] Fixed small bugs.
+
+
+2016-11-05     v1.34
+[+] Added the text extracting for PDB (Plucker) files.
+
+
+2016-10-27     v1.33
+[+] Added the text extracting for PalmDoc books. The supported formats of PDB: PalmDOC, Palm Reader/eReader, zTXT.
+[+] Added the text extracting for TCR files.
+[-] Fixed the text extracting for AZW3 files.
+[+] Small improvements.
+
+
+2016-10-15     v1.32
+[+] Added the text extracting for WPD files.
+[*] The utility was renamed to "blb2txt.exe".
+[-] Fixed small bugs.
+
+
+2016-10-11     v1.31
+[-] Fixed the text extracting for MHTML files.
+
+
+2016-08-25     v1.30
+[-] Fixed small bugs.
+
+
+2016-07-16     v1.29
+[-] Fixed the text extracting for DOCX and ODT files.
+
+
+2016-06-02     v1.28
+[+] Added the support of the %FirstLine% variable in the pattern for output file name. The application will replace this variable by the first line of each text part.
+
+
+2016-05-28     v1.27
+[+] Small improvements.
+
+
+2016-04-26     v1.26
+[-] Fixed the reading of data from STDIN.
+[+] Added the document type detecting for the data from STDIN.
+
+
+2016-04-24     v1.25
+[-] Fixed the reading of text from STDIN.
+
+
+2016-04-23     v1.24
+[-] Fixed the writing of text to STDOUT.
+
+
+2016-03-12     v1.23
+[-] Fixed the text extracting for HTML files.
+
+
+2016-01-03     v1.22
+[-] Fixed the text extracting for HTML files.
+
+
+2015-11-06     v1.21
+[-] Fixed small bugs.
+
+
+2015-08-06     v1.20
+[-] Fixed the text extracting for EPUB files.
+[+] The Italian translation of README file (thanks to Giuliano Artico).
+
+
+2015-07-20     v1.19
+[*] Updated the text split method: if output target file size is defined, this value will be used as a limit, not as a target. The utility will split text into equal parts.
+
+
+2015-06-07     v1.18
+[*] Updated the applying of rules from REX-dictionaries.
+
+
+2015-04-12     v1.17
+[+] Added the removing of soft hyphens to the text formatting.
+
+
+2014-10-11     v1.16
+[-] Fixed small bugs.
+
+
+2014-09-27     v1.15
+[-] Fixed the text extracting for CHM files.
+
+
+2014-08-30     v1.14
+[+] Small improvements.
+
+
+2014-05-24     v1.13
+[-] Fixed the text extracting for FB2 files.
+
+
+2014-05-18     v1.12
+[-] Fixed small bugs.
+
+
+2014-04-24     v1.11
+[+] Small improvements.
+[*] Updated the Polish translation of README file (thanks to Natalia Atamanchuk).
+
+
+2014-01-26     v1.10
+[-] Fixed the text extracting for EPUB files.
+
+
+2014-01-19     v1.09
+[+] Small improvements.
+[*] Updated the Bulgarian translation of README file (thanks to Kostadin Kolev).
+
+
+2013-12-01     v1.08
+[+] Improved the text extracting for DOCX and ODT files.
+
+
+2013-08-18     v1.07
+[-] Fixed the text encoding for STDOUT.
+[-] The library DELZIP190.DLL is not used.
+[*] Updated the Bulgarian translation of README file (thanks to Kostadin Kolev).
+
+
+2013-08-14     v1.06
+[*] Updated the text extracting from PDF files.
+
+
+2013-08-03     v1.05
+[-] Fixed the text extracting for EPUB and PDF files.
+
+
+2013-06-02     v1.04
+[-] Fixed small bugs.
+
+
+2013-04-16     v1.03
+[+] Added the text extracting from PDF files.
+[+] The Polish translation of README file (thanks to Natalia Atamanchuk).
+[*] Updated the French translation of README file (thanks to Lyubov Tyurina).
+
+
+2013-04-14     v1.02
+[*] Updated the library DELZIP190.DLL.
+
+
+2013-03-31     v1.01
+[-] Fixed small bugs.
+
+
+2013-03-03     v1.0
+[+] The text extract utility is available for downloading.
+[+] The German translation of README file (thanks to Regine Mueller).
+[+] The Bulgarian translation of README file (thanks to Kostadin Kolev).
+[+] The French translation of README file (thanks to Lyubov Tyurina).
+[+] The Finnish translation of README file.
+[+] The Portuguese translation of README file.
+[+] The Spanish translation of README file.

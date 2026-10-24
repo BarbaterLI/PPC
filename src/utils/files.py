@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import logging
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -86,6 +87,28 @@ def quick_probe(
     return None, size
 
 
+BOM_CHAR = "\ufeff"
+
+
+def strip_bom(text: str) -> str:
+    """去除**文本开头**的 BOM（U+FEFF）。
+
+    ``DEFAULT_ENCODING_FALLBACK`` 以 ``utf-8`` 打头，而 ``utf-8`` 解码**不会**
+    剥离 BOM，于是 ``\\ufeff`` 会留在正文首位。这会让按行首匹配的逻辑失配
+    （典型：章节正则 ``^第…章`` 不匹配首行 → 首章被并入下一章），并可能被
+    当作正文字符送入 TTS 朗读。
+
+    只剥离首个字符；正文中间的 U+FEFF 保留（可能是零宽不换行空格，语义不同）。
+
+    参数:
+        text: 已解码的文本。
+
+    返回:
+        去掉开头 BOM 的文本。
+    """
+    return text[1:] if text.startswith(BOM_CHAR) else text
+
+
 def read_text_auto(
     file_path: Path, encodings: list[str] | None = None, detect_buffer: int = DEFAULT_ENCODING_DETECT_BUFFER
 ) -> tuple[str, str]:
@@ -95,6 +118,8 @@ def read_text_auto(
     一次并再解码)” 的两趟探测——编码判定只读头部，全量读与解码各一次。
     全部候选解码失败时按首候选编码严格解码，让 ``UnicodeDecodeError`` 上抛
     （与旧路径异常语义一致）。
+
+    返回值中的文本已由 :func:`strip_bom` 去除开头的 BOM。
     """
     if encodings is None:
         encodings = DEFAULT_ENCODING_FALLBACK
@@ -103,24 +128,103 @@ def read_text_auto(
     if encoding is None:
         encoding = encodings[0] if encodings else "utf-8"
     try:
-        return file_path.read_text(encoding=encoding), encoding
+        return strip_bom(file_path.read_text(encoding=encoding)), encoding
     except (UnicodeDecodeError, UnicodeError):
         # 头部合法但正文出现非法字节（罕见）：按候选链重试一次
         for candidate in encodings:
             if candidate == encoding:
                 continue
             try:
-                return file_path.read_text(encoding=candidate), candidate
+                return strip_bom(file_path.read_text(encoding=candidate)), candidate
             except (UnicodeDecodeError, UnicodeError):
                 continue
         raise
 
 
+def _part_path(path: Path) -> Path:
+    """同目录 ``.part`` 临时文件路径（``a.mp3`` → ``a.mp3.part``）。"""
+    return path.with_name(path.name + ".part")
+
+
+def _commit_part(tmp_path: Path, path: Path) -> None:
+    """``fsync`` 后 ``os.replace`` 原子替换目标；失败时清掉临时文件。"""
+    try:
+        with open(tmp_path, "rb+") as fh:
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp_path), str(path))
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path: Path | str, data: bytes) -> Path:
+    """原子地把 *data* 写到 *path*（同目录 ``.part`` + ``fsync`` + ``os.replace``）。
+
+    触发条件：任何「先落盘、失败即视为脏数据」的产物写出（例如 TTS 插件
+    后端直接返回音频字节）。
+    后果（旧实现直接 ``write_bytes``）：进程在写一半时被中断/崩溃，目标路径
+    上会留下截断的半成品，而调用方/缓存把它当作完整产物。
+    改为先写 ``<name>.part``、``fsync`` 后再原子替换；任何异常都会删除临时
+    文件并向上抛，目标路径要么是旧内容、要么不存在，绝不会是半截文件。
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _part_path(target)
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    _commit_part(tmp, target)
+    return target
+
+
+def atomic_copy_file(src: Path | str, dst: Path | str) -> Path:
+    """流式复制 *src* → *dst*，以 ``.part`` + ``fsync`` + ``os.replace`` 落盘。
+
+    与 :func:`atomic_write_bytes` 同为原子落盘工具，供「插件已生成文件、需要
+    搬移到目标路径」的路径复用（旧实现用 ``shutil.copy2`` 直接写目标路径，
+    中途失败会留下半成品）。不保留源文件的 mtime/权限——音频产物的可播放性
+    只取决于字节完整性。
+    """
+    source = Path(src)
+    target = Path(dst)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _part_path(target)
+    try:
+        with open(source, "rb") as fsrc, open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    _commit_part(tmp, target)
+    return target
+
+
 __all__ = [
+    "BOM_CHAR",
+    "atomic_copy_file",
+    "atomic_write_bytes",
     "safe_extract_zip",
     "detect_encoding",
     "quick_probe",
     "read_text_auto",
+    "strip_bom",
     "DEFAULT_ENCODING_FALLBACK",
     "DEFAULT_ENCODING_DETECT_BUFFER",
 ]

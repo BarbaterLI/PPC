@@ -53,11 +53,13 @@ class FileCollector:
                 if file_path in seen:
                     continue
                 seen.add(file_path)
-                match = re.search(r"(\d+)", file_path.stem)
-                if match:
-                    files.append((int(match.group(1)), file_path))
+                # 触发条件：文件名不含数字（prologue.mp3/epilogue.mp3 等）。
+                # 旧实现只在 re.search 命中时才收集，这些文件被**静默丢弃**
+                # ——既不归档也无告警（file_number 却对它们返回 0，语义矛盾）。
+                # 现在一律收集，无编号者按 0 排序（稳定排序保留文件名次序）。
+                files.append((self.file_number(file_path), file_path))
 
-        files.sort(key=lambda x: x[0])
+        files.sort(key=lambda x: (x[0], x[1].name))
         return files
 
     @staticmethod
@@ -163,14 +165,23 @@ class ArchiveWriter:
         logger.info(f"创建归档: {archive_path.name} ({len(files)} 个文件)")
 
     async def create_zip_archives(self, files: list[Path], output_path: Path, max_size: int) -> tuple[list[Path], int]:
-        """按大小切分文件并写入 ZIP 归档，返回 (归档路径列表, 末组累计大小)。"""
+        """按大小切分文件并写入 ZIP 归档，返回 (归档路径列表, 全部文件字节总和)。
+
+        触发条件：文件总量超过 ``max_size`` 被切分为多个归档组时。
+        旧实现返回 ``current_size``（**末组**累计大小）：4×100B 分 2 组会
+        返回 200 而非 400；若末组恰好 flush（末尾无待写文件）则返回 0。
+        后果是 ``BatcherExecutor.create_zip_archive`` 的 ``bytes_processed``
+        指标严重失真。此处累计所有组后再返回。
+        """
         batch_index = 1
         current_files: list[Path] = []
         current_size = 0
+        total_size = 0
         created_archives: list[Path] = []
 
         for file_path in sorted(files):
             file_size = file_path.stat().st_size
+            total_size += file_size
 
             if file_size > max_size:
                 if current_files:
@@ -204,7 +215,7 @@ class ArchiveWriter:
             await self.write_archive(archive_path, current_files)
             created_archives.append(archive_path)
 
-        return created_archives, current_size
+        return created_archives, total_size
 
 
 class VolumeDetector:

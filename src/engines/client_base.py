@@ -6,6 +6,7 @@ Split out of the former monolithic ``edge_tts_client`` module.
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import (
@@ -20,6 +21,7 @@ from src.core.exceptions import (
     QuotaError,
     TransientError,
 )
+from src.utils.files import atomic_copy_file, atomic_write_bytes
 
 from .tts_types import (
     DEFAULT_CHUNK_BYTES,
@@ -28,6 +30,8 @@ from .tts_types import (
     TTSChunk,
     VoiceInfo,
 )
+
+logger = logging.getLogger(__name__)
 
 # Environment edge-tts is the only backend whose exception hierarchy is
 # consulted here; the builtin/customized backend's exceptions are matched
@@ -149,12 +153,19 @@ class EdgeTTSClient(ABC):
         rate: str = "+0%",
         volume: str = "+0%",
         last_chunk_offset: int = DEFAULT_RESUME_OFFSET,
+        boundary_sink: Any | None = None,
     ) -> int:
         """Convenience helper that streams audio to a file on disk.
 
         Writes to a ``.part`` temporary file and atomically renames to
         the target path on success. On failure the temp file is deleted
         so that no partial audio data remains in the cache directory.
+
+        ``boundary_sink`` 为可选的元数据接收器（``callable(TTSChunk)``）：
+        传入后，``WordBoundary``/``SentenceBoundary`` 事件不再被丢弃，而是
+        逐个交给它——多角色合并优化靠这些 offset/duration 做时间轴对齐与
+        音频切分（见 :mod:`src.engines.segment_timeline`）。接收器自身抛
+        异常不影响合成主流程（字幕/切分是增强能力，不能反过来打断产出）。
 
         Returns the total number of bytes written (post-resume).
         """
@@ -182,12 +193,15 @@ class EdgeTTSClient(ABC):
                     )
                     # 插件可能返回已写入文件的路径或音频字节数据；统一确保
                     # output_path 存在且非空，再返回字节数。
+                    # 触发条件：插件直接产出字节或另存了临时文件。
+                    # 后果（旧实现 ``write_bytes``/``shutil.copy2``）：进程在
+                    # 复制途中中断会在 output_path 留下半截文件，且绕开了
+                    # ``synthesize_atomic_write`` 的原子落盘保证。
+                    # 统一改走原子工具（同目录 .part + fsync + os.replace）。
                     if isinstance(result, (bytes, bytearray)) and result:
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(bytes(result))
+                        atomic_write_bytes(path, bytes(result))
                     elif result is not None and str(result) not in ("", str(path)):
-                        import shutil
-                        shutil.copy2(str(result), str(path))
+                        atomic_copy_file(str(result), str(path))
                     if not path.exists() or path.stat().st_size <= 0:
                         raise TransientError("TTS backend plugin returned no audio")
                     return path.stat().st_size
@@ -216,6 +230,13 @@ class EdgeTTSClient(ABC):
                     last_chunk_offset=last_chunk_offset,
                 ):
                     if chunk.type != "audio" or not chunk.data:
+                        # 元数据（WordBoundary/SentenceBoundary）交接收器；
+                        # 无接收器时行为与旧实现完全一致（直接丢弃）。
+                        if boundary_sink is not None and getattr(chunk, "type", "") == "metadata":
+                            try:
+                                boundary_sink(chunk)
+                            except Exception as sink_exc:  # noqa: BLE001
+                                logger.debug("boundary_sink 处理失败（已忽略）: %s", sink_exc)
                         continue
                     fh.write(chunk.data)
                     written += len(chunk.data)

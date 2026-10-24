@@ -153,15 +153,29 @@ class TimeoutCalculator:
             },
         )
 
-    def record_result(self, text: str, actual_time: float, success: bool = True) -> None:
+    def record_result(
+        self,
+        text: str,
+        actual_time: float,
+        success: bool = True,
+        timeout_occurred: bool = False,
+    ) -> None:
         """Record request result
+
+        注意：真实 TTS 链路**不走这里** —— 引擎侧的记录入口是
+        :meth:`src.engines.tts_client_wrapper.TTSClientWrapper.record_timeout`，
+        它先写入共享的 ``TimeoutHistory``（本类的 ``self._history`` 是同一实例）。
+        本方法仅作为 calculator 的对外便捷 API 保留，供持有 calculator 的
+        调用方记录样本。
 
         Args:
             text: Request text
             actual_time: Actual time taken
             success: Whether the request was successful
+            timeout_occurred: Whether a timeout occurred（旧实现未透传该参数，
+                调用方即使显式传入也会被静默丢弃 → 超时计数恒为 0）
         """
-        self._history.record(text, actual_time, success)
+        self._history.record(text, actual_time, success, timeout_occurred)
 
     def get_history(self) -> TimeoutHistory:
         """Get timeout history"""

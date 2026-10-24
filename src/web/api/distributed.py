@@ -22,6 +22,7 @@ _executor_lock = threading.Lock()
 _node_service = None
 _node_service_lock = threading.Lock()
 _node_service_loop = None
+_node_service_thread = None
 
 
 def _get_scheduler():
@@ -353,7 +354,7 @@ def stop_scheduler():
 
 @distributed_bp.route("/node-service/start", methods=["POST"])
 def start_node_service():
-    global _node_service, _node_service_loop
+    global _node_service, _node_service_loop, _node_service_thread
     try:
         with _node_service_lock:
             if _node_service is not None:
@@ -371,59 +372,90 @@ def start_node_service():
             # 默认并发来自 config.distributed.node_max_concurrency，请求参数可覆盖
             max_concurrency = data.get("max_concurrency") or config.distributed.node_max_concurrency
 
-            _node_service = TTSNodeService(config, host, int(port), int(max_concurrency))
-            _node_service_loop = asyncio.new_event_loop()
+            service = TTSNodeService(config, host, int(port), int(max_concurrency))
+            loop = asyncio.new_event_loop()
+            _node_service = service
+            _node_service_loop = loop
 
         node_service_ready = threading.Event()
 
+        # P2-12: 线程闭包必须持有**局部** loop/service 引用。旧实现直接读全局
+        # ``_node_service_loop``，stop 先把它置 None，finally 的判空恒为假，
+        # loop.close() 永不执行 → 每次 start/stop 泄漏一个事件循环及其 selector。
         def _run_service():
-            asyncio.set_event_loop(_node_service_loop)
+            asyncio.set_event_loop(loop)
             try:
-                _node_service_loop.run_until_complete(_node_service.start())
+                loop.run_until_complete(service.start())
                 node_service_ready.set()
-                _node_service_loop.run_forever()
+                loop.run_forever()
             except Exception as e:
                 logger.warning("Node service stopped: %s", e)
                 node_service_ready.set()
             finally:
-                if _node_service_loop is not None and not _node_service_loop.is_closed():
-                    _node_service_loop.close()
+                if not loop.is_closed():
+                    loop.close()
 
         service_thread = threading.Thread(target=_run_service, daemon=True)
         service_thread.start()
+        _node_service_thread = service_thread
 
         node_service_ready.wait(timeout=10)
 
         return success_response({"status": "started", "host": host, "port": port})
     except Exception as e:
         logger.exception("Failed to start node service")
-        _node_service = None
-        _node_service_loop = None
+        with _node_service_lock:
+            failed_loop = _node_service_loop
+            failed_thread = _node_service_thread
+            _node_service = None
+            _node_service_loop = None
+            _node_service_thread = None
+        # 线程未接管 loop 时在此关闭，避免启动失败路径再次泄漏事件循环。
+        if (
+            failed_loop is not None
+            and (failed_thread is None or not failed_thread.is_alive())
+            and not failed_loop.is_closed()
+        ):
+            failed_loop.close()
         return error_response(str(e), code="NODE_SERVICE_START_ERROR", status_code=500)
 
 
 @distributed_bp.route("/node-service/stop", methods=["POST"])
 def stop_node_service():
-    global _node_service, _node_service_loop
+    global _node_service, _node_service_loop, _node_service_thread
     try:
         with _node_service_lock:
             if _node_service is None:
                 return error_response("Node service not running", code="NOT_RUNNING", status_code=400)
 
-            if _node_service_loop and not _node_service_loop.is_closed():
-                try:
-                    _submit_to_loop(_node_service.stop(), _node_service_loop, timeout=10)
-                except Exception as e:
-                    logger.warning("Node service stop raised error (forced shutdown): %s", e)
-
-                _node_service_loop.call_soon_threadsafe(_node_service_loop.stop)
-
+            # P2-12: 先把引用取到局部再置空全局。旧实现先置空导致
+            # ``_run_service`` 的 finally 看不到 loop，永远不会 close()。
+            service = _node_service
+            loop = _node_service_loop
+            thread = _node_service_thread
             _node_service = None
             _node_service_loop = None
+            _node_service_thread = None
+
+        # 先停服务协程，再停 loop，最后等线程退出并关闭 loop，避免
+        # "Event loop is closed" 噪声（顺序不能颠倒）。
+        if loop is not None and not loop.is_closed():
+            try:
+                _submit_to_loop(service.stop(), loop, timeout=10)
+            except Exception as e:
+                logger.warning("Node service stop raised error (forced shutdown): %s", e)
+
+            if loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10)
 
         return success_response({"status": "stopped"})
     except Exception as e:
         logger.exception("Failed to stop node service")
-        _node_service = None
-        _node_service_loop = None
+        with _node_service_lock:
+            _node_service = None
+            _node_service_loop = None
+            _node_service_thread = None
         return error_response(str(e), code="NODE_SERVICE_STOP_ERROR", status_code=500)

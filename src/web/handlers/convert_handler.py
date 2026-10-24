@@ -56,12 +56,15 @@ def run_convert(task_id: str, params: dict, manager: TaskManager) -> dict[str, A
     resume = params.get("resume", False)
     tts_backend = params.get("tts_backend")
     tts_proxy = params.get("tts_proxy")
+    segment_bitrate = params.get("segment_bitrate")
 
     # 逐任务深拷贝：所有覆盖只作用于本次转换任务，绝不污染全局共享配置
     config = copy.deepcopy(get_default_manager().get_config())
 
     if voice:
         config.tts.voice = voice
+    if segment_bitrate:
+        config.tts.segment_bitrate = segment_bitrate
     if concurrency is None:
         concurrency = config.tts.concurrency
     # 并发钳制到 [1, MAX_WEB_CONCURRENCY]
@@ -168,6 +171,7 @@ def run_convert(task_id: str, params: dict, manager: TaskManager) -> dict[str, A
             "failure_count": failed,
             "duration": time.monotonic() - start_time,
             "failed_items": failed_items,
+            "output_dir": str(output_dir),
         }
 
     return run_async(_convert_all())

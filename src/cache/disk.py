@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -110,7 +111,20 @@ class DiskCache:
             self._current_size_bytes = 0
 
     def _save_metadata(self) -> None:
-        """Save metadata - immediate save"""
+        """Save metadata - immediate save (atomic on POSIX and Windows).
+
+        P2-6 触发条件：写 ``metadata.json`` 期间进程被中断/断电（原先直接
+        ``open(..., "w")`` 覆盖原文件，写入未完成即留下半截 JSON）。
+        后果：下次启动 ``_load_metadata`` 解析失败 → 索引被清空、磁盘上的
+        ``cache_*.bin`` 全部成为永不清理的孤儿文件，且 ``_current_size_bytes``
+        归零导致容量统计失真。
+        修复：先写同目录临时文件并 ``fsync``，再用 ``os.replace`` 原子替换
+        （Windows 下亦为原子覆盖）；任何失败都保留旧的完整 ``metadata.json``
+        并清理临时文件。
+        """
+        temp_file = self._metadata_file.with_name(
+            f"{self._metadata_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         try:
             data = {
                 key: {
@@ -123,13 +137,21 @@ class DiskCache:
                 }
                 for key, entry in self._metadata.items()
             }
-            with open(self._metadata_file, "w", encoding="utf-8") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, self._metadata_file)
             self._metadata_dirty = False
             self._last_metadata_save = time.time()
             self._metadata_op_count = 0
         except Exception as e:
             logger.warning(f"Failed to save disk cache metadata: {e}")
+        finally:
+            # 失败路径下临时文件可能已创建（或 os.replace 本身失败），必须清理，
+            # 否则 cache 目录会累积 *.tmp 垃圾文件。
+            with contextlib.suppress(OSError):
+                temp_file.unlink(missing_ok=True)
 
     def _maybe_save_metadata(self) -> None:
         """Conditionally save metadata based on interval and operation count"""

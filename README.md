@@ -50,9 +50,16 @@ ppc convert ./novel_chapters ./audio --resume
 ppc convert ./novel_chapters ./audio --book --book-title "夜航船"
 # 6. 多角色配音（说话人轮次级音色切换，narrator/角色兜底）：
 ppc convert ./novel_chapters ./audio --cast cast.yml
-# 7. WebUI：
+# 7. 按角色池合并（同一角色的多句话合批成一次请求），再按字幕时间戳切回原位：
+ppc convert ./novel_chapters ./audio --cast cast.yml --merge-cut
+# 8. 顺带输出 .srt 字幕：
+ppc convert ./novel_chapters ./audio --cast cast.yml --subtitles
+# 9. LLM 自动分配发声人（OpenAI 兼容端点），结果落盘复用：
+ppc convert ./novel_chapters ./audio --llm-assign \
+    --candidate-voices zh-CN-YunxiNeural,zh-CN-XiaoxiaoNeural --save-cast cast.yml
+# 10. WebUI：
 ppc webui            # http://127.0.0.1:5000
-# 8. 环境自诊断：
+# 11. 环境自诊断：
 ppc doctor
 ```
 
@@ -66,7 +73,8 @@ ppc doctor
 - 预设：`--preset speed|balanced|quality|custom`。
 - 旧版本配置自动迁移（`src/config/migration.py`），升级大版本时给出迁移摘要。
 - 环境变量 `PPC_API_TOKEN` / `--api-token` 为 WebUI `/api/*` 启用 Bearer 鉴权。
-- 相关键：`tts.backend_plugin`（`ppc.tts.v1` 后端扩展）、`tts.cast_file`（多角色配音表）。
+- 相关键：`tts.backend_plugin`（`ppc.tts.v1` 后端扩展）、`tts.cast_file`（多角色配音表）、
+  `tts.merge_cut`（合并同角色片段 + 字幕时间截断）、`tts.llm_assign`（LLM 分配发声人）。
 
 ## 扩展体系
 

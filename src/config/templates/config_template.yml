@@ -90,6 +90,62 @@ tts:
   # When set, splits by speaker turn (narrator/roles switch per utterance); also overridable via --cast
   cast_file: ""
 
+  # --- 多角色合并优化 / Multi-role merge-and-cut ---
+  # 把同一角色的多句话汇成池、池内分批合成（每批一次请求），再按字幕时间戳切回
+  # Pool all utterances of a character, synthesise each batch as one request, then cut by subtitle timestamps
+  merge_cut:
+    # 总开关（关闭时完全走逐片段合成，行为不变）/ Master switch (off = per-segment, unchanged)
+    enabled: false
+    # 合并范围：pool=按角色分池（同一角色的多句话可跨原文位置合批）；adjacent=仅原文相邻同音色
+    # Scope: pool = group by character (utterances need not be adjacent); adjacent = only adjacent same-voice runs
+    merge_scope: "pool"
+    # 合并后文本字符数上限 / Max merged chars
+    max_merge_chars: 12000
+    # 合并后 UTF-8 字节数上限 / Max merged UTF-8 bytes
+    max_merge_bytes: 16000
+    # 单批片段数上限（批内 all-or-nothing，越大越省请求但失败重做代价越高）
+    # Max pieces per batch (larger = fewer requests, costlier redo on failure)
+    max_merge_pieces: 8
+    # 仅在能减少连接数时合并（长片段已接近单连接预算，合并无收益）
+    # Only merge when it reduces the number of connections
+    only_short_segments: true
+    # 对齐/切分失败时回退逐片段合成 / Fall back to per-piece synthesis on alignment failure
+    fallback_to_per_piece: true
+    # 同时输出 .srt 字幕 / Also write .srt subtitles
+    subtitle_output: false
+    # 字幕输出目录（空=与音频同目录）/ Subtitle output dir (empty = alongside audio)
+    subtitle_dir: ""
+
+  # --- LLM 自动分配发声人 / LLM speaker assignment ---
+  # 用 OpenAI 兼容 LLM 读正文，产出「角色→音色」表（覆盖 cast_file 的角色部分）
+  # Use an OpenAI-compatible LLM to produce a role→voice cast table
+  llm_assign:
+    # 启用（需要 pip install openai）/ Enable (requires the openai package)
+    enabled: false
+    # OpenAI 兼容端点 / OpenAI-compatible base URL
+    base_url: "https://api.openai.com/v1"
+    # API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）/ API key (falls back to env)
+    api_key: ""
+    # 模型名 / Model name
+    model: "gpt-4o-mini"
+    # 采样温度（0 最稳）/ Sampling temperature
+    temperature: 0.0
+    # 单次送入 LLM 的文本块大小 / Text chunk size per LLM call
+    chunk_chars: 6000
+    # 请求超时（秒）/ Request timeout (seconds)
+    timeout: 120.0
+    # 把结果写入该 cast.yml（空=仅本次运行生效）/ Persist result to this cast.yml
+    persist_cast: ""
+    # 候选音色池（LLM 只能从中选；空=沿用现有 cast/配置音色）
+    # Candidate voice pool (LLM may only choose from these; empty = reuse existing cast/voice)
+    candidate_voices: []
+    # 主要角色 → 音色（钉死，不被 LLM 改写）/ Pinned main roles → voice
+    main_roles: {}
+    # 旁白音色（空=沿用现有配置）/ Narrator voice (empty = existing config)
+    narrator: ""
+    # 兜底音色（空=沿用现有配置）/ Default fallback voice (empty = existing config)
+    default: ""
+
   # --- 风控规避配置 / Anti-Risk-Control ---
   anti_risk_control:
     # 启用风控规避 / Enable anti-risk-control strategies
@@ -117,8 +173,6 @@ tts:
     jitter_max_seconds: 2.0
     # HTTP/HTTPS 代理 / HTTP/HTTPS proxy URL
     proxy: ''
-    # 共享连接器 / Share aiohttp connector
-    shared_connector: true
     # 语音回退列表（QuotaError 时按序尝试）/ Voice fallback list (tried in order on QuotaError)
     voice_fallbacks: []
     # 单次合成 WebSocket 连接重试次数 / WebSocket connect retries per synthesis

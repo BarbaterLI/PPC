@@ -17,7 +17,7 @@ PROJECT_ROOT = get_project_root()
 WEBUI_DIR = PROJECT_ROOT / "webui" / "WebUI-Vue"
 WEBUI_DIST = WEBUI_DIR / "dist"
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
 
 # 优先使用全局 console 输出启动信息（颜色受 --no-color 控制）。
@@ -25,6 +25,13 @@ DEFAULT_PORT = 5000
 # from .elevation import ...（elevation 懒加载 console），此处同样采用
 # 懒加载 + try/except，避免任何导入顺序问题。
 _console = None
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
 
 
 def _get_console():
@@ -92,25 +99,43 @@ def run_webui(host: str | None = None, port: int | None = None, debug: bool = Fa
     if WEBUI_DIST.is_dir():
         os.environ["FLASK_STATIC_FOLDER"] = str(WEBUI_DIST)
 
-    # 安全提示：绑定非回环地址且未配置 API token 时，/api/* 无鉴权暴露在局域网。
+    # 网络边界默认拒绝：非回环地址且未配置 API token 时拒绝启动，避免
+    # /api/*（可读写配置、触发计费 TTS、安装执行扩展代码）无鉴权暴露在局域网。
     try:
-        from src.web.auth import is_loopback_host, token_configured
+        from src.web.auth import ensure_safe_listen_binding
 
-        if not is_loopback_host(host) and not token_configured():
-            _emit(
-                f"[ppc] 警告: 正在绑定 {host} 且未设置 API token，/api/* 将无鉴权暴露在局域网。"
-                " 建议通过 --api-token <token> 或环境变量 PPC_API_TOKEN 启用鉴权。",
-                style="bold yellow",
-            )
-    except Exception:  # noqa: BLE001 - 提示失败不影响启动
-        pass
+        ensure_safe_listen_binding(host)
+    except RuntimeError as exc:
+        _emit(f"[ppc] {exc}", style="bold red")
+        _emit(
+            "提示: 绑定 127.0.0.1 无需鉴权；如需监听局域网/公网，请通过 "
+            "--api-token <token> 或环境变量 PPC_API_TOKEN 启用 Bearer Token 鉴权。",
+            style="yellow",
+        )
+        return 1
 
     from src.web.app import create_app
 
     app = create_app("development" if debug else "production")
 
     _emit(f"[ppc] WebUI 启动: http://{host}:{port} (debug={debug})")
-    app.run(host=host, port=port, debug=debug, threaded=not debug)
+    if debug:
+        # 调试模式保留 Flask 开发服务器（热重载 / 详细报错），单线程串行。
+        app.run(host=host, port=port, debug=True, threaded=False)
+    else:
+        # 生产模式用 waitress（跨平台 WSGI），未安装时降级回 Flask dev server。
+        try:
+            from waitress import serve
+
+            threads = _env_int("PPC_WEB_THREADS", 8)
+            _emit(f"[ppc] 使用 waitress 生产服务器 (threads={threads})", style="dim")
+            serve(app, host=host, port=port, threads=threads)
+        except ImportError:
+            _emit(
+                "[ppc] 警告: waitress 未安装，回退 Flask 开发服务器（不推荐用于生产）。",
+                style="yellow",
+            )
+            app.run(host=host, port=port, debug=False, threaded=True)
     return 0
 
 

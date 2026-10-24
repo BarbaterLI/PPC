@@ -48,6 +48,8 @@ from src.config.schemas.rules import (
 )
 from src.config.schemas.tts import (
     AntiRiskControlConfig,
+    LLMAssignConfig,
+    MergeCutConfig,
     TextNormalizationConfig,
     TTSConfig,
 )
@@ -82,4 +84,6 @@ __all__ = [
     "LogLevel",
     "TextNormalizationConfig",
     "AntiRiskControlConfig",
+    "MergeCutConfig",
+    "LLMAssignConfig",
 ]

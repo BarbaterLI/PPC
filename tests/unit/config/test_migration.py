@@ -162,3 +162,35 @@ class TestV11ToV12:
         v11.write_text("- 1\n- 2\n", encoding="utf-8")
         m = ConfigMigrator()
         assert m.migrate(v11, source_version="11.0") == {}
+
+    def test_config_manager_load_runs_v11_migration_chain(self, tmp_path: Path) -> None:
+        """加载 v11 config.yml 时必须真正执行 v11→v12 迁移。
+
+        触发条件：``config.yml`` 的 ``version: 11.0.0``（12.x 之前的 YAML）。
+        后果：旧实现只从 PPC5 路径调用 ``migrate(..., "5.0")``，
+        ``migrate_v11_to_v12`` 是死代码——死配置段不剥离、version 不升级、
+        无 ``_migrated_from``。本测试从 ``ConfigManager`` 加载路径覆盖该链路。
+        """
+        from src.config.manager_core import ConfigManager
+        from src.version import __version__
+
+        (tmp_path / "config.yml").write_text(
+            "version: 11.0.0\n"
+            "tts:\n  voice: zh-CN-YunxiNeural\n  concurrency: 6\n"
+            "features: {a: 1}\n"
+            "webhook: {url: x}\n"
+            "rate_limit: {r: 5}\n",
+            encoding="utf-8",
+        )
+
+        mgr = ConfigManager(config_dir=tmp_path)
+        cfg_dict = mgr._config_dict
+
+        assert cfg_dict["version"] == __version__
+        assert "features" not in cfg_dict
+        assert "webhook" not in cfg_dict
+        assert "rate_limit" not in cfg_dict
+        assert cfg_dict["tts"]["voice"] == "zh-CN-YunxiNeural"
+        assert cfg_dict["_migrated_from"]["source_version"] == "11.0.0"
+        # Pydantic 模型也要能正常构造
+        assert mgr.get_config().tts.concurrency == 6

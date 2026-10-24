@@ -46,13 +46,26 @@ class ConfigNotifier:
             self._change_history = self._change_history[-self.MAX_HISTORY:]
 
     def notify(self, event: ConfigChangeEvent) -> None:
-        for pattern, listeners in self._listeners.items():
+        """通知所有匹配的监听器。
+
+        P2-9 触发条件：某监听器在 ``on_config_change`` 内部调用
+        ``add_listener`` / ``remove_listener`` 修改 ``_listeners``。
+        后果（修复前）：直接遍历 ``self._listeners.items()`` 会抛
+        ``RuntimeError: dictionary changed size during iteration``，且该异常
+        不在 try 块内 → 冒泡到 ``ConfigManager.set()``，本次配置变更整体失败。
+        修复：在锁内复制「模式 + 监听器列表」快照后遍历；同时逐个隔离监听器
+        异常（记 warning），保证单个监听器失败不影响其它监听器与 ``set()``。
+        """
+        with self._store._lock:
+            snapshot = [(pattern, list(listeners)) for pattern, listeners in self._listeners.items()]
+
+        for pattern, listeners in snapshot:
             if self._match_key(event.key, pattern):
                 for listener in listeners:
                     try:
                         listener.on_config_change(event)
-                    except Exception as e:
-                        logger.error("监听器处理失败: %s, 错误: %s", listener, e)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("监听器处理失败: %s, 错误: %s", listener, e)
 
     def get_history(self, limit: int = 50) -> list[ConfigChangeEvent]:
         with self._store._lock:

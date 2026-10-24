@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 E = TypeVar("E", bound="Event")
 
 
+def _handler_name(handler: Any) -> str:
+    """安全获取 handler 名称，供日志使用。
+
+    S2 触发条件：订阅 ``functools.partial`` 或实现了 ``__call__`` 的实例——
+    这两类 callable 都没有 ``__name__``。后果：原实现直接访问
+    ``handler.__name__`` 会在 ``subscribe`` 时抛 ``AttributeError``（订阅失败），
+    更糟的是异常日志路径里再抛一次，导致 handler 异常冒泡到 ``publish``，
+    异常隔离失效。此处统一回退到类型名。
+    """
+    return getattr(handler, "__name__", None) or type(handler).__name__
+
+
 class EventPriority(Enum):
     """Event handler priority"""
 
@@ -324,7 +336,7 @@ class EventBus:
             self._stats.handler_count += 1
 
         logger.debug(
-            f"Subscribed to event {event_type.__name__}, handler: {handler.__name__}, priority: {priority.name}"
+            f"Subscribed to event {event_type.__name__}, handler: {_handler_name(handler)}, priority: {priority.name}"
         )
 
         def unsubscribe():
@@ -360,7 +372,7 @@ class EventBus:
             self._global_handlers.sort(key=lambda h: h.priority.value)
             self._stats.handler_count += 1
 
-        logger.debug(f"Subscribed to global events, handler: {handler.__name__}")
+        logger.debug(f"Subscribed to global events, handler: {_handler_name(handler)}")
 
         def unsubscribe():
             with self._lock:
@@ -392,7 +404,7 @@ class EventBus:
                 if info.handler == handler:
                     self._handlers[event_type].remove(info)
                     self._stats.handler_count -= 1
-                    logger.debug(f"Unsubscribed from event {event_type.__name__}, handler: {handler.__name__}")
+                    logger.debug(f"Unsubscribed from event {event_type.__name__}, handler: {_handler_name(handler)}")
                     return True
 
         return False
@@ -470,7 +482,7 @@ class EventBus:
         except Exception as e:
             with self._lock:
                 self._stats.handler_errors += 1
-            logger.warning(f"Event handler failed: {handler_info.handler.__name__}, error: {e}")
+            logger.warning(f"Event handler failed: {_handler_name(handler_info.handler)}, error: {e}")
 
     async def _invoke_handler_async(self, handler_info: EventHandlerInfo, event: Event) -> None:
         """Invoke handler asynchronously"""
@@ -484,7 +496,7 @@ class EventBus:
         except Exception as e:
             with self._lock:
                 self._stats.handler_errors += 1
-            logger.warning(f"Event handler failed: {handler_info.handler.__name__}, error: {e}")
+            logger.warning(f"Event handler failed: {_handler_name(handler_info.handler)}, error: {e}")
 
     def _record_event(self, event: Event) -> None:
         """Record event to history"""

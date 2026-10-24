@@ -10,7 +10,7 @@
 7. proxy 传递 / Proxy forwarded to _list_voices_fn
 8. fallback 逻辑 / backend="auto" falls back to environment edge-tts when builtin unavailable
 9. backend="env" / Force using environment edge-tts package
-10. cleanup() / cleanup() must not raise even with shared_connector=None
+10. cleanup() / cleanup() 为安全空操作（共享连接器已废弃）
 
 These tests use ``_FakeCommunicate`` (which accepts ``connector`` / ``proxy``
 kwargs) and patch ``client._communicate_cls`` so that ``_make_communicate``
@@ -338,14 +338,17 @@ class TestAntiRiskControl:
 
     # --- 场景 10: cleanup() ---
 
-    def test_cleanup_does_not_raise_when_no_connector(self) -> None:
-        """cleanup() / cleanup() must not raise even with shared_connector=None."""
+    def test_cleanup_is_safe_noop(self) -> None:
+        """cleanup() 是安全的空操作（共享连接器已废弃）。
+
+        客户端不再持有跨流共享连接器，cleanup() 保留仅为兼容
+        ``TTSEngine.cleanup()`` 的调用契约，重复调用不得抛异常。
+        """
         config = AntiRiskControlConfig(shared_connector=False)
         client = EdgeTTSHttpClient(anti_risk_config=config)
-        assert client._shared_connector is None
 
-        # 不应抛出异常
-        # Should not raise
+        # 不应抛出异常，且可重复调用
+        asyncio.run(client.cleanup())
         asyncio.run(client.cleanup())
 
 
@@ -706,18 +709,18 @@ class TestStreamCleanup:
         # we verify success by the stream completing without error.
 
 
-class TestSharedConnectorLifecycle:
-    """Tests for shared connector session lifecycle (Task 4)."""
+class TestStreamCleanupAfterTimeout:
+    """超时/取消后流必须被显式关闭，后续流仍可正常复用同一 client。
 
-    def test_shared_connector_not_closed_after_timeout(
+    共享连接器已废弃（逐流 session 的 close() 会关闭传入的 connector），
+    但"被放弃的流必须 aclose"这一安全语义仍必须成立。
+    """
+
+    def test_stream_aclosed_after_timeout_and_next_stream_works(
         self,
         preserve_base_headers,
     ) -> None:
-        """After a stream times out, the shared connector MUST remain
-        usable AND the inner generator MUST be aclosed (so its
-        ClientSession exits cleanly — the root cause of 'Session is
-        closed' errors on subsequent streams).
-        """
+        """流超时后 MUST aclose 内层生成器，且第二个流仍能成功。"""
         config = AntiRiskControlConfig(
             enabled=True,
             muid_persist=False,
@@ -732,6 +735,7 @@ class TestSharedConnectorLifecycle:
 
         # First fake hangs (no chunks), second succeeds
         call_count = {"n": 0}
+        first_holder: dict[str, "_HangThenOK"] = {}
 
         class _HangThenOK:
             def __init__(self, text, voice, *, rate="+0%", volume="+0%",
@@ -740,6 +744,8 @@ class TestSharedConnectorLifecycle:
                 self.attempt = call_count["n"]
                 self.connector = connector
                 self.aclose_called = False
+                if self.attempt == 1:
+                    first_holder["first"] = self
 
             async def stream(self):
                 try:
@@ -755,20 +761,18 @@ class TestSharedConnectorLifecycle:
         client._communicate_cls = _HangThenOK
 
         async def _drive() -> None:
-            client._ensure_shared_connector()
-            assert client._shared_connector is not None
             gen1 = client.synthesize_stream("hi", "voice")
             try:
                 async for _ in gen1:
                     pass
             except Exception:
                 pass  # expected timeout
-            # Connector must NOT be closed
-            assert not client._shared_connector.closed, (
-                "Shared connector was closed after timeout — "
-                "subsequent streams will fail with 'Session is closed'"
+            # 第一个（挂起的）流的生成器必须已被 aclose，
+            # 否则其 ClientSession 只能等 GC 关闭。
+            assert first_holder["first"].aclose_called, (
+                "超时后未 aclose 被放弃的流 — 底层 ClientSession 会泄漏"
             )
-            # Second stream should succeed using the same connector
+            # 第二个流仍可成功
             gen2 = client.synthesize_stream("hi2", "voice")
             chunks = []
             async for chunk in gen2:
@@ -777,14 +781,6 @@ class TestSharedConnectorLifecycle:
             await client.cleanup()
 
         asyncio.run(_drive())
-
-        # The first (hanging) fake's generator MUST have been aclosed
-        # so its ClientSession exited cleanly via async with.
-        # This is the root-cause assertion for "Session is closed".
-        # (Verified via the class-level instances list is not possible
-        # here since we used a local _HangThenOK class; instead we rely
-        # on the dedicated test_wait_for_timeout_closes_inner_generator
-        # for the aclose assertion.)
 
 
 # ---------------------------------------------------------------------------
@@ -1374,6 +1370,55 @@ class TestUASwitchVerification:
         )
         assert client._ua_health_filter.is_healthy("UA-B"), (
             "UA-B should be healthy again — marks revoked (server-side issue)"
+        )
+
+    def test_switch_ua_attempts_advance_on_each_new_ua(
+        self, preserve_base_headers, monkeypatch
+    ) -> None:
+        """阈值 > 1 时，后续新 UA 不必各自达到阈值也应消耗验证次数。
+
+        回归 E7：新选 UA 的 NoAudio 计数恒从 1 开始，永远到不了
+        ``ua_no_audio_threshold``；若 attempts 只在 ``marked`` 时累加，
+        attempts 会永远停在 1，``unmark_unhealthy`` 撤销分支不可达，
+        服务端级故障会把 UA 池永久缩小。
+        """
+        _UAAwareCommunicate.ua_behavior = {
+            "UA-A": "fail",
+            "UA-B": "fail",
+            "UA-C": "fail",
+        }
+
+        config = AntiRiskControlConfig(
+            enabled=True,
+            user_agents=["UA-A", "UA-B", "UA-C"],
+            jitter_enabled=False,
+            shared_connector=False,
+            muid_persist=False,
+            ua_no_audio_threshold=2,  # 新 UA 单次失败不会 marked
+            ua_switch_on_no_audio=True,
+            ua_switch_max_attempts=2,
+        )
+        client = EdgeTTSHttpClient(anti_risk_config=config)
+        client._communicate_cls = _UAAwareCommunicate
+        assert client._ua_health_filter is not None
+        # 先让 UA-A 的计数达到阈值，使验证流程从第一次失败即启动。
+        client._ua_health_filter._no_audio_counts["UA-A"] = 1
+
+        import src.engines.communicate_adapter as client_mod
+        ua_sequence = iter(["UA-A", "UA-B", "UA-C"])
+        monkeypatch.setattr(client_mod.random, "choice", lambda pool: next(ua_sequence))
+
+        async def _drive() -> None:
+            async for _ in client.synthesize_stream("hi", "voice"):
+                pass
+
+        with pytest.raises(Exception):
+            asyncio.run(_drive())
+
+        # 试过 3 个不同 UA 仍全部失败 → 判定为服务端问题，撤销本次标记
+        assert client._ua_health_filter.is_healthy("UA-A"), (
+            "达到 ua_switch_max_attempts 后应撤销 UA-A 的标记；"
+            "否则服务端级故障会永久缩小可用 UA 池"
         )
 
     def test_no_switch_when_disabled(

@@ -2,6 +2,53 @@
 
 本文件记录 PPC_NEXT 的版本变更。版本号的唯一来源为 `src/version.py`。
 
+## [12.0.1-rc2-pre.1] - 2026-10
+
+多角色配音优化：**按角色池合并（同一角色的多句话合批成一次请求）+ 按字幕时间戳切回**，
+以及 **LLM 自动分配发声人**。全部默认关闭，不改变既有行为。
+
+### 新增
+- **按角色池合并 + 字幕时间截断（`tts.merge_cut` / `ppc convert --merge-cut`）**：
+  把**同一角色的全部片段汇成一个池**（``merge_scope="pool"``，默认），池内按
+  `max_merge_pieces`/`max_merge_chars`/`max_merge_bytes` 分批，**每批一次普通
+  TTS 请求**；合成后按 `SentenceBoundary` 时间戳帧对齐切回各片段，再按**原始
+  片段下标**排序拼接，原文顺序由此还原。
+  - 池内片段**无需在原文中相邻**——这正是「一个角色的多句话合并到一个请求」；
+    排序靠 `_seg_XXX.mp3` 的下标，`SegmentJournal` / 断点续传 / 缓存语义不变。
+  - `merge_scope="adjacent"` 为保守回退：只合并原文相邻的同音色片段。
+  - **不使用 SSML、不跨角色合并**（实测服务端拒绝单 SSML 多 `<voice>`：只回
+    `turn.start` 后断流）。
+  - 判据按**连接数**而非字节阈值：传输层每 4096 字节分片各开一条 WebSocket，
+    只有 `ceil((a+b)/4096) < ceil(a/4096)+ceil(b/4096)` 时才合并，避免
+    「合并不省反而丢缓存粒度」。
+  - 四个兜底：句级对齐漂移（去标点逐字比对，失败**回退逐片段**）、首段前导静音
+    （首片从 0 切）、叠帧 50ms（统一用下一片起点作上一片终点）、批内 all-or-nothing
+    （`max_merge_pieces` 默认 8）。
+  - 实测：真实联网 6 段 / 2 音色 → **2 请求（省 67%）**，字幕顺序与原文逐句一致；
+    《女娲成长日记》前 20 章 / 591 段 / 4 音色离线测算——请求 **591 → 98（省 83%）**，
+    `max_pieces=4` 时 171（71%）、`16` 时 66（89%）；对照 `adjacent` 模式为 0%
+    （`split_speaker_turns` 已合并同说话人相邻轮次，相邻轮次必然换音色）。
+- **字幕输出（`--subtitles` / `tts.merge_cut.subtitle_output`）**：接 `SubMaker`，
+  按最终拼接时间轴（含段间静音）落 `.srt`。
+  - 字幕模式下**自动关闭标点规范化**（默认会把 `。！？` 换成半角 `.!?`，服务端
+    据此不再切句，实测 3240 字只给 1 条 cue；关闭后 124 条逐句）。
+  - 相邻 cue 的 50ms 重叠自动裁剪到下一条起点，避免字幕叠字。
+  - 需要 boundary 的合成会**跳过缓存读取**（缓存只复制音频、不产时间轴），
+    保证每次开启字幕都能拿到真实时间戳。
+- **LLM 自动分配发声人（`tts.llm_assign` / `ppc convert --llm-assign`）**：用
+  **openai SDK**（OpenAI 兼容端点）读正文产出「角色→音色」表，运行时注入 `Cast`；
+  `--save-cast cast.yml` 可落盘复用。
+  - 硬约束：只接受 `candidate_voices` 池内音色（防编造）、只登记正文真实出现的角色
+    （防臆造）、`main_roles` 钉死不被覆盖、`temperature=0`、严格 JSON。
+  - 失败（未装库/无 key/网络/额度/JSON 非法）**只警告并降级**为现有音色，不中断转换。
+- 配置项：`tts.merge_cut`（8 项，含 `merge_scope`）、`tts.llm_assign`（12 项），
+  见 `config_template.yml`。
+
+### 修复
+- `client_base.synthesize_to_file` 新增可选 `boundary_sink`：`WordBoundary` /
+  `SentenceBoundary` 元数据不再被丢弃（此前只写 `chunk.data`，字幕与切分数据
+  全丢）。不传该参数时行为与旧实现完全一致。
+
 ## [12.0.0] - 2026-09
 
 大版本：三线深度性能优化（启动 / IO / 合并）+ 五项新能力（整书、多角色配音、

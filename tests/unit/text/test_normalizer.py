@@ -354,6 +354,34 @@ class TestUnitRule:
         rolled = rule.rollback(new_text, meta)
         assert rolled == original
 
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("5.5kg", "五点五kg"),
+            ("2.5米", "二点五米"),
+            ("1.5GB", "一点五GB"),
+            ("0.5元", "零点五元"),
+        ],
+    )
+    def test_decimal_values(self, raw: str, expected: str) -> None:
+        """小数单位必须换算（修复前 int("5.5") 抛错，整条 UnitRule 被跳过）。"""
+        out, meta = UnitRule().apply(raw)
+        assert out == expected
+        assert meta["replacements"] == [{"original": raw, "replacement": expected}]
+
+    def test_decimal_rollback(self) -> None:
+        rule = UnitRule()
+        new_text, meta = rule.apply("5.5kg")
+        assert rule.rollback(new_text, meta) == "5.5kg"
+
+    def test_single_decimal_does_not_disable_other_units(self) -> None:
+        """一个小数匹配失败/成功都不得让同段文本的其它单位失效。"""
+        out = TextNormalizer().normalize("5.5kg 和 2米")
+        assert "五点五kg" in out
+        assert "二米" in out
+        assert "5.5" not in out
+        assert "2米" not in out
+
 
 class TestEnglishAbbrevRule:
     def test_mr_to_mister(self) -> None:

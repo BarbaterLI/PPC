@@ -18,12 +18,56 @@ class ConfigMigrator:
     """配置迁移"""
 
     def migrate(self, source_path: Path, source_version: str = "5.0") -> dict[str, Any]:
-        """执行迁移"""
+        """执行单步迁移"""
         migration_method = VERSION_MAPPING.get(source_version)
         if migration_method is not None:
             return migration_method(self, source_path)
         logger.warning("未知版本 %s，跳过迁移", source_version)
         return {}
+
+    @staticmethod
+    def version_key(raw_version: Any) -> str | None:
+        """把 ``config.yml`` 的 version 归一化为 dispatch 表的键。
+
+        ``"11.0.0"`` / ``11`` / ``"11"`` 都归一化为 ``"11.0"``。
+        无法解析时返回 ``None``（视为未知版本，不做迁移）。
+        """
+        if raw_version is None:
+            return None
+        text = str(raw_version).strip()
+        if not text:
+            return None
+        try:
+            major = int(text.split(".", 1)[0])
+        except (TypeError, ValueError):
+            return None
+        return f"{major}.0"
+
+    def migrate_chain(self, source_path: Path, from_version: Any) -> dict[str, Any]:
+        """按 ``config.yml`` 的 version 逐级迁移到当前版本。
+
+        触发条件：加载 12.x 之前的 YAML 配置（version 8.x / 11.x）。
+        后果：旧实现的唯一调用点是 PPC5 的 ``migrate(..., "5.0")``，
+        ``migrate_v11_to_v12`` 虽然注册在 :data:`VERSION_MAPPING` 中却永不执行
+        —— v11 配置的 ``features`` / ``webhook`` / ``rate_limit`` 不会剥离，
+        version 也不会升级到 12。
+
+        仅对 YAML 格式的迁移生效（8/11）；PPC5 的 INI 迁移仍由
+        :func:`migrate_ppc5_config` 单独负责，避免把 YAML 当作 INI 解析。
+        """
+        current = self.version_key(from_version)
+        result: dict[str, Any] = {}
+        seen: set[str] = set()
+
+        while current in _YAML_MIGRATIONS and current not in seen:
+            seen.add(current)
+            migrated = _YAML_MIGRATIONS[current](self, source_path)
+            if not migrated:
+                return result
+            result = migrated
+            current = self.version_key(migrated.get("version"))
+
+        return result
 
     def migrate_v5_to_v6(self, v5_config_path: Path) -> dict[str, Any]:
         """PPC5配置迁移到PPC6"""
@@ -205,6 +249,14 @@ class ConfigMigrator:
 # 显式 dispatch 表：源版本 → 迁移方法（无按名 getattr 反射）
 VERSION_MAPPING: dict[str, Callable[[ConfigMigrator, Path], dict[str, Any]]] = {
     "5.0": ConfigMigrator.migrate_v5_to_v6,
+    "8.0": ConfigMigrator.migrate_v8_to_v9,
+    "11.0": ConfigMigrator.migrate_v11_to_v12,
+}
+
+# YAML config.yml 的迁移链（PPC5 的 INI 迁移不在此列，见 migrate_ppc5_config）。
+# 触发条件：加载路径读到 version 8.x / 11.x 的 config.yml。
+# 后果：只执行 YAML→YAML 的迁移，避免把 config.yml 交给 ConfigParser 解析。
+_YAML_MIGRATIONS: dict[str, Callable[[ConfigMigrator, Path], dict[str, Any]]] = {
     "8.0": ConfigMigrator.migrate_v8_to_v9,
     "11.0": ConfigMigrator.migrate_v11_to_v12,
 }

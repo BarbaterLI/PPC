@@ -23,6 +23,59 @@ def _make_config() -> MagicMock:
     return cfg
 
 
+class TestSchedulerStartIdempotent:
+    """P2-21: 重复 start() 不得泄漏 session / 健康检查任务 / worker 协程。"""
+
+    def test_double_start_reuses_single_session_and_health_task(self):
+        async def runner():
+            scheduler = DistributedScheduler(_make_config(), local_fallback=False)
+            await scheduler.start()
+
+            session = scheduler._http_session
+            health_task = scheduler._node_pool._health_check_task
+            workers = list(scheduler._worker_pool._workers)
+
+            assert session is not None
+            assert health_task is not None
+            assert len(workers) == 2
+
+            # 第二次 start 必须直接返回
+            await scheduler.start()
+
+            assert scheduler._http_session is session
+            assert scheduler._node_pool._health_check_task is health_task
+            assert scheduler._worker_pool._workers == workers
+
+            await scheduler.stop()
+
+            assert scheduler._started is False
+            assert scheduler._http_session is None
+            assert scheduler._node_pool._http_session is None
+            assert scheduler._node_pool._health_check_task is None
+            assert scheduler._worker_pool._workers == []
+
+        asyncio.run(runner())
+
+    def test_node_pool_double_start_is_idempotent(self):
+        async def runner():
+            pool = NodePool(health_check_interval=999.0)
+            await pool.start()
+            session = pool._http_session
+            task = pool._health_check_task
+
+            await pool.start()
+
+            assert pool._http_session is session
+            assert pool._health_check_task is task
+
+            await pool.stop()
+            assert pool._http_session is None
+            assert pool._health_check_task is None
+            assert pool._started is False
+
+        asyncio.run(runner())
+
+
 def _make_task(task_id: str = "t1") -> TaskAssignment:
     return TaskAssignment(
         task_id=task_id,

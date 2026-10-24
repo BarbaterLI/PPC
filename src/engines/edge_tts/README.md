@@ -12,6 +12,16 @@
 
 ## 已知定制点
 
+- `drm.py` — **Sec-MS-GEC v2**（随上游 7.3.1 启用）：服务端自 2026-10 起拒绝 v1 token（纯 SHA256 hex），
+  握手一律 403。v2 token 形如 `<16 hex CS64>-<64 hex SHA256>`（81 字符），
+  其中 `_sha256_digest` 是**微软变体**（常量表 `_SHA256_STATE`/`_SHA256_ADJUSTMENT` 等均非 FIPS 标准），
+  **不可**用 `hashlib` 替换，回归由 `tests/unit/engines/test_drm_v2.py` 的 golden 用例锁住。
+  与上游的关键差异：时钟偏差由 `ClockSkew` 实例持有（`DRM.__init__(clock_skew=...)` 注入），
+  故 token 生成取**实例** `get_unix_timestamp()`，而上游 7.3.1 走 `DRM.get_unix_timestamp()` 类方法 ——
+  若接错，403 后 `handle_client_response_error` 的自动校时会静默失效。
+- `constants.py` — `SEC_MS_GEC_VERSION` 为 `2-{CHROMIUM_FULL_VERSION}`（与 v2 配套；
+  **只改前缀不足以通过校验**，必须同时换 token 算法）。
+
 - `communicate.py` — 模块级构建 `_INCOMPATIBLE_CHARS_TABLE` 翻译表，将服务不支持的字符范围一次性映射为空格。相比上游逐字符 `ord()` 判断 + 列表重建，`str.translate` 对长文本分段（默认 2500 字符）显著降低 CPU 开销。
 - `communicate.py` — 内部方法为单下划线（`_stream` / `_parse_metadata` / `_compensate_offset`），`__stream` 已拆为 `_build_request_headers` / `_send_command_request` / `_send_ssml_request` / `_handle_text_message` / `_parse_audio_message`；内部状态为 `CommunicateState` dataclass（`typing.py`）；构造函数参数收敛为 `CommunicateConfig` dataclass，并支持注入 `DRM` 实例；已删除 `stream_sync` / `save_sync` 同步双套接口（无调用方）。
 - `drm.py` — 时钟偏差（clock skew）由 `ClockSkew` 实例持有（`DRM.__init__(clock_skew=...)` 注入），不再使用类级可变属性 `clock_skew_seconds`；`generate_sec_ms_gec` / `handle_client_response_error` 等变为实例方法，共享默认实例 `DEFAULT_DRM` 保持进程内偏差持续生效。
@@ -21,7 +31,7 @@
 
 ## 与上游同步方法
 
-1. 拉取上游发行版源码（如 `edge-tts==7.2.8`）到临时目录。
+1. 拉取上游发行版源码（如 `edge-tts==7.3.1`）到临时目录。
 2. 逐文件与本目录对比，把本目录的定制改动（如上表）重新应用到新版本。
 3. 运行 `tests/unit/engines/` 下相关测试，确认无回归。
 4. 更新本 README 的定制点登记、版本与日期。

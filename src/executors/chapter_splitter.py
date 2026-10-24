@@ -11,6 +11,7 @@ from typing import Any
 
 from ..config import PPCConfig
 from ..utils.core import sanitize_filename
+from ..utils.files import strip_bom
 from .chapter_types import ChapterInfo, VolumeInfo
 from .splitter_strategies import PatternRegistry, RuleMatcher
 
@@ -41,7 +42,14 @@ class ChapterSplitter:
         ``hierarchical`` 为 ``None`` 时从 ``config.split.hierarchical_split`` 读取，
         保持向后兼容；显式传入时直接使用该值，避免调用方临时修改共享配置
         （既保证异常安全，也避免多线程下的相互干扰）。
+
+        进入前统一剥离开头的 BOM：``str.strip()`` **不**去除 ``U+FEFF``，
+        若首行形如 ``\\ufeff第一章…`` 则章首正则失配 → 首章被并入下一章，
+        且该字符会随正文进入 TTS。此处为防御层，根因已在
+        :func:`src.utils.files.read_text_auto` 修复。
         """
+        content = strip_bom(content)
+
         if hierarchical is None:
             hierarchical = self.config.split.hierarchical_split
 
