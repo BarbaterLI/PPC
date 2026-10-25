@@ -114,6 +114,28 @@ def test_connection_count_helper() -> None:
     assert connection_count(8192) == 2
 
 
+def test_batch_never_exceeds_hard_char_limit() -> None:
+    """max_chars 是单次请求硬上限：任何一批都不得超（默认 1300 字）。"""
+    plan = _plan(["甲" * 300] * 10, ["V"] * 10)
+    assert plan.request_count > 1
+    for req in plan.requests:
+        assert len(req.merged_text) <= 1300
+
+
+def test_batch_never_exceeds_hard_byte_limit() -> None:
+    """max_bytes 是硬上限（默认 4000，传输层在 4096 切连接）。"""
+    plan = _plan(["汉" * 300] * 10, ["V"] * 10)   # 每段 900 字节
+    for req in plan.requests:
+        assert len(req.merged_text.encode("utf-8")) <= 4000
+
+
+def test_single_oversized_segment_becomes_own_batch() -> None:
+    """单段本身超字数上限时不能切段（切了会错音），只能独批。"""
+    plan = _plan(["长" * 2000, "短"], ["V", "V"])
+    assert plan.request_count == 2
+    assert plan.requests[0].piece_indices == (0,)
+
+
 def test_empty_segments_are_skipped() -> None:
     plan = _plan(["甲", "   ", "乙"], ["V1", "V2", "V1"], max_pieces=4)
     # 空片段不占位，甲与乙虽同音色但不相邻（中间是空片段）→ 仍视为相邻

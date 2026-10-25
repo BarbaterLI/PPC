@@ -290,13 +290,13 @@ def convert(
         help="按角色池合并：同一角色的多句话合批成一次 TTS 请求，再按字幕时间戳切回原位（大幅减少请求数）",
     ),
     merge_max_chars: int | None = typer.Option(
-        None, "--merge-max-chars", min=100, help="合并后文本字符数上限（默认 4000）"
+        None, "--merge-max-chars", min=100, help="单批字数上限＝单次请求硬上限（默认 1300 字 ≈ 4096 字节）"
     ),
     merge_max_bytes: int | None = typer.Option(
-        None, "--merge-max-bytes", min=256, help="合并后 UTF-8 字节上限（默认 4000，服务端单连接预算 4096）"
+        None, "--merge-max-bytes", min=256, help="单批 UTF-8 字节上限（默认 4000；超过 4096 只会多开连接）"
     ),
     merge_max_pieces: int | None = typer.Option(
-        None, "--merge-max-pieces", min=2, max=32, help="单次合并的片段数上限（默认 4）"
+        None, "--merge-max-pieces", min=2, max=512, help="单批片段数安全阀（默认 64；字数/字节才是主约束）"
     ),
     subtitles: bool = typer.Option(False, "--subtitles", help="同时输出 .srt 字幕（隐含开启 --merge-cut）"),
     llm_assign: bool = typer.Option(

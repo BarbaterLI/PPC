@@ -35,9 +35,24 @@ class MergeCutConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="启用「合并同音色片段 + 字幕时间截断」/ Merge same-voice segments then cut by subtitle timestamps")
-    max_merge_chars: int = Field(default=12000, ge=100, le=100000, description="合并后文本字符数上限 / Max merged chars")
-    max_merge_bytes: int = Field(default=16000, ge=256, le=200000, description="合并后 UTF-8 字节数上限 / Max merged UTF-8 bytes")
-    max_merge_pieces: int = Field(default=8, ge=2, le=32, description="单次合并的片段数上限（批内 all-or-nothing）/ Max pieces per merged request")
+    max_merge_chars: int = Field(
+        default=1300,
+        ge=100,
+        le=100000,
+        description="单批字数上限（**单次请求硬上限**，默认 1300 字 ≈ 4096 字节）/ Max chars per merged batch (hard per-request limit)",
+    )
+    max_merge_bytes: int = Field(
+        default=4000,
+        ge=256,
+        le=200000,
+        description="单批 UTF-8 字节上限（传输层按 4096 字节切连接，超过只会多开连接）/ Max bytes per batch (transport splits at 4096)",
+    )
+    max_merge_pieces: int = Field(
+        default=64,
+        ge=2,
+        le=512,
+        description="单批片段数安全阀（字数/字节才是主约束，此项仅防批过碎/过大）/ Safety cap on pieces per batch",
+    )
     only_short_segments: bool = Field(default=True, description="仅在能减少连接数时合并（短片段才合并）/ Only merge when it reduces connection count")
     merge_scope: str = Field(
         default="pool",

@@ -22,11 +22,18 @@
 
 合并约束（任一触顶即断批）
 --------------------------
-* ``max_chars``  —— 合并后文本字符数上限（安全阀，防批过大）；
-* ``max_bytes``  —— 合并后 UTF-8 字节数上限；
-* ``max_pieces`` —— 批内片段数上限：合并后 all-or-nothing 重做，批越大
-  失败代价越高；
+* ``max_chars``  —— **单批字数上限**：单次请求的硬约束（默认 1300 字 ≈ 4096
+  字节），这是生产环境里最先触顶的一项；
+* ``max_bytes``  —— 单批 UTF-8 字节上限（默认 4000，传输层按 4096 字节切连接，
+  超过只会多开一条连接，不会失败）；
+* ``max_pieces`` —— 单批片段数安全阀（默认 64）：字数/字节才是主约束，此项
+  只用于防止「极短片段拼成超大一批」导致的批内 all-or-nothing 代价过高；
 * ``only_short`` —— 只在「能减少连接数」时才合并（见下）。
+
+三个上限的关系：``max_chars`` / ``max_bytes`` 是**硬约束**（决定单请求大小），
+``max_pieces`` 是**软约束**（决定一批里最多几个片段）。实测 50k 字 / 1231 片段：
+按 8 段一批需 158 次请求，按 1300 字（≈3KB）一批只需 46 次，后者逼近
+「ceil(总字节/4096)」的 37 次理论下限。
 
 为什么用「连接数」而不是字节阈值
 --------------------------------
@@ -183,9 +190,9 @@ def plan_merge(
     segments: list[str],
     voices: list[str],
     *,
-    max_chars: int = 12000,
-    max_bytes: int = 16000,
-    max_pieces: int = 8,
+    max_chars: int = 1300,
+    max_bytes: int = 4000,
+    max_pieces: int = 64,
     only_short: bool = True,
     scope: Literal["pool", "adjacent"] = "pool",
 ) -> MergePlan:

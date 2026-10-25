@@ -99,13 +99,16 @@ tts:
     # 合并范围：pool=按角色分池（同一角色的多句话可跨原文位置合批）；adjacent=仅原文相邻同音色
     # Scope: pool = group by character (utterances need not be adjacent); adjacent = only adjacent same-voice runs
     merge_scope: "pool"
-    # 合并后文本字符数上限 / Max merged chars
-    max_merge_chars: 12000
-    # 合并后 UTF-8 字节数上限 / Max merged UTF-8 bytes
-    max_merge_bytes: 16000
-    # 单批片段数上限（批内 all-or-nothing，越大越省请求但失败重做代价越高）
-    # Max pieces per batch (larger = fewer requests, costlier redo on failure)
-    max_merge_pieces: 8
+    # 单批字数上限 = **单次请求硬上限**（默认 1300 字 ≈ 4096 字节；调大不会更快，
+    # 超过 4096 字节会被传输层拆成多条连接）
+    # Max chars per batch = hard per-request limit (1300 chars ≈ 4096 bytes)
+    max_merge_chars: 1300
+    # 单批 UTF-8 字节上限（保持 ≤4000；超过 4096 只会多开连接）
+    # Max UTF-8 bytes per batch (keep ≤4000; >4096 just opens extra connections)
+    max_merge_bytes: 4000
+    # 单批片段数安全阀（字数/字节才是主约束，这里只防批过碎或过大）
+    # Safety cap on pieces per batch (chars/bytes are the real constraints)
+    max_merge_pieces: 64
     # 仅在能减少连接数时合并（长片段已接近单连接预算，合并无收益）
     # Only merge when it reduces the number of connections
     only_short_segments: true
