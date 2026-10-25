@@ -147,6 +147,16 @@ def test_assign_uses_base_cast_pool() -> None:
     assert cast.roles["李明"] == "v-1"
 
 
+def test_assign_inherits_base_cast_roles() -> None:
+    """LLM 漏掉的已有角色不能丢（否则 --cast + --llm-assign 会退化）."""
+    base = Cast.from_dict({"narrator": "v-narr", "roles": {"王芳": "v-b", "李明": "v-old"}})
+    reply = '{"narrator": "v-narr", "roles": {"李明": "v-a"}}'
+    cfg = _cfg(candidate_voices=["v-narr", "v-a", "v-b"])
+    cast = LLMSpeakerAssigner(cfg, client=_FakeClient([reply])).assign("李明说：“走。”", base_cast=base)
+    assert cast.roles["李明"] == "v-a"   # LLM 覆盖
+    assert cast.roles["王芳"] == "v-b"   # 继承兜底
+
+
 def test_persist_writes_yaml(tmp_path) -> None:
     import yaml
 

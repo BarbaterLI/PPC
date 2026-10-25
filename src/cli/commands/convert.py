@@ -181,10 +181,19 @@ def _apply_llm_assign(
     target = persist or str(output_dir / ".llm_cast.yml")
     try:
         assigner.persist(cast, target)
-        config.tts.cast_file = target
     except Exception as e:  # noqa: BLE001
-        output_formatter.warning(f"cast 写入失败，LLM 分配不生效: {e}")
-        return
+        # 输出目录不可写时退化到系统临时目录，别让已拿到的分配结果白白丢掉
+        import tempfile
+
+        fallback = str(Path(tempfile.gettempdir()) / "ppc_llm_cast.yml")
+        try:
+            assigner.persist(cast, fallback)
+        except Exception as e2:  # noqa: BLE001
+            output_formatter.warning(f"cast 写入失败，LLM 分配不生效: {e} / {e2}")
+            return
+        output_formatter.warning(f"cast 写入 {target} 失败（{e}），已改写到 {fallback}")
+        target = fallback
+    config.tts.cast_file = target
 
     output_formatter.info(f"cast 已写入: {target}")
     output_formatter.info(

@@ -48,6 +48,9 @@
 - `client_base.synthesize_to_file` 新增可选 `boundary_sink`：`WordBoundary` /
   `SentenceBoundary` 元数据不再被丢弃（此前只写 `chunk.data`，字幕与切分数据
   全丢）。不传该参数时行为与旧实现完全一致。
+- LLM 分配会**继承已给 cast 的角色**：LLM 未观察到的角色不再凭空消失
+  （否则 `--cast cast.yml` 与 `--llm-assign` 同用时角色被清空、退化成旁白）。
+- LLM 分配结果落盘失败时退化到系统临时目录，避免输出目录只读时白跑一次 LLM。
 
 ## [12.0.0] - 2026-09
 

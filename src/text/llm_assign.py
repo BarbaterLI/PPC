@@ -233,6 +233,14 @@ class LLMSpeakerAssigner:
         roles_out: dict[str, str] = {}
         for role, votes in role_votes.items():
             roles_out[role] = votes.most_common(1)[0][0]
+        # 用户已给的 cast 作为兜底：LLM 没观察到的角色不能凭空消失
+        # （否则把 --cast cast.yml 和 --llm-assign 一起用时会丢角色，退化成旁白）
+        if base_cast is not None:
+            inherited = {
+                str(k): str(v) for k, v in (getattr(base_cast, "roles", None) or {}).items() if k and v
+            }
+            inherited.update(roles_out)
+            roles_out = inherited
         # 用户固定的主要角色优先，且不允许被 LLM 覆盖
         roles_out.update(pinned)
 

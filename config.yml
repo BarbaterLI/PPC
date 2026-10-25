@@ -1,19 +1,15 @@
 # PPC_NEXT 配置文件 - 终极文本转语音工具 / PPC_NEXT Config File - Ultimate Text-to-Speech Tool
-# 版本: 12.0.0 / Version: 12.0.0
+# 版本: 12.0.1-rc2-pre.1 / Version: 12.0.1-rc2-pre.1
 # BarbaterLI开发组 (BLY Team) / Bing Li Yan Dev Group (BLY Team)
 # 说明: 所有配置项均带有注释，修改后保存即可生效 / Note: All config items are commented; edit and save to take effect
 # ============================================
 # 核心配置 / Core Configuration
 # ============================================
 core:
-  # 运行模式: parametric | interactive / Run mode: parametric | interactive
-  mode: parametric
   # 日志级别: debug | info | warning | error / Log level: debug | info | warning | error
   log_level: info
   # 进度条更新频率（每N个项目更新一次）/ Progress bar update frequency (every N items)
   progress_interval: 10
-  # 临时文件目录 / Temporary file directory
-  temp_dir: ~/.cache/ppc
 
 # ============================================
 # TTS 语音合成配置 / TTS Synthesis Configuration
@@ -24,26 +20,24 @@ tts:
   # 预设配置: speed | balanced | quality | custom / Preset: speed | balanced | quality | custom
   preset: balanced
   # 语音模型（Azure Neural TTS）/ Voice model (Azure Neural TTS)
-  voice: zh-CN-XiaoxiaoNeural
+  voice: zh-CN-YunxiNeural
   # 并发请求数（1-64）/ Concurrent requests (1-64)
-  concurrency: 8
+  concurrency: 15
   # 失败重试次数 / Failure retry count
-  retries: 3
+  retries: 6
   # 超时时间（秒），0表示自动推导 / Timeout (seconds), 0 means auto-derived
-  timeout: 120
+  timeout: 0
   # 超时模式: fixed | auto | adaptive | synthetic / Timeout mode: fixed | auto | adaptive | synthetic
   # synthetic = fixed 基线 + adaptive 历史 + 启发式调控 / synthetic = fixed baseline + adaptive history + heuristic control
-  timeout_mode: auto
+  timeout_mode: synthetic
   # 最小超时时间（秒）/ Minimum timeout (seconds)
-  timeout_min: 50
+  timeout_min: 360
   # 最大超时时间（秒）/ Maximum timeout (seconds)
-  timeout_max: 720
-  # 超时百分位 / Timeout percentile
-  timeout_percentile: 0.95
+  timeout_max: 3600
   # 超时历史记录条数 / Timeout history size
   timeout_history_size: 100
   # 超时倍率 / Timeout multiplier
-  timeout_multiplier: 1.0
+  timeout_multiplier: 2.0
   # --- 超时算法参数（单一实现 src/timeout/calculator.py）/ Timeout algorithm params ---
   # 历史 P95 权重 / P95 weight in history-based timeout
   timeout_p95_weight: 0.6
@@ -66,7 +60,7 @@ tts:
   # synthetic 模式 P90 低于当前超时的收缩触发比值 / Shrink trigger ratio (P90 vs current timeout)
   timeout_heuristic_shrink_ratio: 0.8
   # 最大分段长度（字符数）/ Maximum segment length (chars)
-  max_segment_length: 2500
+  max_segment_length: 3000
   # 最小分段长度（字符数）/ Minimum segment length (chars)
   min_segment_length: 100
   # 是否启用文本分段 / Enable text segmentation
@@ -75,24 +69,82 @@ tts:
   segment_silence_ms: 100
   # 合并输出 MP3 比特率（默认 48k 与 Edge TTS 源音频一致）/ Merged MP3 bitrate (default 48k, matches Edge TTS source)
   segment_bitrate: 48k
-  # 分段文件名格式（{stem}文件名 {index}序号 {suffix}后缀）/ Segment filename format ({stem} filename {index} index {suffix} suffix)
-  segment_filename_format: '{stem}_seg_{index:03d}{suffix}'
   # 缓冲区大小 / Buffer size
   buffer_size: 32
   # 每秒请求数限制 / Requests per second limit
   rate_limit: 100
   # EMA平滑因子（0.0-1.0）/ EMA smoothing factor (0.0-1.0)
   ema_alpha: 0.3
-  # 快速失败阈值 / Fast-fail threshold
-  fast_fail_threshold: 3
-  # 速率恢复延迟（秒）/ Rate recovery delay (seconds)
-  rate_recovery_delay: 30.0
   # 隔离区延迟（秒）/ Quarantine delay (seconds)
   quarantine_delay: 300.0
   # API并发数（None表示自动推导）/ API concurrency (None means auto-derived)
   api_concurrency: 8
   # 音频速率（如 +40%, -10%）/ Audio rate (e.g. +40%, -10%)
-  rate: +0%
+  rate: +60%
+  # ppc.tts.v1 合成后端（空=本地 edge_tts 默认路径）/ ppc.tts.v1 synthesis backend (empty = local edge_tts)
+  # 内置: openai_http（OpenAI 兼容 /audio/speech 服务，配置见环境变量 PPC_TTS_OPENAI_HTTP_BASE_URL / _API_KEY / _MODEL）
+  # Built-in: openai_http; 扩展后端经 .ppcext 注册后按名称填入 / extension backends resolve by registered name
+  backend_plugin: ""
+  # 多角色配音 cast.yml 路径（空=单音色）/ Multi-role voicepack cast.yml path (empty = single voice)
+  # 非空时按说话人轮次切分（旁白/角色逐句换音色）；亦可用 `ppc convert --cast cast.yml` 覆盖
+  # When set, splits by speaker turn (narrator/roles switch per utterance); also overridable via --cast
+  cast_file: ""
+
+  # --- 多角色合并优化 / Multi-role merge-and-cut ---
+  # 把同一角色的多句话汇成池、池内分批合成（每批一次请求），再按字幕时间戳切回
+  # Pool all utterances of a character, synthesise each batch as one request, then cut by subtitle timestamps
+  merge_cut:
+    # 总开关（关闭时完全走逐片段合成，行为不变）/ Master switch (off = per-segment, unchanged)
+    enabled: false
+    # 合并范围：pool=按角色分池（同一角色的多句话可跨原文位置合批）；adjacent=仅原文相邻同音色
+    # Scope: pool = group by character (utterances need not be adjacent); adjacent = only adjacent same-voice runs
+    merge_scope: "pool"
+    # 合并后文本字符数上限 / Max merged chars
+    max_merge_chars: 12000
+    # 合并后 UTF-8 字节数上限 / Max merged UTF-8 bytes
+    max_merge_bytes: 16000
+    # 单批片段数上限（批内 all-or-nothing，越大越省请求但失败重做代价越高）
+    # Max pieces per batch (larger = fewer requests, costlier redo on failure)
+    max_merge_pieces: 8
+    # 仅在能减少连接数时合并（长片段已接近单连接预算，合并无收益）
+    # Only merge when it reduces the number of connections
+    only_short_segments: true
+    # 对齐/切分失败时回退逐片段合成 / Fall back to per-piece synthesis on alignment failure
+    fallback_to_per_piece: true
+    # 同时输出 .srt 字幕 / Also write .srt subtitles
+    subtitle_output: false
+    # 字幕输出目录（空=与音频同目录）/ Subtitle output dir (empty = alongside audio)
+    subtitle_dir: ""
+
+  # --- LLM 自动分配发声人 / LLM speaker assignment ---
+  # 用 OpenAI 兼容 LLM 读正文，产出「角色→音色」表（覆盖 cast_file 的角色部分）
+  # Use an OpenAI-compatible LLM to produce a role→voice cast table
+  llm_assign:
+    # 启用（需要 pip install openai）/ Enable (requires the openai package)
+    enabled: false
+    # OpenAI 兼容端点 / OpenAI-compatible base URL
+    base_url: "https://api.openai.com/v1"
+    # API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）/ API key (falls back to env)
+    api_key: ""
+    # 模型名 / Model name
+    model: "gpt-4o-mini"
+    # 采样温度（0 最稳）/ Sampling temperature
+    temperature: 0.0
+    # 单次送入 LLM 的文本块大小 / Text chunk size per LLM call
+    chunk_chars: 6000
+    # 请求超时（秒）/ Request timeout (seconds)
+    timeout: 120.0
+    # 把结果写入该 cast.yml（空=仅本次运行生效）/ Persist result to this cast.yml
+    persist_cast: ""
+    # 候选音色池（LLM 只能从中选；空=沿用现有 cast/配置音色）
+    # Candidate voice pool (LLM may only choose from these; empty = reuse existing cast/voice)
+    candidate_voices: []
+    # 主要角色 → 音色（钉死，不被 LLM 改写）/ Pinned main roles → voice
+    main_roles: {}
+    # 旁白音色（空=沿用现有配置）/ Narrator voice (empty = existing config)
+    narrator: ""
+    # 兜底音色（空=沿用现有配置）/ Default fallback voice (empty = existing config)
+    default: ""
 
   # --- 风控规避配置 / Anti-Risk-Control ---
   anti_risk_control:
@@ -121,22 +173,18 @@ tts:
     jitter_max_seconds: 2.0
     # HTTP/HTTPS 代理 / HTTP/HTTPS proxy URL
     proxy: ''
-    # 共享连接器 / Share aiohttp connector
-    shared_connector: true
     # 语音回退列表（QuotaError 时按序尝试）/ Voice fallback list (tried in order on QuotaError)
     voice_fallbacks: []
     # 单次合成 WebSocket 连接重试次数 / WebSocket connect retries per synthesis
     max_connect_retries: 2
-    # 后端健康检查间隔（秒，0 禁用）/ Backend health check interval (seconds, 0 disables)
-    health_check_interval_seconds: 0.0
     # 单次 HTTP/WS 请求超时（秒）/ Single HTTP/WS request timeout (seconds)
     request_timeout_seconds: 30.0
 
   # --- 并发预热 / Concurrency Ramp-up ---
   # 启用后从1并发逐步增加到设定并发数，避免瞬间高并发触发风控 / When enabled, ramps from 1 concurrency up to the set value to avoid sudden bursts triggering rate limits
-  ramp_up_enabled: false
+  ramp_up_enabled: true
   # 预热持续时间（秒），在此时间内从1逐步增加到设定并发数 / Ramp-up duration (seconds); concurrency grows from 1 to the set value during this period
-  ramp_up_duration: 30.0
+  ramp_up_duration: 60.0
 
   # --- 文本规范化与分段标点 / Text Normalization & Punctuations ---
   # 文本规范化配置 / Text normalization configuration
@@ -204,60 +252,20 @@ batch:
   max_size_mb: 95
   # 每批次最大文件数 / Max files per batch
   max_files_per_batch: 500
-  # 是否保持文件顺序 / Whether to preserve file order
-  preserve_order: true
-
-# ============================================
-# UI 界面配置 / UI Configuration
-# ============================================
-ui:
-  # UI模式: simple | classic | debug / UI mode: simple | classic | debug
-  mode: simple
-  # 详细输出 / Verbose output
-  verbose: true
-  # 禁用颜色 / Disable color
-  no_color: false
-  # 显示进度条 / Show progress bar
-  show_progress: true
-  # 显示时间戳 / Show timestamps
-  show_timestamps: false
-  # 日志文件路径（null表示不输出到文件）/ Log file path (null = no file output)
-  log_file: null
-
-# ============================================
-# 功能开关 / Feature Toggles
-# ============================================
-features:
-  # 智能检测 / Smart detection
-  smart_detection: true
-  # 合并短章节 / Merge short chapters
-  merge_short_chapters: true
-  # 自动重试 / Auto retry
-  auto_retry: true
-  # 保持唤醒 / Keep awake
-  keep_awake: false
 
 # ============================================
 # 性能配置 / Performance Configuration
 # ============================================
 performance:
-  # 内存限制（MB）/ Memory limit (MB)
-  memory_limit_mb: 768
   # 最大文件缓存数 / Max file cache count
   max_file_cache_size: 100
-  # 流刷新阈值（字节）/ Stream flush threshold (bytes)
-  stream_flush_threshold: 1048576
+  # 进度流刷新阈值（每N个任务刷新一次）/ Progress stream flush threshold (every N tasks)
+  stream_flush_threshold: 10
 
 # ============================================
 # 网络配置 / Network Configuration
 # ============================================
 network:
-  # 探测主机列表 / Probe host list
-  probe_hosts:
-  - azure.microsoft.com
-  - cloudflare.com
-  # 探测间隔（秒）/ Probe interval (seconds)
-  probe_interval: 45
   # 超时时间（秒）/ Timeout (seconds)
   timeout: 5
 
@@ -306,34 +314,12 @@ reliability:
 # 分布式配置 / Distributed Configuration
 # ============================================
 # --- 分布式配置 / Distributed Configuration ---
+# 主控/节点运行方式见 `ppc dist --help`；策略与健康检查等为运行时参数。
 distributed:
-  enabled: false
-  adaptive_load_balance:
-    decay_factor: 0.9
-    enabled: false
-    history_weight: 0.5
-    history_window_size: 100
-    long_text_threshold: 2000
-    task_feature_weight: 0.5
-  fault_tolerance:
-    degradation_threshold: 3
-    enable_degradation: true
-    enable_task_migration: true
-    enabled: true
-    migration_delay: 5.0
-    recovery_check_interval: 60
-  health_check_interval: 30
-  health_check_timeout: 5
-  load_balance_strategy: round_robin
-  local_execution: true
-  master_max_concurrency: 8
-  max_retries: 3
-  mode: master
-  node_host: 0.0.0.0
+  # 添加节点时的默认最大并发数 / Default max concurrency when adding nodes
   node_max_concurrency: 4
-  node_port: 8000
+  # 远程节点列表（ppc dist add-node 维护）/ Remote node list (maintained by `ppc dist add-node`)
   nodes: []
-  task_timeout: 300
 
 # ============================================
 # 番茄小说下载器（fanqie 扩展）配置 / Fanqie Extension Configuration
@@ -354,11 +340,13 @@ fanqie:
 # 扩展配置 / Extensions Configuration
 # ============================================
 extensions:
-  auto_load: true
+  # 扩展系统总开关 / Master switch for the extension system
   enabled: true
+  # 启动时自动加载扩展 / Auto-load extensions on CLI startup
+  auto_load: true
+  # 扩展目录列表 / Extension directories
   extension_dirs:
   - extensions
-  strict_validation: true
 
 # ============================================
 # 输出格式配置 / Output Format Configuration
@@ -367,55 +355,10 @@ extensions:
 output:
   # 默认音频格式: mp3 | wav | ogg | aac / Default audio format: mp3 | wav | ogg | aac
   default_format: mp3
-  # 音频质量: low | medium | high | lossless / Audio quality: low | medium | high | lossless
-  audio_quality: high
-  # 后处理管道（如 reverb, compression, equalizer）/ Post-processing pipeline (e.g. reverb, compression, equalizer)
-  post_processing: []
-  # 是否嵌入章节元数据 / Whether to embed chapter metadata
+  # 是否嵌入章节元数据（ID3 TIT2/TPE1 与 --book 章节信息）/ Whether to embed chapter metadata
   metadata_embed: true
-  # 章节间静音时长（毫秒）/ Silence between chapters (ms)
+  # 章节间静音时长（毫秒），merge 命令默认值 / Silence between chapters (ms), default for `ppc merge`
   silence_between_chapters_ms: 500
-  # 输出文件名格式 / Output filename format
-  output_naming: '{stem}'
-
-# ============================================
-# Webhook 回调配置 / Webhook Callback Configuration
-# ============================================
-# --- Webhook 回调配置 / Webhook Callback Configuration ---
-webhook:
-  # 是否启用 Webhook / Enable Webhook
-  enabled: false
-  # Webhook URL / Webhook URL
-  url: ''
-  # 触发事件: started | completed | failed | progress / Trigger events: started | completed | failed | progress
-  events:
-  - completed
-  # 请求超时时间（秒）/ Request timeout (seconds)
-  timeout: 30
-  # 重试次数 / Retry count
-  retry_count: 3
-  # 重试延迟（秒）/ Retry delay (seconds)
-  retry_delay: 1.0
-  # 签名密钥（用于 HMAC 签名验证，null表示不签名）/ Signing secret (HMAC verification; null = no signing)
-  secret: null
-  # 自定义 HTTP 请求头 / Custom HTTP headers
-  headers: {}
-
-# ============================================
-# 限流器配置 / Rate Limiter Configuration
-# ============================================
-# --- 限流器配置 / Rate Limiter Configuration ---
-rate_limit:
-  # 是否启用限流 / Enable rate limiting
-  enabled: true
-  # 最大每秒请求数 / Max requests per second
-  max_requests_per_second: 100
-  # 突发容量 / Burst capacity
-  burst_size: 150
-  # 限流策略: token_bucket | sliding_window / Rate-limit strategy: token_bucket | sliding_window
-  strategy: token_bucket
-  # 触发限流后的冷却时间（秒）/ Cooldown after rate limit triggered (seconds)
-  cooldown_on_limit: 0.1
 
 # 配置版本（自动生成，勿修改）/ Config version (auto-generated, do not modify)
-version: 12.0.0
+version: 12.0.1-rc2-pre.1
