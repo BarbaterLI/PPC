@@ -225,6 +225,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         voice: str,
         rate: str,
         volume: str,
+        pitch: str = "+0Hz",
         *,
         exclude_uas: set[str] | None = None,
     ) -> Any:
@@ -247,6 +248,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         kwargs: dict[str, Any] = {
             "rate": rate,
             "volume": volume,
+            "pitch": pitch,
             "connector": None,
             "proxy": (self._anti_risk_config.proxy or None) if self._anti_risk_config.enabled else None,
         }
@@ -285,6 +287,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         *,
         rate: str,
         volume: str,
+        pitch: str = "+0Hz",
     ) -> AsyncIterator[TTSChunk]:
         """Entry point for synthesis with optional voice fallback.
 
@@ -314,7 +317,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         fallbacks = self._anti_risk_config.voice_fallbacks
         if not fallbacks:
             async for chunk in self._synthesize_single_voice(
-                text, voice, rate=rate, volume=volume
+                text, voice, rate=rate, volume=volume, pitch=pitch
             ):
                 yield chunk
             self.last_effective_voice = voice
@@ -330,7 +333,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
             emitted_any = False
             try:
                 async for chunk in self._synthesize_single_voice(
-                    text, current_voice, rate=rate, volume=volume
+                    text, current_voice, rate=rate, volume=volume, pitch=pitch
                 ):
                     emitted_any = True
                     yield chunk
@@ -544,6 +547,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         *,
         rate: str,
         volume: str,
+        pitch: str = "+0Hz",
     ) -> AsyncIterator[TTSChunk]:
         """Synthesize audio for a single voice with connect-level retries.
 
@@ -584,6 +588,7 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                 voice,
                 rate,
                 volume,
+                pitch,
                 # 已验证失败的 UA 从本次选择的候选池中排除，保证每次重试
                 # 真正落到一个新的 UA 上（否则 attempts 可能在同一 UA 上累加，
                 # "试过 N 个不同 UA" 的条件仍不可达）。

@@ -76,6 +76,33 @@ ppc doctor
 - 相关键：`tts.backend_plugin`（`ppc.tts.v1` 后端扩展）、`tts.cast_file`（多角色配音表）、
   `tts.merge_cut`（合并同角色片段 + 字幕时间截断）、`tts.llm_assign`（LLM 分配发声人）。
 
+### 角色级语速/音调（cast.yml）
+
+每个角色可以单独微调语速、音调与音量。**配的是相对全局的偏移**，最终值 =
+`tts.rate`（或 `--rate`）+ 角色偏移，再夹到合法范围（语速/音量 ±100%，音调 ±100Hz）：
+
+```yaml
+narrator: zh-CN-XiaoxiaoNeural
+default:  zh-CN-YunxiNeural
+roles:
+  风小小:                                    # 简写：只配音色
+    voice: zh-CN-XiaoyiNeural
+  杨砚:
+    voice: zh-CN-YunxiNeural
+    rate:  "+15%"                            # 全局 +10% 时最终为 +25%
+    pitch: "-20Hz"                           # 全局 +0Hz 时最终为 -20Hz
+  姜礼:
+    voice: zh-CN-YunyangNeural
+    volume: "-10%"                           # 内心独白轻一点
+```
+
+用偏移而非绝对值，是为了「整本调快 10%」这类全局调整仍然生效，同时保留角色
+之间的相对快慢。`narrator` / `default` 也支持同样写法。校验失败（如 `rate: 快`、
+拼错键名 `speed:`）会直接报错并指出位置，不会静默忽略。
+
+注：同一音色但韵律不同的角色**不会被合进同一批**请求——合并以
+`(音色, 语速, 音调, 音量)` 为分组键。
+
 ## 扩展体系
 
 `extensions/` 目录下的 `.ppcext`（zip）包可注册 CLI 子命令、文本/音频处理钩子、

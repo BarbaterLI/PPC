@@ -80,7 +80,12 @@ tts:
   # API并发数（None表示自动推导）/ API concurrency (None means auto-derived)
   api_concurrency: 8
   # 音频速率（如 +40%, -10%）/ Audio rate (e.g. +40%, -10%)
+  # 注意：cast.yml 里角色配置的 rate 是**相对此值的偏移**（两者相加）
+  # Note: per-role `rate` in cast.yml is an OFFSET relative to this value
   rate: +0%
+  # 音调偏移（如 +20Hz, -30Hz）/ Pitch offset (e.g. +20Hz, -30Hz)
+  # cast 中角色的 pitch 同样是相对此值的偏移 / per-role `pitch` is also an offset
+  pitch: +0Hz
   # ppc.tts.v1 合成后端（空=本地 edge_tts 默认路径）/ ppc.tts.v1 synthesis backend (empty = local edge_tts)
   # 内置: openai_http（OpenAI 兼容 /audio/speech 服务，配置见环境变量 PPC_TTS_OPENAI_HTTP_BASE_URL / _API_KEY / _MODEL）
   # Built-in: openai_http; 扩展后端经 .ppcext 注册后按名称填入 / extension backends resolve by registered name

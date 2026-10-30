@@ -75,11 +75,36 @@ from src.reliability import (
 )
 from src.reliability.circuit import CircuitBreakerError
 from src.reliability.rate_limiter import AsyncTokenBucket
+from src.text.cast_prosody import compose_pitch, compose_rate, compose_volume
 from src.text.normalizer import TextNormalizationConfig, TextNormalizer
 from src.text.segmenter import TextSegmenter
 from src.timeout import TimeoutCalculator, TimeoutConfig, TimeoutHistory
 
 logger = logging.getLogger(__name__)
+
+#: 角色级韵律在「音色」这一维度上的编码分隔符（不会出现在音色/参数里）
+_PROSODY_SEP = "\x1f"
+
+
+def _prosody_key(voice: str, rate: str, pitch: str, volume: str) -> str:
+    """把 (音色, 语速, 音调, 音量) 编成一个分组键。
+
+    合并批次按「键」分组，因此同一音色但语速/音调不同的片段**不会**被合到
+    同一批（否则一次请求只能有一个 prosody，必然有角色串味）。
+    """
+    return _PROSODY_SEP.join((voice, rate, pitch, volume))
+
+
+def _split_prosody_key(
+    key: str, default_rate: str, default_pitch: str, default_volume: str
+) -> tuple[str, str, str, str]:
+    """解码 ``_prosody_key``；非编码格式则视为纯音色。"""
+    parts = key.split(_PROSODY_SEP)
+    if len(parts) != 4:
+        return key, default_rate, default_pitch, default_volume
+    voice, rate, pitch, volume = parts
+    return voice, rate or default_rate, pitch or default_pitch, volume or default_volume
+
 
 
 def _is_same_file(a: Path, b: Path) -> bool:
@@ -399,6 +424,7 @@ class TTSEngine(BaseEngine[str, Path]):
             max_segment_length=config.tts.max_segment_length,
             rate_limit=config.tts.rate_limit,
             rate=rate,
+            pitch=getattr(config.tts, "pitch", "+0Hz"),
             api_concurrency=config.tts.api_concurrency,
             segment_silence_ms=getattr(config.tts, "segment_silence_ms", DEFAULT_SEGMENT_SILENCE_MS),
             segment_bitrate=getattr(config.tts, "segment_bitrate", "48k"),
@@ -554,8 +580,23 @@ class TTSEngine(BaseEngine[str, Path]):
         _no_cache = bool(_private.get("_no_cache", False))
         start_time = time.time()
         # 显式音色（多角色轮次穿透）优先；否则按 cast 首说话人探测 / 配置音色。
+        # 多角色路径传的是 _prosody_key（音色+语速+音调+音量），此处解回四元组，
+        # 使每个角色真正用上自己的韵律。
         _explicit_voice = _private.get("_voice")
-        voice = _explicit_voice if _explicit_voice else self._resolve_voice(text)
+        if _explicit_voice:
+            voice, rate, pitch, volume = _split_prosody_key(
+                str(_explicit_voice),
+                self.tts_config.rate,
+                self.tts_config.pitch,
+                self.tts_config.volume,
+            )
+        else:
+            voice = self._resolve_voice(text)
+            rate, pitch, volume = (
+                self.tts_config.rate,
+                self.tts_config.pitch,
+                self.tts_config.volume,
+            )
         normalized_text = ""
         cache_key = ""
         # 预初始化以避免 disable_timeout=True 分支下未赋值，
@@ -578,9 +619,10 @@ class TTSEngine(BaseEngine[str, Path]):
                 cache_key = build_cache_key(
                     voice,
                     normalized_text,
-                    self.tts_config.rate,
-                    self.tts_config.volume,
+                    rate,
+                    volume,
                     self._backend_cache_tag(),
+                    pitch,
                 )
                 cached_path = None if _no_cache else self._cache_lookup(cache_key)
                 if cached_path is not None:
@@ -631,12 +673,17 @@ class TTSEngine(BaseEngine[str, Path]):
                     _boundary_sink = _private.get("_boundary_sink")
                     if _boundary_sink is not None:
                         extra["boundary_sink"] = _boundary_sink
+                    # 音调仅在非默认值时下发：既让「默认路径」与既有客户端实现
+                    # （含测试里的显式签名假客户端）完全兼容，又保证角色级
+                    # pitch 真正生效。
+                    if pitch and pitch != "+0Hz":
+                        extra["pitch"] = pitch
                     call = self._edge_client.synthesize_to_file(
                         normalized_text,
                         output_path,
                         voice,
-                        rate=self.tts_config.rate,
-                        volume=self.tts_config.volume,
+                        rate=rate,
+                        volume=volume,
                         last_chunk_offset=DEFAULT_RESUME_OFFSET,
                         **extra,
                     )
@@ -890,7 +937,16 @@ class TTSEngine(BaseEngine[str, Path]):
         segments: list[str] = []
         voices: list[str] = []
         for t in turns:
-            voice = self._voice_for_speaker(t.speaker)
+            # 角色级 prosody：全局值 + cast 里的偏移（未配置则等于全局）
+            voice, profile = self._cast.profile_for(  # type: ignore[union-attr]
+                t.speaker, self.tts_config.voice
+            )
+            voice = _prosody_key(
+                voice,
+                compose_rate(self.tts_config.rate, profile.get("rate")),
+                compose_pitch(self.tts_config.pitch, profile.get("pitch")),
+                compose_volume(self.tts_config.volume, profile.get("volume")),
+            )
             text = t.text or ""
             if not text.strip():
                 continue
@@ -1012,11 +1068,18 @@ class TTSEngine(BaseEngine[str, Path]):
         def _seg_path(piece_idx: int) -> Path:
             return cache_dir / f"{name}_seg_{piece_idx + 1:03d}.mp3"
 
-        def _sig_kwargs(voice: str) -> dict[str, Any]:
+        def _sig_kwargs(key: str) -> dict[str, Any]:
+            voice, rate, pitch, volume = _split_prosody_key(
+                key,
+                self.tts_config.rate,
+                self.tts_config.pitch,
+                self.tts_config.volume,
+            )
             return {
                 "voice": voice,
-                "rate": self.tts_config.rate,
-                "volume": self.tts_config.volume,
+                "rate": rate,
+                "pitch": pitch,
+                "volume": volume,
             }
 
         def _already_done(req: Any) -> bool:

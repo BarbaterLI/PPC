@@ -23,6 +23,7 @@ DEFAULT_TIMEOUT_MAX = 720
 DEFAULT_MAX_SEGMENT_LENGTH = 2500
 DEFAULT_RATE_LIMIT = 100
 DEFAULT_RATE = "+0%"
+DEFAULT_PITCH = "+0Hz"
 DEFAULT_VOLUME = "+0%"
 DEFAULT_API_CONCURRENCY = 5
 DEFAULT_SEGMENT_SILENCE_MS = 100
@@ -39,7 +40,22 @@ def _normalize_rate(rate: str) -> str:
     return rate
 
 
-def build_cache_key(voice: str, text: str, rate: str, volume: str, backend: str = "") -> str:
+def _normalize_pitch(pitch: str) -> str:
+    """规范化音调参数，确保以 ``+``/``-`` 开头并带 Hz 单位。"""
+    pitch = (pitch or "+0Hz").strip()
+    if re.match(r"^\d+Hz$", pitch, re.IGNORECASE):
+        pitch = f"+{pitch}"
+    return pitch
+
+
+def build_cache_key(
+    voice: str,
+    text: str,
+    rate: str,
+    volume: str,
+    backend: str = "",
+    pitch: str = "+0Hz",
+) -> str:
     """构造 TTS 缓存 key。
 
     Key 格式: ``tts:<backend>:<voice>:<sha256(text)>:<rate>:<volume>``。
@@ -51,7 +67,12 @@ def build_cache_key(voice: str, text: str, rate: str, volume: str, backend: str 
     缓存条目的键空间隔离（旧键不含 backend 段，不会被新逻辑误命中）。
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return f"tts:{backend or 'default'}:{voice}:{digest}:{rate}:{volume}"
+    key = f"tts:{backend or 'default'}:{voice}:{digest}:{rate}:{volume}"
+    # 音调只在非默认值时进 key：既保证「改 pitch 必换缓存」，又保住旧键的
+    # 命名空间（既有磁盘缓存不因升级整体失效）。
+    if pitch and pitch != "+0Hz":
+        key = f"{key}:{pitch}"
+    return key
 
 
 @dataclass
@@ -68,6 +89,7 @@ class TTSEngineConfig:
     max_segment_length: int = DEFAULT_MAX_SEGMENT_LENGTH
     rate_limit: int = DEFAULT_RATE_LIMIT
     rate: str = DEFAULT_RATE
+    pitch: str = DEFAULT_PITCH
     volume: str = DEFAULT_VOLUME
     api_concurrency: int | None = None
     segment_silence_ms: int = DEFAULT_SEGMENT_SILENCE_MS
@@ -90,3 +112,4 @@ class TTSEngineConfig:
 
     def __post_init__(self) -> None:
         self.rate = _normalize_rate(self.rate)
+        self.pitch = _normalize_pitch(self.pitch)

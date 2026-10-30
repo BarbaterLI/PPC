@@ -113,6 +113,7 @@ class EdgeTTSClient(ABC):
         *,
         rate: str = "+0%",
         volume: str = "+0%",
+        pitch: str = "+0Hz",
         last_chunk_offset: int = DEFAULT_RESUME_OFFSET,
     ) -> AsyncIterator[TTSChunk]:
         """Yield audio chunks with optional resume support.
@@ -126,7 +127,9 @@ class EdgeTTSClient(ABC):
 
         offset = int(last_chunk_offset or 0)
         try:
-            async for chunk in self._synthesize(text, voice, rate=rate, volume=volume):
+            async for chunk in self._synthesize(
+                text, voice, rate=rate, volume=volume, pitch=pitch
+            ):
                 if offset and chunk.offset < offset:
                     continue
                 yield chunk
@@ -152,6 +155,7 @@ class EdgeTTSClient(ABC):
         *,
         rate: str = "+0%",
         volume: str = "+0%",
+        pitch: str = "+0Hz",
         last_chunk_offset: int = DEFAULT_RESUME_OFFSET,
         boundary_sink: Any | None = None,
     ) -> int:
@@ -188,7 +192,7 @@ class EdgeTTSClient(ABC):
                         voice,
                         rate=rate,
                         volume=volume,
-                        pitch="+0Hz",
+                        pitch=pitch,
                         output_path=output_path,
                     )
                     # 插件可能返回已写入文件的路径或音频字节数据；统一确保
@@ -227,6 +231,7 @@ class EdgeTTSClient(ABC):
                     voice,
                     rate=rate,
                     volume=volume,
+                    pitch=pitch,
                     last_chunk_offset=last_chunk_offset,
                 ):
                     if chunk.type != "audio" or not chunk.data:

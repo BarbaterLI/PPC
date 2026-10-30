@@ -261,6 +261,7 @@ def convert(
     ),
     timeout: int | None = typer.Option(None, "--timeout", help="固定超时时间(秒)，仅 timeout_mode=fixed 时生效"),
     rate: str | None = typer.Option(None, "--rate", help="音频播放速度(如 +10%, -10%, +0%,范围 -100% 到 +100%)"),
+    pitch: str | None = typer.Option(None, "--pitch", help="音调偏移(如 +20Hz, -30Hz)；cast 中各角色的 pitch 是相对此值的偏移"),
     recursive: bool = typer.Option(False, "--recursive", "-R", help="递归处理子目录,保持目录结构"),
     ramp_up: float | None = typer.Option(
         None, "--ramp-up", help="并发预热时间(秒),从1并发逐步增加到设定并发,规避风控(如 30 表示30秒内完成预热)"
@@ -344,6 +345,7 @@ def convert(
             checkpoint=checkpoint,
             timeout_multiplier=timeout_multiplier,
             rate=rate,
+            pitch=pitch,
             recursive=recursive,
             ramp_up=ramp_up,
             strict=strict,

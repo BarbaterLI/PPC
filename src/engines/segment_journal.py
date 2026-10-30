@@ -67,6 +67,7 @@ def _audio_sig(
     voice: str | None,
     rate: str | None,
     volume: str | None,
+    pitch: str | None = None,
 ) -> str:
     """音频指纹：文本 + 音色 + 影响波形的合成参数（rate/volume）。
 
@@ -78,7 +79,12 @@ def _audio_sig(
     以 ``\x00`` 分隔各字段（文本中不会出现该字符），避免拼接歧义。
     """
     h = hashlib.sha1()
-    for part in (text, voice or "", rate or "", volume or ""):
+    parts = [text, voice or "", rate or "", volume or ""]
+    # 音调只在非默认值时参与指纹：既保证「改 pitch 必重新合成」，又不让
+    # 既有缓存/日志（无 pitch 字段）在升级后集体失效。
+    if pitch and pitch != "+0Hz":
+        parts.append(pitch)
+    for part in parts:
         h.update(part.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()
@@ -213,6 +219,7 @@ class SegmentJournal:
         voice: str | None = None,
         rate: str | None = None,
         volume: str | None = None,
+        pitch: str | None = None,
     ) -> bool:
         """O(1) 校验段是否可复用：条目存在 + 音频指纹一致 + 文件大小一致。
 
@@ -229,7 +236,7 @@ class SegmentJournal:
             return False
         if entry.text_sha1 != _text_sha1(text):
             return False  # 内容寻址：分段文本已变 → 陈旧
-        if entry.sig != _audio_sig(text, voice, rate, volume):
+        if entry.sig != _audio_sig(text, voice, rate, volume, pitch):
             return False  # 音色/语速已变（或旧条目无指纹）→ 不允许复用
         try:
             if file.stat().st_size != entry.size:
@@ -249,6 +256,7 @@ class SegmentJournal:
         voice: str | None = None,
         rate: str | None = None,
         volume: str | None = None,
+        pitch: str | None = None,
     ) -> None:
         """段合成成功后追加一行日志（失败只降级为 debug 日志）。
 
@@ -264,7 +272,7 @@ class SegmentJournal:
             logger.debug("journal 记录跳过（文件不可 stat）: %s", exc)
             return
         entry = JournalEntry(
-            index, size, _text_sha1(text), _audio_sig(text, voice, rate, volume)
+            index, size, _text_sha1(text), _audio_sig(text, voice, rate, volume, pitch)
         )
         self._entries[index] = entry
         if self._append_entry(entry):

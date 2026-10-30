@@ -8,6 +8,17 @@
 以及 **LLM 自动分配发声人**。全部默认关闭，不改变既有行为。
 
 ### 新增
+- **角色级语速/音调/音量（cast.yml）**：角色可写成 `{voice, rate, pitch, volume}`，
+  其中 rate/pitch/volume 是**相对全局的偏移**：最终值 = `tts.rate`（或 `--rate`）
+  + 角色偏移，再夹到合法范围（±100% / ±100Hz）。用偏移而非绝对值，保证
+  「整本 +10%」这类全局调整仍然生效、角色间相对快慢不丢。
+  - 新增 `tts.pitch` 全局配置（此前 pitch 在客户端被硬编码 `+0Hz`，无法调整）；
+    `pitch` 现已贯通 `config → 引擎 → client → Communicate`。
+  - 合并分组键升级为 `(音色, 语速, 音调, 音量)`：同音色不同韵律的角色不会被
+    合进同一批请求（否则一次请求只有一个 prosody，必然串音）。
+  - 缓存键与段级 Journal 指纹纳入 pitch（仅非默认值时参与）：改音调即重新合成，
+    且旧缓存不因升级集体失效。
+  - 校验严格：`rate: 快`、拼错键名（`speed:`）、缺 `voice` 均直接报错并指出位置。
 - **按角色池合并 + 字幕时间截断（`tts.merge_cut` / `ppc convert --merge-cut`）**：
   把**同一角色的全部片段汇成一个池**（``merge_scope="pool"``，默认），池内按
   `max_merge_pieces`/`max_merge_chars`/`max_merge_bytes` 分批，**每批一次普通

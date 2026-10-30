@@ -224,6 +224,10 @@ class TTSConfig(BaseModel):
     buffer_size: int = Field(default=32, description="缓冲区大小")
     rate_limit: int = Field(default=100, description="每秒请求限制")
     rate: str = Field(default="+0%", description="音频播放速度（如 +10%, -10%, +0%），范围 -100% 到 +100%")
+    pitch: str = Field(
+        default="+0Hz",
+        description="音调偏移（如 +20Hz, -30Hz, +0Hz）；cast 中角色配置的是相对此值的偏移",
+    )
     ema_alpha: float = Field(default=0.3, ge=0.0, le=1.0, description="EMA 平滑因子")
     quarantine_delay: float = Field(default=300.0, ge=0.0, le=3600.0, description="隔离任务重试延迟 (秒)")
     timeout_history_size: int = Field(default=100, ge=10, le=1000, description="TTS 超时历史记录保留条数")
@@ -276,6 +280,13 @@ class TTSConfig(BaseModel):
             self.rate = f"+{rate_stripped}"
         elif not re.match(r"^[+-]\d+%$", rate_stripped):
             raise ValueError(f"rate 格式无效: '{self.rate}'，应为 '+0%'、'+40%'、'-10%' 等格式（必须带正负号和百分号）")
+        pitch_stripped = self.pitch.strip()
+        if re.match(r"^\d+Hz$", pitch_stripped, re.IGNORECASE):
+            self.pitch = f"+{pitch_stripped}"
+        elif not re.match(r"^[+-]\d+Hz$", pitch_stripped, re.IGNORECASE):
+            raise ValueError(
+                f"pitch 格式无效: '{self.pitch}'，应为 '+0Hz'、'+20Hz'、'-30Hz' 等格式（必须带正负号和 Hz）"
+            )
         if self.timeout_min > self.timeout_max:
             raise ValueError(f"timeout_min ({self.timeout_min}) 不能大于 timeout_max ({self.timeout_max})")
         if self.min_segment_length > self.max_segment_length:

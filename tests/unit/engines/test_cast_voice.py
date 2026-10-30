@@ -6,6 +6,12 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.config.presets import get_preset
+from src.engines.tts_engine import _split_prosody_key
+
+
+def _voices_only(keys):
+    """_expand_turns 现在返回 (音色, 语速, 音调, 音量) 组合键，这里只取音色。"""
+    return [_split_prosody_key(k, "+0%", "+0Hz", "+0%")[0] for k in keys]
 
 
 def _run(coro):
@@ -79,7 +85,7 @@ def test_synthesize_routes_voice_per_text(tmp_path):
         _run(engine.synthesize("山风吹过，寂静无声。", tmp_path / "b.mp3", disable_timeout=True))
 
     voices = [c.args[2] for c in fake_client.synthesize_to_file.call_args_list]
-    assert voices == ["VLM", "VN"]
+    assert _voices_only(voices) == ["VLM", "VN"]
 
 
 def test_synthesize_without_cast_always_uses_config_voice(tmp_path):
@@ -94,7 +100,7 @@ def test_synthesize_without_cast_always_uses_config_voice(tmp_path):
         _run(engine.synthesize("李明：出发", tmp_path / "a.mp3", disable_timeout=True))
         _run(engine.synthesize("山风吹过。", tmp_path / "b.mp3", disable_timeout=True))
     voices = [c.args[2] for c in fake_client.synthesize_to_file.call_args_list]
-    assert voices == [engine.tts_config.voice, engine.tts_config.voice]
+    assert _voices_only(voices) == [engine.tts_config.voice, engine.tts_config.voice]
 
 
 # ---------------------------------------------------------------- 轮次级穿透（W3-2 重构）
@@ -112,7 +118,7 @@ def test_split_turns_and_expand_maps_voice(tmp_path):
     segments, voices = engine._expand_turns(turns)
     assert len(segments) == len(voices)
     # 标签旁白(narrator) / 角色对白 交替
-    assert voices == ["VN", "VL", "VN", "VW"]
+    assert _voices_only(voices) == ["VN", "VL", "VN", "VW"]
 
 
 def test_expand_turns_splits_long_turn_same_voice(tmp_path):
@@ -122,7 +128,9 @@ def test_expand_turns_splits_long_turn_same_voice(tmp_path):
     turns = engine._cast.split_turns(long_nar)
     segments, voices = engine._expand_turns(turns)
     assert len(segments) > 1  # 被切块
-    assert set(voices) == {"VN"}  # 全旁白音色
+    assert set(_voices_only(voices)) == {"VN"}  # 全旁白音色
+    # 同一旁白的韵律一致 → 组合键唯一
+    assert len(set(voices)) == 1
 
 
 def test_synthesize_segmented_cast_turn_level_voice_sequence(tmp_path):
@@ -149,8 +157,8 @@ def test_synthesize_segmented_cast_turn_level_voice_sequence(tmp_path):
     result = _run(engine.synthesize_segmented("李明：走。王芳：好。", out, disable_timeout=True))
 
     assert result.success, result.error
-    # 每轮次一个显式音色：旁白/李明/旁白/王芳
-    assert captured == ["VN", "VL", "VN", "VW"]
+    # 每轮次一个显式韵律键：旁白/李明/旁白/王芳
+    assert _voices_only(captured) == ["VN", "VL", "VN", "VW"]
 
 
 def test_synthesize_segmented_single_turn_uses_explicit_voice(tmp_path):
@@ -167,4 +175,4 @@ def test_synthesize_segmented_single_turn_uses_explicit_voice(tmp_path):
     out = tmp_path / "o.mp3"
     result = _run(engine.synthesize_segmented("山风吹过，林间寂静。", out, disable_timeout=True))
     assert result.success, result.error
-    assert captured == ["VN"]  # 纯旁白 → narrator 音色（单段）
+    assert _voices_only(captured) == ["VN"]  # 纯旁白 → narrator 音色（单段）

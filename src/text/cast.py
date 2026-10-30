@@ -61,15 +61,99 @@ _ATTR_RE = re.compile(rf"([一-龥]{{1,8}}?)(?:着|了)?(?:{_SPEECH_VERBS})")
 # 行首角色 + 冒号：李明：……   "李明: ...
 _PREFIX_RE = re.compile(r"""^\s*["'“”‘’（(]?\s*([一-龥]{1,8})\s*[:：]""")
 
+#: 角色可配置的韵律字段（相对全局的偏移量）
+_PROFILE_KEYS = ("rate", "pitch", "volume")
+
+
+def _parse_one(value: Any, label: str, where: str) -> tuple[str | None, dict[str, str]]:
+    """解析单个角色（或 narrator/default）的配置。
+
+    支持两种写法：``音色字符串`` 或 ``{voice, rate, pitch, volume}`` 映射。
+    返回 ``(音色, 韵律偏移)``；未知字段直接报错，避免拼错键后静默失效。
+    """
+    from .cast_prosody import normalize_pitch, normalize_rate, normalize_volume
+
+    if value is None:
+        return None, {}
+    if isinstance(value, str):
+        text = value.strip()
+        return (text or None), {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{label} 应为音色字符串或 {{voice, rate, pitch, volume}} 映射: {where}"
+        )
+
+    voice = str(value.get("voice") or "").strip()
+    if not voice:
+        raise ValueError(f"{label} 缺少 voice 字段: {where}")
+
+    normalizers = {"rate": normalize_rate, "pitch": normalize_pitch, "volume": normalize_volume}
+    profile: dict[str, str] = {}
+    for key in _PROFILE_KEYS:
+        raw = value.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            profile[key] = normalizers[key](str(raw))
+        except ValueError as exc:
+            raise ValueError(f"{label}.{key} 非法: {exc}（{where}）") from None
+
+    unknown = set(value) - {"voice", *_PROFILE_KEYS}
+    if unknown:
+        raise ValueError(
+            f"{label} 含未知字段 {sorted(unknown)}，仅支持 voice/rate/pitch/volume: {where}"
+        )
+    return voice, profile
+
+
+def _parse_roles(raw: Any, where: str) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """解析 ``roles``：角色名 → 音色 / 韵律偏移。"""
+    if raw is None:
+        return {}, {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"cast.roles 应为映射（角色: 音色 或 角色: {{voice,rate,pitch,volume}}）: {where}"
+        )
+
+    roles: dict[str, str] = {}
+    profiles: dict[str, dict[str, str]] = {}
+    for key, value in raw.items():
+        name = str(key).strip() if key else ""
+        if not name:
+            continue
+        voice, profile = _parse_one(value, f"roles.{name}", where)
+        if not voice:
+            continue
+        roles[name] = voice
+        if profile:
+            profiles[name] = profile
+    return roles, profiles
+
 
 @dataclass
 class Cast:
-    """配音角色表：角色名 → 音色，附 default/narrator 兜底。"""
+    """配音角色表：角色名 → 音色，附 default/narrator 兜底。
+
+    ``roles`` 保持「角色名 → 音色」的扁平结构（大量既有代码依赖它）；角色
+    级的音调/语速/音量偏移存在 ``profiles`` 里，两项均可选。
+
+    写法（cast.yml）::
+
+        roles:
+          风小小:                              # 只配音色（旧写法，兼容）
+            voice: zh-CN-XiaoyiNeural
+          杨砚:
+            voice: zh-CN-YunxiNeural
+            rate: "+15%"                       # 相对全局语速的偏移
+            pitch: "-20Hz"                     # 相对全局音调的偏移
+            volume: "+5%"                      # 相对全局音量的偏移
+    """
 
     roles: dict[str, str] = field(default_factory=dict)
     narrator: str | None = None
     default: str | None = None
     source: str | None = None  # 来源 cast.yml 路径（诊断用）
+    profiles: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ 加载
 
@@ -88,34 +172,66 @@ class Cast:
         if not isinstance(raw, dict):
             raise ValueError(f"cast 文件顶层应为映射（default/narrator/roles）: {p}")
 
-        roles_raw = raw.get("roles") or {}
-        if not isinstance(roles_raw, dict):
-            raise ValueError(f"cast.roles 应为 映射（角色: 音色）: {p}")
-        roles: dict[str, str] = {}
-        for k, v in roles_raw.items():
-            if k and v:
-                roles[str(k).strip()] = str(v).strip()
+        roles, profiles = _parse_roles(raw.get("roles"), where=str(p))
+        narrator, narrator_profile = _parse_one(raw.get("narrator"), "narrator", str(p))
+        default, default_profile = _parse_one(raw.get("default"), "default", str(p))
+        if narrator_profile:
+            profiles["__narrator__"] = narrator_profile
+        if default_profile:
+            profiles["__default__"] = default_profile
 
         return cls(
             roles=roles,
-            narrator=(str(raw["narrator"]).strip() if raw.get("narrator") else None),
-            default=(str(raw["default"]).strip() if raw.get("default") else None),
+            narrator=narrator,
+            default=default,
             source=str(p),
+            profiles=profiles,
         )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], source: str | None = None) -> Cast:
         """从已解析的 dict 构建（供测试与程序化注入）。"""
-        roles = {str(k).strip(): str(v).strip() for k, v in (data.get("roles") or {}).items() if k and v}
+        roles, profiles = _parse_roles(data.get("roles"), where=source or "<dict>")
+        narrator, narrator_profile = _parse_one(data.get("narrator"), "narrator", source or "<dict>")
+        default, default_profile = _parse_one(data.get("default"), "default", source or "<dict>")
+        if narrator_profile:
+            profiles["__narrator__"] = narrator_profile
+        if default_profile:
+            profiles["__default__"] = default_profile
         return cls(
             roles=roles,
-            narrator=(str(data["narrator"]).strip() if data.get("narrator") else None),
-            default=(str(data["default"]).strip() if data.get("default") else None),
+            narrator=narrator,
+            default=default,
             source=source,
+            profiles=profiles,
         )
 
     def __bool__(self) -> bool:
         return bool(self.roles)
+
+    def profile_for(
+        self, speaker: str | None, fallback_voice: str
+    ) -> tuple[str, dict[str, str]]:
+        """说话人 → ``(音色, 韵律偏移)``。
+
+        旁白取 ``narrator``（可配韵律）；角色取 ``roles``；未登记的角色回落到
+        ``default``（含其韵律）。偏移为空 dict 表示「跟随全局」。
+        """
+        if speaker is None:
+            voice = self.narrator or self.default or fallback_voice
+            profile = self.profiles.get("__narrator__")
+            if profile is None and not self.narrator:
+                profile = self.profiles.get("__default__")
+            return voice, dict(profile or {})
+
+        profile = self.profiles.get(speaker)
+        if speaker in self.roles:
+            voice = self.roles[speaker]
+        else:
+            voice = self.default or self.narrator or fallback_voice
+            if profile is None:
+                profile = self.profiles.get("__default__")
+        return voice, dict(profile or {})
 
     # ------------------------------------------------------------------ 识别
 

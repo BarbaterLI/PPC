@@ -35,6 +35,7 @@ class ConvertOptions:
     checkpoint: Path | None = None
     timeout_multiplier: float | None = None
     rate: str | None = None
+    pitch: str | None = None
     recursive: bool = False
     ramp_up: float | None = None
     strict: bool = False
@@ -342,6 +343,9 @@ def _validate_convert(
         config.tts.concurrency = options.concurrency
     if options.rate is not None:
         config.tts.rate = _normalize_rate(options.rate)
+    if options.pitch is not None:
+        # pitch 由 schema 校验器归一化（+0Hz / -20Hz）
+        config.tts.pitch = options.pitch
     if options.timeout_multiplier is not None:
         config.tts.timeout_multiplier = options.timeout_multiplier
     if options.timeout_mode is not None:
