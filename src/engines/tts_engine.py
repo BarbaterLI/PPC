@@ -1272,7 +1272,23 @@ class TTSEngine(BaseEngine[str, Path]):
                 if not cfg.fallback_to_per_piece:
                     raise RuntimeError("字幕对齐失败且未启用逐片段回退")
                 for k, piece_idx in enumerate(req.piece_indices):
-                    await _synth_one_piece(piece_idx, req.pieces[k], req.voice)
+                    # 回退时也要采 cue：否则这一批的全部字幕会静默丢失
+                    # （实测 20 章只覆盖 71% 音频）。这里删掉已缓存的段文件，
+                    # 强制重新合成以拿到 boundary —— 回退本身已是少数路径。
+                    one = SegmentTimeline() if cfg.subtitle_output else None
+                    if one is not None:
+                        try:
+                            _seg_path(piece_idx).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    await _synth_one_piece(
+                        piece_idx,
+                        req.pieces[k],
+                        req.voice,
+                        boundary_sink=one.feed_chunk if one is not None else None,
+                    )
+                    if one is not None:
+                        _record_whole_piece_cues(piece_idx, one)
                 return
 
             # 落片 + 记 journal（同名段文件，旧路径语义不变）
