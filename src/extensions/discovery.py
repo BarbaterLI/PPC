@@ -42,6 +42,10 @@ def discover_extensions(directory: Path) -> list[dict]:
         discovered.append({"type": "file", "path": py_file})
 
     for subdir in directory.iterdir():
+        # 跳过 `.` 开头：安装使用 `.tmp-*` / `.old-*` 事务目录，半装状态必须
+        # 对加载器不可见（否则升级中断留下的残缺包会被当成正常扩展 import）。
+        if subdir.name.startswith("."):
+            continue
         if subdir.is_dir() and not subdir.name.startswith("_") and (subdir / "__init__.py").exists():
             if subdir.name in FRAMEWORK_MODULES:
                 continue

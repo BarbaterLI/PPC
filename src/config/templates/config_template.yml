@@ -117,6 +117,11 @@ tts:
     # 仅在能减少连接数时合并（长片段已接近单连接预算，合并无收益）
     # Only merge when it reduces the number of connections
     only_short_segments: true
+    # 合并完成后是否删除本章段缓存。关闭可保留断点续传/排查能力，
+    # 但会占用磁盘（每章约 3MB）。某些环境（沙箱/EDR）会拦截批量删除，
+    # 遇到「进程无输出即退出」时设为 false。
+    # Delete per-chapter segment cache after merging (keep it for resume/debug)
+    cleanup_segment_cache: true
     # 对齐/切分失败时回退逐片段合成 / Fall back to per-piece synthesis on alignment failure
     fallback_to_per_piece: true
     # 同时输出 .srt 字幕 / Also write .srt subtitles

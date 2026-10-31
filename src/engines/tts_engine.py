@@ -120,8 +120,20 @@ def _split_prosody_key(
 ) -> tuple[str, str, str, str]:
     """解码 ``_prosody_key``；非编码格式则视为纯音色。"""
     parts = key.split(_PROSODY_SEP)
-    if len(parts) != 4:
+    if len(parts) == 1:
         return key, default_rate, default_pitch, default_volume
+    if len(parts) != 4:
+        # 1 < 段数 != 4 说明编码时漏了字段（或音色名里混进了分隔符）。
+        # 旧实现把整串当音色下发 → 服务端报「voice not found」，
+        # 而错误信息里只会出现一串控制字符，极难定位。取第一段当作音色，
+        # 至少能合成，同时把问题显式告警出来。
+        logger.warning(
+            "韵律键段数异常（%d!=4），按音色 '%s' 处理: %r",
+            len(parts),
+            parts[0],
+            key,
+        )
+        return parts[0], default_rate, default_pitch, default_volume
     voice, rate, pitch, volume = parts
     return voice, rate or default_rate, pitch or default_pitch, volume or default_volume
 

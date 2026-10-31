@@ -1,3 +1,4 @@
+from src.web.auth import auth_headers
 """分布式节点池管理
 负责节点信息管理、健康检查、负载均衡
 """
@@ -135,7 +136,13 @@ class NodePool:
             logger.debug("节点池已在运行，忽略重复 start()")
             return
 
-        self._http_session = ClientSession(timeout=ClientTimeout(total=self._health_check_timeout))
+        # 带上 Bearer token：开启 --api-token 后节点健康检查同样要过鉴权，
+        # 否则每一次探活都 401，节点会被判定为不健康而移出池子——也就是
+        # 「一开鉴权，分布式就整个不可用」。
+        self._http_session = ClientSession(
+            timeout=ClientTimeout(total=self._health_check_timeout),
+            headers=auth_headers(),
+        )
         self._health_check_task = asyncio.create_task(self._health_check_loop())
         self._started = True
         logger.info("节点池已启动")

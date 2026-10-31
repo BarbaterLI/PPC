@@ -3,14 +3,39 @@ from __future__ import annotations
 import codecs
 import logging
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENCODING_FALLBACK = ["utf-8", "gbk", "gb2312", "utf-16"]
+#: 编码候选链。末尾的 ``utf-16-le`` / ``utf-16-be`` 是无 BOM 时唯一的正确解：
+#: ``utf-16`` 解码器要求开头有 BOM，否则直接报错。
+DEFAULT_ENCODING_FALLBACK = ["utf-8", "gb18030", "gbk", "gb2312", "utf-16", "utf-16-le", "utf-16-be"]
 DEFAULT_ENCODING_DETECT_BUFFER = 1024
+
+#: 解码后「明显不该出现在正文里」的字符：NUL、除 \t\n\r 外的 C0 控制符、
+#: 替换符 U+FFFD、私用区。UTF-16 文本被单字节编码解码时几乎必然大量命中。
+_SUSPICIOUS_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd\ue000-\uf8ff]")
+
+#: 可疑字符占比阈值。UTF-16LE 的 ASCII 字符（数字/标点/空格）经 utf-8 或 gbk
+#: 解码后每 2 字节里就有 1 个 NUL，占比 ~50%；正常文本为 0。
+_SUSPICION_LIMIT = 0.02
+
+
+def _decode_suspicion(text: str) -> float:
+    """返回**可疑字符占比**（0..1）。用于在候选链里排除「能解码但内容明显坏掉」。
+
+    触发条件：无 BOM 的 UTF-16LE 章节（Windows 记事本「Unicode」另存会产生）。
+    旧行为：``_head_decodes`` 只问「能不能解码」——而 gbk 双字节编码几乎能解
+    任意字节对，UTF-16 文本会被判成 gbk 并**静默解出乱码**（不抛异常），
+    整本书被当正文送去合成。
+    """
+    if not text:
+        return 0.0
+    return len(_SUSPICIOUS_CHARS.findall(text)) / len(text)
+
 
 
 def safe_extract_zip(zip_file: zipfile.ZipFile, target_dir: Path) -> None:
@@ -52,12 +77,18 @@ def detect_encoding(
 
 
 def _head_decodes(head: bytes, encoding: str) -> bool:
-    """增量解码器校验头部（容忍缓冲区末尾截断的多字节字符）。"""
+    """增量解码器校验头部（容忍缓冲区末尾截断的多字节字符）。
+
+    除了「能否解码」，还要看「解出来的东西像不像正文」：UTF-16 文本被 gbk /
+    utf-8 解码通常能成功，但会产出大量 NUL 与控制符。以前只看前者，于是
+    无 BOM 的 UTF-16LE 会被判成 gbk 并静默乱码。
+    """
     try:
-        codecs.getincrementaldecoder(encoding)(errors="strict").decode(head, final=False)
-        return True
+        decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+        text = decoder.decode(head, final=False)
     except (UnicodeDecodeError, UnicodeError, LookupError):
         return False
+    return _decode_suspicion(text) <= _SUSPICION_LIMIT
 
 
 def quick_probe(

@@ -219,7 +219,7 @@ class ConfigMigrator:
         v6_config["tts"]["max_segment_length"] = self._get_nested(v5_config, "tts.max_segment_length", 2500)
         v6_config["split"]["min_chapter_length"] = self._get_nested(v5_config, "split.min_chapter_length", 100)
         v6_config["split"]["encoding_fallback"] = self._get_nested(
-            v5_config, "split.encoding_fallback", ["utf-8", "gb18030", "gbk", "gb2312", "utf-16"]
+            v5_config, "split.encoding_fallback", ["utf-8", "gb18030", "gbk", "gb2312", "utf-16", "utf-16-le", "utf-16-be"]
         )
         v6_config["performance"]["max_file_cache_size"] = self._get_nested(
             v5_config, "performance.max_file_cache_size", 100

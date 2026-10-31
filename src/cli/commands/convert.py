@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -254,6 +255,32 @@ def _apply_llm_assign(
     )
 
 
+def _split_oversized(text: str, limit: int) -> list[str]:
+    """把超长章节按**段落边界**切成多个 ``<= limit`` 的块。
+
+    只在段落边界切：引号不会跨段成对，所以每块内的 ``quote_spans`` 与整章
+    一致，逐块标注后按顺序拼接即可还原整章。
+    单段本身就超限时不再细切（宁可让这一次请求偏大，也不要把一句台词劈成
+    两半导致引号配对错位）。
+    """
+    if len(text) <= limit:
+        return [text]
+
+    # 保留行尾换行，拼回去与原文一致
+    paragraphs = re.split(r"(?<=\n)", text)
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        if current and len(current) + len(para) > limit:
+            chunks.append(current)
+            current = para
+        else:
+            current += para
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 def _apply_annotate(
     options: "ConvertOptions",
     output_dir: Path,
@@ -330,9 +357,15 @@ def _apply_annotate(
     max_batch_chars = max(1000, int(getattr(ann, "max_input_chars", 300_000)))
     max_out_chars = max(1000, int(getattr(ann, "max_output_chars", 60_000)))
     batches: list[list[tuple[Path, str, int]]] = []
+    oversized: list[tuple[Path, str, int]] = []
     current: list[tuple[Path, str, int]] = []
     size = 0
     for item in pending:
+        if len(item[1]) > max_batch_chars:
+            # 单章比整批上限还大：放进合批只会让「批内只有一个但本身超限」，
+            # 每次都被服务端拒绝。单独走章内切块。
+            oversized.append(item)
+            continue
         # 输出上限按「每个引号约 12 字符游程」粗估，防止一次吐太多被截断
         if current and (
             size + len(item[1]) > max_batch_chars
@@ -389,6 +422,9 @@ def _apply_annotate(
             calls += 1
             try:
                 result = annotator.annotate(joined, roles)
+                # 预算按**实际 HTTP 请求**记（annotate 内部校验失败会重试），
+                # 否则 max_calls=3 时可能真的发出 9 次请求。
+                calls += max(0, int(getattr(result, "runs", 1) or 1) - 1)
                 ok = _store(batch, result.speakers, result.model)
                 if ok:
                     done += len(batch)
@@ -412,6 +448,7 @@ def _apply_annotate(
                 calls += 1
                 try:
                     one = annotator.annotate(item[1], roles)
+                    calls += max(0, int(getattr(one, "runs", 1) or 1) - 1)
                 except Exception:  # noqa: BLE001
                     failed += 1
                     continue
@@ -424,6 +461,46 @@ def _apply_annotate(
 
         failed += len(batch)
         output_formatter.warning(f"标注失败（{len(batch)} 章），这些章回退正则匹配: {reason}")
+
+    # 超长章节：按段落切块 → 逐块标注 → 拼接成整章再落缓存。
+    # 段落边界保证引号不跨块（引号不会跨段成对），因此拼接后顺序与整章一致。
+    for path, text, n in oversized:
+        if not _has_budget(1):
+            failed += 1
+            output_formatter.warning(f"标注调用已达上限 max_calls={budget}，{path.name} 回退正则匹配")
+            continue
+        chunks = _split_oversized(text, max_batch_chars)
+        collected: list[str] = []
+        ok = True
+        model = ""
+        for chunk in chunks:
+            if not _has_budget(1):
+                ok = False
+                break
+            calls += 1
+            try:
+                part = annotator.annotate(chunk, roles)
+                calls += max(0, int(getattr(part, "runs", 1) or 1) - 1)
+            except Exception as exc:  # noqa: BLE001
+                output_formatter.warning(f"超长章节切块标注失败（{path.name}）: {exc}")
+                ok = False
+                break
+            model = part.model
+            if len(part.speakers) != len(quote_spans(chunk)):
+                ok = False
+                break
+            collected.extend(part.speakers)
+        if not ok or len(collected) != n:
+            failed += 1
+            output_formatter.warning(f"超长章节标注失败（{path.name}，{len(text)} 字），回退正则匹配")
+            continue
+        cache.put(text, collected, model=model, roles_sig=sig)
+        minor.update(x for x in collected if x.startswith("其他"))
+        done += 1
+        quotes += len(collected)
+        output_formatter.info(
+            f"超长章节 {path.name}（{len(text)} 字）切成 {len(chunks)} 块完成标注"
+        )
 
     output_formatter.info(
         f"AI 标注完成：新标注 {done} 章 / 缓存命中 {hit} 章 / 失败 {failed} 章，"
@@ -646,14 +723,19 @@ def _validate_convert(
         config.tts.concurrency = options.concurrency
     if options.rate is not None:
         config.tts.rate = _normalize_rate(options.rate)
-    if getattr(options, "annotate", False):
+    # `--annotate-*` 只在显式给了 `--annotate` 时生效是错的：配置文件里已开
+    # annotate 的用户想临时换 key/模型，会被静默忽略（还按旧 key 计费）。
+    # 现在只要给了任一 annotate 覆盖参数，就一并应用到配置。
+    annotate_overrides = {
+        "model": getattr(options, "annotate_model", None),
+        "base_url": getattr(options, "annotate_base_url", None),
+        "api_key": getattr(options, "annotate_api_key", None),
+    }
+    if getattr(options, "annotate", False) or any(annotate_overrides.values()):
         config.tts.annotate.enabled = True
-        if getattr(options, "annotate_model", None):
-            config.tts.annotate.model = options.annotate_model
-        if getattr(options, "annotate_base_url", None):
-            config.tts.annotate.base_url = options.annotate_base_url
-        if getattr(options, "annotate_api_key", None):
-            config.tts.annotate.api_key = options.annotate_api_key
+        for field, value in annotate_overrides.items():
+            if value:
+                setattr(config.tts.annotate, field, value)
     if getattr(options, "strip_attribution", False):
         config.tts.strip_attribution.enabled = True
     if getattr(options, "keep_segment_cache", False):

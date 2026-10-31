@@ -97,11 +97,41 @@ class AnnotationCache:
     def __init__(self, directory: Path | str) -> None:
         self.directory = Path(directory)
 
-    def path_for(self, text: str) -> Path:
-        return self.directory / f"{text_fingerprint(text)}.json"
+    def path_for(self, text: str, roles_sig: str | None = None) -> Path:
+        """缓存文件路径：``<sha1(正文)>[.<角色表指纹>].json``。
+
+        文件名带指纹是为了让**不同 cast 各存一份**：只用正文 sha1 时，同一本书
+        配两套 cast（比如「旁白=云希」和「旁白=晓晓」）会互相覆盖，两个配置
+        交替跑就每次都重标（各付一次 LLM 费用）。
+        无指纹时退化为旧命名，保证历史缓存继续命中。
+        """
+        stem = text_fingerprint(text)
+        if roles_sig:
+            return self.directory / f"{stem}.{roles_sig}.json"
+        return self.directory / f"{stem}.json"
+
+    def _candidates(self, text: str, roles_sig: str | None) -> list[Path]:
+        """按优先级给出候选缓存文件（指定指纹 → 任意指纹 → 旧命名）。"""
+        stem = text_fingerprint(text)
+        if roles_sig:
+            paths = [self.directory / f"{stem}.{roles_sig}.json"]
+        else:
+            # 未给指纹（旧调用方 / 只想知道「有没有标过」）：任意 cast 的副本都可用，
+            # 正文相同则说话人序列相同，取哪个都不影响正确性。
+            paths = sorted(self.directory.glob(f"{stem}.*.json")) if self.directory.exists() else []
+        legacy = self.directory / f"{stem}.json"
+        if legacy not in paths:
+            paths.append(legacy)
+        return paths
 
     def get(self, text: str, roles_sig: str | None = None) -> list[str] | None:
-        path = self.path_for(text)
+        for path in self._candidates(text, roles_sig):
+            speakers = self._load(path, text, roles_sig)
+            if speakers is not None:
+                return speakers
+        return None
+
+    def _load(self, path: Path, text: str, roles_sig: str | None) -> list[str] | None:
         if not path.exists():
             return None
         try:
@@ -129,7 +159,7 @@ class AnnotationCache:
         self, text: str, speakers: list[str], *, model: str, roles_sig: str | None = None
     ) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
-        path = self.path_for(text)
+        path = self.path_for(text, roles_sig)
         payload = {
             "model": model,
             "roles": roles_sig,

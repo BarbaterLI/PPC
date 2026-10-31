@@ -49,6 +49,41 @@ class TTSTask:
     no_audio_retries: int = 0
 
 
+#: 命中这些片段说明「再试也不会成功」：额度/余额用尽、鉴权失败、模型或参数非法。
+#: 刻意不匹配裸的 ``401``/``402``——错误文本里出现数字不等于状态码，
+#: 误判成「永久失败」比多试两次代价更大。
+_FATAL_ERROR_MARKERS = (
+    "insufficient_quota",
+    "quota exceeded",
+    "exceeded your current quota",
+    "余额不足",
+    "额度不足",
+    "额度已用尽",
+    "invalid api key",
+    "incorrect api key",
+    "unauthorized",
+    "model not found",
+    "does not exist",
+)
+
+
+def _fatal_error_from_message(message: str | None) -> BaseException | None:
+    """把引擎的失败字符串映射为不可重试异常（无法判定时返回 None）。
+
+    为什么需要：引擎把 ``QuotaError`` / ``PermanentError`` 统一压成
+    ``result.error`` 字符串，executor 拿不到异常对象。若不看内容，额度用尽后
+    每个任务仍会重试 3 次（20 章 × 4 次 = 80 次无效请求）。
+    """
+    if not message:
+        return None
+    low = message.lower()
+    if any(marker in low for marker in _FATAL_ERROR_MARKERS):
+        from src.core.exceptions import PermanentError
+
+        return PermanentError(message)
+    return None
+
+
 def _is_no_audio_error(result: ExecutionResult) -> bool:
     return bool(
         result.error_code == ErrorCodes.TTS_NO_AUDIO_RECEIVED.value
@@ -743,6 +778,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                     last_error,
                     progress_handler,
                     delay_override=self._breaker_recovery_delay(),
+                    error=e,
                 ):
                     continue
                 await self._handle_task_failure(task, last_error, progress_handler, attempt)
@@ -769,6 +805,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                 result.error or "未知错误",
                 progress_handler,
                 delay_override=self._breaker_recovery_delay(),
+                error=_fatal_error_from_message(result.error),
             ):
                 continue
             await self._handle_task_failure(
@@ -802,13 +839,21 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         error_msg: str,
         progress_handler: Any | None,
         delay_override: float = 0.0,
+        error: BaseException | None = None,
     ) -> bool:
         """准备一次重试（日志/回调/计数/退避睡眠）。返回是否继续重试。
 
         ``delay_override > 0`` 时用其覆盖策略计算的退避时长（用于熔断冷却期，
         让下一次尝试落在 half-open 探活窗口，而非在冷却期内空转）。
+
+        ``error`` 传入原始异常时按**错误性质**判断：配额用尽（QuotaError）与
+        永久错误（PermanentError，如模型不存在 / 参数非法）不重试——重试只会
+        把额度和时间烧在必然失败的请求上。
         """
         if attempt >= max_retries:
+            return False
+        if error is not None and not retry_policy.should_retry(attempt, error):
+            logger.warning("%s，属不可重试错误，跳过剩余重试：%s", label, error_msg)
             return False
 
         delay = retry_policy.get_delay(attempt)

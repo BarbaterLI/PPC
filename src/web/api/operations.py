@@ -12,7 +12,7 @@ from flask import Blueprint, request
 
 from src.web.api.schema import error_response, success_response
 from src.web.async_utils import run_async
-from src.web.validation import validate_path
+from src.web.validation import validate_fs_access
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def browse_directory():
         from pathlib import Path
 
         raw = request.args.get("path") or str(Path.home())
-        if not validate_path(raw):
+        if not validate_fs_access(raw):
             return error_response("Invalid path: path traversal detected", code="BAD_REQUEST", status_code=400)
 
         p = Path(raw).expanduser()
@@ -80,7 +80,7 @@ def split_text():
         if not input_file:
             return error_response("input_path is required", code="BAD_REQUEST", status_code=400)
 
-        if not validate_path(input_file):
+        if not validate_fs_access(input_file):
             return error_response("Invalid input_path: path traversal detected", code="BAD_REQUEST", status_code=400)
 
         input_path = Path(input_file)
@@ -89,7 +89,7 @@ def split_text():
 
         output_dir = data.get("output_dir")
         if output_dir:
-            if not validate_path(output_dir):
+            if not validate_fs_access(output_dir):
                 return error_response(
                     "Invalid output_dir: path traversal detected", code="BAD_REQUEST", status_code=400
                 )

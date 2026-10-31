@@ -204,7 +204,20 @@ def strip_attribution(
     return out, touched
 
 
-_MARKER_RE = re.compile(r"\[voice:([^\]\s]+)\]")
+#: 名字里允许空格（模型会输出「其他:年轻 警察」这类带空格的称呼）；
+#: 只需保证不含 ``]``，否则标记会提前闭合、strip 后与原文不再相等。
+_MARKER_RE = re.compile(r"\[voice:([^\]]*)\]")
+
+
+def _marker_safe_name(raw: str) -> str:
+    """把角色名规整成可以安全放进 ``[voice:…]`` 的形式。
+
+    触发条件：模型输出 ``警察]A``（含方括号）或角色名里带换行。
+    后果（旧实现）：``]`` 会提前闭合标记，``strip_markers`` 后与原文不等；
+    换行会把单行标记拆成两行，人工校对时看不出归属。
+    """
+    name = str(raw).replace("]", "】").replace("\n", " ").replace("\r", " ").strip()
+    return name or "旁白"
 
 
 def render_markers(text: str, speakers: list[str | None], *, policy: str = "all") -> str:
@@ -221,7 +234,7 @@ def render_markers(text: str, speakers: list[str | None], *, policy: str = "all"
     cursor = 0
     prev: str | None = None
     for (start, end), raw in zip(spans, speakers):
-        name = (raw or "旁白").strip() or "旁白"
+        name = _marker_safe_name(raw or "旁白")
         out.append(text[cursor:start])
         if policy == "all" or name != prev:
             out.append(f"[voice:{name}]")

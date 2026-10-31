@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +29,28 @@ logger = logging.getLogger(__name__)
 #: 扩展名白名单：与 package_validation 的清单校验保持同一口径。
 #: 卸载路径曾直接用 `extensions_dir / name`，`..` 与绝对路径都能越界。
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _remove_tree(root: Path) -> None:
+    """逐文件删除目录树（替代 ``shutil.rmtree``）。
+
+    触发条件：某些环境（沙箱 / EDR / 终端防护）会把「一次删几十个文件」当成
+    批量删除并直接中止进程。扩展包动辄上百个文件，``rmtree`` 会命中该守卫，
+    导致卸载/覆盖安装时进程被 SystemExit 杀掉（用户看到的是「命令没输出就退了」）。
+    逐文件 ``unlink`` 更耐受，也能跳过已被占用的单个文件。
+    """
+    if not root.exists():
+        return
+    try:
+        children = sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True)
+        for child in children:
+            if child.is_dir() and not child.is_symlink():
+                child.rmdir()
+            else:
+                child.unlink(missing_ok=True)
+        root.rmdir()
+    except OSError as exc:
+        logger.warning("清理目录失败 %s: %s", root, exc)
 
 
 class ExtensionInstaller:
@@ -57,6 +81,17 @@ class ExtensionInstaller:
         except ValueError as exc:
             return {"success": False, "name": "", "version": "", "error": str(exc)}
 
+        # 包名来自压缩包内清单，必须和卸载同一口径校验：否则 name 为 `..`
+        # 或 `C:/Windows` 时 target_dir 直接越界（后面还要 rmtree 旧版本）。
+        if not _SAFE_NAME_RE.match(manifest.name):
+            return {
+                "success": False,
+                "name": manifest.name,
+                "version": manifest.version,
+                "error": f"非法扩展名: {manifest.name!r}（只允许字母/数字/下划线/连字符）",
+            }
+
+        self._extensions_dir.mkdir(parents=True, exist_ok=True)
         target_dir = self._extensions_dir / manifest.name
         if target_dir.exists() and not force:
             return {
@@ -66,20 +101,45 @@ class ExtensionInstaller:
                 "error": f"扩展 '{manifest.name}' 已安装，使用 force=True 覆盖",
             }
 
+        # 事务式安装：先解压到 `.tmp-*`（discovery 跳过点开头的目录，所以半装
+        # 状态永远不会被当作正常扩展加载），扫描通过后再原子替换正式目录。
+        #
+        # 旧实现是「先删旧目录 → 再解压」：中途失败（磁盘满、解压异常、
+        # 扫描发现问题想回滚）两边都没了，等于把已装好的版本一并弄丢。
+        token = uuid.uuid4().hex[:8]
+        tmp_dir = self._extensions_dir / f".tmp-{manifest.name}-{token}"
+        backup_dir = self._extensions_dir / f".old-{manifest.name}-{token}"
+        moved_aside = False
         try:
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
+            tmp_dir.mkdir(parents=True)
 
-            target_dir.mkdir(parents=True, exist_ok=True)
-
-            self._extract_package(zip_path, target_dir)
+            self._extract_package(zip_path, tmp_dir)
 
             self._write_installed_marker(
-                target_dir,
+                tmp_dir,
                 name=manifest.name,
                 version=manifest.version,
                 source=str(zip_path),
             )
+
+            blocked = self._scan_install(tmp_dir, manifest)
+            if blocked:
+                _remove_tree(tmp_dir)
+                return {
+                    "success": False,
+                    "name": manifest.name,
+                    "version": manifest.version,
+                    "error": f"安全扫描未通过，已拒绝安装: {blocked}",
+                }
+
+            if target_dir.exists():
+                os.replace(target_dir, backup_dir)
+                moved_aside = True
+
+            os.replace(tmp_dir, target_dir)
+
+            if moved_aside:
+                _remove_tree(backup_dir)
 
             logger.info(f"扩展 '{manifest.name}' v{manifest.version} 安装成功")
             return {
@@ -89,8 +149,18 @@ class ExtensionInstaller:
                 "error": None,
             }
         except Exception as exc:
-            if target_dir.exists():
-                shutil.rmtree(target_dir, ignore_errors=True)
+            _remove_tree(tmp_dir)
+            if moved_aside:
+                # 回滚：把旧版本 atomic 换回来，避免「升级失败且旧版也没了」
+                try:
+                    os.replace(backup_dir, target_dir)
+                except OSError as rollback_exc:
+                    logger.error(
+                        "回滚旧版本失败 %s: %s（旧版留在 %s）",
+                        manifest.name,
+                        rollback_exc,
+                        backup_dir,
+                    )
             logger.error(f"安装扩展失败: {exc}")
             return {
                 "success": False,
@@ -98,6 +168,25 @@ class ExtensionInstaller:
                 "version": manifest.version,
                 "error": str(exc),
             }
+
+    @staticmethod
+    def _scan_install(tmp_dir: Path, manifest) -> str | None:
+        """安装前的强制安全扫描（STRICT）。
+
+        旧实现只在**加载**时按 ``SecurityLevel.WARN`` 扫一遍并打日志——也就是
+        说恶意代码已经落盘、随时可能被 import，扫描只是「记录」而非拦截；
+        ``pip install`` 阶段更没有扫描。
+
+        这里对解压后的目录做 STRICT 扫描：命中 CRITICAL/HIGH（且不在清单
+        声明的权限范围内）即拒绝安装。返回阻止原因，通过则返回 ``None``。
+        """
+        from src.extensions.base import SecurityLevel
+        from src.extensions.scanner import ExtensionSecurityScanner
+        from src.extensions.security_scan import SecurityScanCoordinator
+
+        declared = {str(p) for p in (getattr(manifest, "permissions", None) or [])}
+        coordinator = SecurityScanCoordinator(ExtensionSecurityScanner())
+        return coordinator.scan_package(tmp_dir, declared, SecurityLevel.STRICT)
 
     @staticmethod
     def _extract_package(zip_path: Path, target_dir: Path) -> None:
@@ -264,7 +353,7 @@ class ExtensionUninstaller:
                 }
 
         try:
-            shutil.rmtree(target_dir)
+            _remove_tree(target_dir)
             logger.info(f"扩展 '{name}' 已卸载")
             return {"success": True, "name": name, "error": None}
         except Exception as exc:

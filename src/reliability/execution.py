@@ -74,8 +74,24 @@ class RetryPolicy(RetryConfig):
         return _calculate_delay(self, attempt)
 
     def should_retry(self, attempt: int, error: Exception) -> bool:
+        """是否应重试这次失败。
+
+        除次数上限外还要看**错误性质**：配额用尽（``QuotaError``）和永久错误
+        （``PermanentError``，如参数非法、模型不存在）重试多少次都不会成功，
+        只会把额度/时间烧在必然失败的请求上。
+        """
         if attempt >= self.max_retries:
             return False
+        if any(isinstance(error, exc_type) for exc_type in self.non_retryable_exceptions):
+            return False
+        # 延迟导入：reliability 是底层包，顶层 import core.exceptions 会形成
+        # 循环（core.__init__ 反向导出 reliability 的错误码常量）。
+        from src.core.exceptions import PermanentError, QuotaError
+
+        if isinstance(error, (PermanentError, QuotaError)):
+            return False
+        if self.retry_condition is not None:
+            return bool(self.retry_condition(error))
         return any(isinstance(error, exc_type) for exc_type in self.retryable_exceptions)
 
     def to_dict(self) -> dict:

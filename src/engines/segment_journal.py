@@ -148,11 +148,11 @@ class SegmentJournal:
             # 归并成功后立即压实：下次启动只读一份快照 + 空日志。
             # 若在「写完快照」与「删日志」之间崩溃，日志内容与快照一致，
             # 重放是幂等的，不会产生错误条目。
-            journal._flush()
-            try:
-                journal._log_path.unlink()
-            except OSError:
-                logger.debug("journal 日志清理失败（不影响正确性）: %s", journal._log_path)
+            if journal._flush():
+                try:
+                    journal._log_path.unlink()
+                except OSError:
+                    logger.debug("journal 日志清理失败（不影响正确性）: %s", journal._log_path)
         return journal
 
     def _merge_log(self) -> bool:
@@ -298,8 +298,13 @@ class SegmentJournal:
             logger.debug("journal 日志追加失败，退回整份快照: %s", exc)
             return False
 
-    def _flush(self) -> None:
-        """原子写入 ``journal.json`` 快照（tmp + ``os.replace``）。"""
+    def _flush(self) -> bool:
+        """原子写入 ``journal.json`` 快照（tmp + ``os.replace``）。
+
+        返回是否写成功。调用方用返回值决定能否删除增量日志——写失败还删日志，
+        等于把这一批条目彻底抹掉（下次启动看到「无 journal」→ 走解码探针 →
+        复用可能已损坏的旧段文件）。
+        """
         try:
             data = {
                 "version": JOURNAL_VERSION,
@@ -314,8 +319,10 @@ class SegmentJournal:
             tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             os.replace(str(tmp), str(self._path))
             self._snapshot_writes += 1
+            return True
         except Exception as exc:  # noqa: BLE001
-            logger.debug("journal 刷新失败（不影响当前运行）: %s", exc)
+            logger.warning("journal 快照写入失败（保留增量日志以避免丢条目）: %s", exc)
+            return False
 
 
 __all__ = ["JOURNAL_LOG_NAME", "JOURNAL_NAME", "JOURNAL_VERSION", "JournalEntry", "SegmentJournal"]

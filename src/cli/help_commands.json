@@ -20,7 +20,7 @@
     "options": [
       {
         "name": "--host",
-        "desc": "监听地址（默认 0.0.0.0）"
+        "desc": "监听地址（默认 127.0.0.1；监听非回环地址必须同时给 --api-token）"
       },
       {
         "name": "--port, -p",
@@ -32,7 +32,7 @@
       },
       {
         "name": "--api-token",
-        "desc": "API Bearer Token（未设置且绑定非回环地址时输出安全警告）"
+        "desc": "API Bearer Token（绑定非回环地址时必填，缺失会拒绝启动）"
       }
     ],
     "see_also": []
@@ -599,7 +599,7 @@
       },
       {
         "desc": "指定语音与并发",
-        "cmd": "ppc dist convert ./txt ./out -V zh-CN-YunxiNeural -c 16"
+        "cmd": "ppc dist convert ./txt ./out --voice zh-CN-YunxiNeural -c 16"
       }
     ],
     "options": [

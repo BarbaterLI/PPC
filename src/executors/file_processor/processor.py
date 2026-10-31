@@ -30,7 +30,7 @@ class FileProcessor:
 
     @memory_efficient
     def detect_encoding(self, file_path: Path) -> str | None:
-        encodings = self.config.get("split", {}).get("encoding_fallback", ["utf-8", "gbk", "gb2312", "utf-16"])
+        encodings = self.config.get("split", {}).get("encoding_fallback", ["utf-8", "gb18030", "gbk", "gb2312", "utf-16", "utf-16-le", "utf-16-be"])
 
         detect_buffer = self.config.get("split", {}).get("encoding_detect_buffer", 1024)
         return detect_encoding(file_path, encodings=encodings, detect_buffer=detect_buffer)

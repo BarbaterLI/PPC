@@ -212,7 +212,7 @@ def webui_cmd(
     api_token: str | None = typer.Option(
         None,
         "--api-token",
-        help="API Bearer Token（未设置且绑定非回环地址时输出安全警告）",
+        help="API Bearer Token（绑定非回环地址时必填，否则拒绝启动）",
     ),
 ):
     """启动 WebUI（Flask + 前端静态资源）

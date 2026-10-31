@@ -221,9 +221,12 @@ class NodeClient:
                 )
             except TypeError:
                 self._connector = aiohttp.TCPConnector(limit=self._config.connector_limit)
+            # 显式 headers 优先，其次补上 token（开启鉴权后节点请求需要它）
+            from src.web.auth import auth_headers
+
             self._session = aiohttp.ClientSession(
                 connector=self._connector,
-                headers={**self._config.headers},
+                headers={**auth_headers(), **self._config.headers},
             )
         return self._session
 

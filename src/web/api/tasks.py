@@ -11,7 +11,7 @@ from flask import Blueprint, Response, request, send_file
 
 from src.web.api.schema import error_response, success_response
 from src.web.task_queue import TaskManager, TaskStatus
-from src.web.validation import validate_path
+from src.web.validation import validate_fs_access, validate_path
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,9 @@ def create_tasks_bp(task_manager: TaskManager) -> Blueprint:
             if not input_dir or not output_dir:
                 return error_response("input_dir and output_dir are required", code="BAD_REQUEST", status_code=400)
 
-            if not validate_path(input_dir):
+            if not validate_fs_access(input_dir):
                 return error_response("Invalid input_dir: path traversal detected", code="BAD_REQUEST", status_code=400)
-            if not validate_path(output_dir):
+            if not validate_fs_access(output_dir):
                 return error_response("Invalid output_dir: path traversal detected", code="BAD_REQUEST", status_code=400)
 
             input_path = Path(input_dir)

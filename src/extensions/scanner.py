@@ -292,7 +292,20 @@ class ExtensionSecurityScanner:
             tree = ast.parse(source, filename=str(result.file_path))
             self._scan_ast(tree, result, file_display)
         except SyntaxError as e:
+            # 解析不了 = 无法静态验证。旧实现只写一行 debug 就放行，等于
+            # 「把代码写成扫描器解析不了的样子」即可绕过全部 AST 规则；
+            # 而不会被执行的语法错误文件又不可能造成危害，所以按 HIGH 上报、
+            # 由 STRICT 策略拒绝（安装阶段即 STRICT）。
             logger.debug(f"AST 解析失败 {result.file_path}: {e}")
+            result.issues.append(
+                SecurityIssue(
+                    severity=SecuritySeverity.HIGH,
+                    rule_id="AST_PARSE_FAILED",
+                    message=f"无法静态解析（{e.msg}），无法验证其行为",
+                    location=f"{file_display}:{e.lineno or 0}",
+                    suggestion="请确认该文件是合法 Python 源码；无法解析的代码不应随扩展分发",
+                )
+            )
 
     def _scan_regex_patterns(self, source: str, result: SecurityScanResult, file_display: str) -> None:
         """使用正则表达式扫描源代码。

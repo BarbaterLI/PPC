@@ -476,8 +476,13 @@ class MasterUnit(ProcessingUnit):
         except ImportError as e:  # pragma: no cover - hard dep
             raise RuntimeError("aiohttp is required for MasterUnit") from e
 
+        # 主控→worker 的请求同样要带 token：鉴权开启后 worker 侧的
+        # /api/* 全部要求 Bearer，缺头会退化成 401 并触发重试耗尽。
+        from src.web.auth import auth_headers
+
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.request_timeout),
+            headers=auth_headers(),
         )
         if self.local_fallback:
             self._local_worker = WorkerUnit(
