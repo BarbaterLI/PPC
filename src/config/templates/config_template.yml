@@ -175,6 +175,9 @@ tts:
     max_input_chars: 300000
     # 单批输出字数上限（按引号数估算）/ Max output chars per request (estimated)
     max_output_chars: 60000
+    # 单次运行的最大调用数（0=不限；超出后剩余章节回退正则匹配）
+    # Max annotation calls per run (0 = unlimited; remaining chapters fall back to regex)
+    max_calls: 0
     # 请求超时（秒）/ Request timeout (seconds)
     timeout: 900.0
     # 标注缓存目录（空=用户缓存目录下 ppc/annotate；按章节指纹缓存，重跑零成本）

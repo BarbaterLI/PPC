@@ -300,41 +300,88 @@ def _apply_annotate(
     if current:
         batches.append(current)
 
+    from collections import Counter
+
     done = quotes = failed = 0
+    calls = 0
+    minor: Counter[str] = Counter()
+    budget = int(getattr(ann, "max_calls", 0) or 0)
+
+    def _has_budget(n: int) -> bool:
+        """调用预算（0=不限）。单次 annotate 内部最多重试 2 次，此处按逻辑调用计。"""
+        return not budget or calls + n <= budget
+
+    def _store(batch: list[tuple[Path, str, int]], speakers: list[str], model: str) -> bool:
+        """把整批标注按章拆回并落缓存；数量不符则整批作废。"""
+        cursor = 0
+        staged: list[tuple[str, list[str]]] = []
+        for _path, text, n in batch:
+            chunk = speakers[cursor : cursor + n]
+            if len(chunk) != n:
+                return False
+            staged.append((text, chunk))
+            cursor += n
+        for text, chunk in staged:
+            cache.put(text, chunk, model=model, roles_sig=sig)
+            minor.update(s for s in chunk if s.startswith("其他"))
+        return True
+
     for batch in batches:
-        joined = "\n".join(item[1] for item in batch)
-        try:
-            result = annotator.annotate(joined, roles)
-        except AnnotationError as e:
+        if not _has_budget(1):
             failed += len(batch)
-            output_formatter.warning(f"标注失败（{len(batch)} 章），这些章回退正则匹配: {e}")
-            continue
-        except Exception as e:  # noqa: BLE001
-            failed += len(batch)
-            output_formatter.warning(f"标注异常（{len(batch)} 章），这些章回退正则匹配: {e}")
+            output_formatter.warning(f"标注调用已达上限 max_calls={budget}，剩余 {len(batch)} 章回退正则匹配")
             continue
 
-        # 按每章引号数拆回（引号不跨章，顺序与合并顺序一致）
-        cursor = 0
-        ok = True
-        for path, text, n in batch:
-            chunk = result.speakers[cursor : cursor + n]
-            if len(chunk) != n:
-                ok = False
-                break
-            cache.put(text, chunk, model=result.model, roles_sig=sig)
-            cursor += n
-        if ok:
-            done += len(batch)
-            quotes += len(result.speakers)
-        else:
-            failed += len(batch)
-            output_formatter.warning("标注结果与章节引号数不符，本批回退正则匹配")
+        joined = "\n".join(item[1] for item in batch)
+        calls += 1
+        try:
+            result = annotator.annotate(joined, roles)
+            ok = _store(batch, result.speakers, result.model)
+            if ok:
+                done += len(batch)
+                quotes += len(result.speakers)
+                continue
+            reason = "标注结果与章节引号数不符"
+        except AnnotationError as e:
+            reason = str(e)
+        except Exception as e:  # noqa: BLE001
+            reason = f"{type(e).__name__}: {e}"
+
+        # 整批不合格 → 拆成单章重试，避免一章拖累整批（每章 1 次调用）
+        if len(batch) > 1 and _has_budget(len(batch)):
+            output_formatter.warning(
+                f"整批标注失败（{len(batch)} 章）：{reason}；拆成单章重试"
+            )
+            for item in batch:
+                if not _has_budget(1):
+                    failed += 1
+                    continue
+                calls += 1
+                try:
+                    one = annotator.annotate(item[1], roles)
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    continue
+                if _store([item], one.speakers, one.model):
+                    done += 1
+                    quotes += len(one.speakers)
+                else:
+                    failed += 1
+            continue
+
+        failed += len(batch)
+        output_formatter.warning(f"标注失败（{len(batch)} 章），这些章回退正则匹配: {reason}")
 
     output_formatter.info(
         f"AI 标注完成：新标注 {done} 章 / 缓存命中 {hit} 章 / 失败 {failed} 章，"
-        f"共 {quotes} 个引号（{len(batches)} 次 LLM 调用）"
+        f"共 {quotes} 个引号（{len(batches)} 批 / {calls} 次调用）"
     )
+    if minor:
+        top = "、".join(f"{name}({cnt})" for name, cnt in minor.most_common(8))
+        output_formatter.info(
+            f"未入表角色 {len(minor)} 个，已用 default 音色：{top}"
+            f"{' …' if len(minor) > 8 else ''}；建议补进 cast.yml"
+        )
     if done:
         output_formatter.info(f"标注缓存目录: {directory}")
 
@@ -378,7 +425,10 @@ def _write_annotated_previews(
         pattern = "**/*.txt" if options.recursive else "*.txt"
         files = sorted(options.input.glob(pattern))
 
+    from collections import Counter
+
     written = 0
+    minor: Counter[str] = Counter()
     for path in files:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -389,9 +439,16 @@ def _write_annotated_previews(
             continue
         target = output_dir / f"{path.stem}.annotated.txt"
         target.write_text(render_markers(text, speakers, policy=policy), encoding="utf-8")
+        minor.update(s for s in speakers if s.startswith("其他"))
         written += 1
 
     output_formatter.info(f"已输出 {written} 份标注预览（marker_policy={policy}），未合成音频")
+    if minor:
+        top = "、".join(f"{name}({cnt})" for name, cnt in minor.most_common(8))
+        output_formatter.info(
+            f"未入表角色 {len(minor)} 个，已用 default 音色：{top}"
+            f"{' …' if len(minor) > 8 else ''}；建议补进 cast.yml"
+        )
     return written
 
 

@@ -99,6 +99,12 @@ class AnnotateConfig(BaseModel):
     max_output_tokens: int = Field(default=65536, ge=1024, le=384000, description="单次输出上限（推理模型需留足）")
     max_input_chars: int = Field(default=300000, ge=1000, le=1000000, description="单批输入字数上限（超出自动切批）")
     max_output_chars: int = Field(default=60000, ge=1000, le=400000, description="单批输出字数上限（按引号数估算，超出切批）")
+    max_calls: int = Field(
+        default=0,
+        ge=0,
+        le=10000,
+        description="单次运行的最大标注调用数（0=不限）；超出后剩余章节回退正则匹配",
+    )
     timeout: float = Field(default=900.0, ge=5.0, le=1800.0, description="单次请求超时（秒）")
     cache_dir: str = Field(default="", description="标注缓存目录（空=用户缓存目录下的 annotate）/ Cache directory")
     marker_policy: str = Field(default="all", pattern="^(all|changes)$", description="标记密度：all=每个引号 / changes=换人处")
