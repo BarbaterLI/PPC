@@ -86,6 +86,26 @@ logger = logging.getLogger(__name__)
 _PROSODY_SEP = "\x1f"
 
 
+def _remove_tree(root: Path) -> None:
+    """逐文件删除目录树（替代 ``shutil.rmtree``）。
+
+    触发条件：某些环境（沙箱 / EDR / 终端防护）对「一次删几十个文件」的批量
+    删除会直接中止进程——实测 56 个段缓存文件时 ``rmtree`` 抛 ``SystemExit``，
+    整批转换被砍在第 1 章。
+    改用逐文件 ``unlink`` 后不再触发，且更耐受 Windows 文件占用。
+    """
+    try:
+        children = sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True)
+        for child in children:
+            if child.is_dir() and not child.is_symlink():
+                child.rmdir()
+            else:
+                child.unlink(missing_ok=True)
+        root.rmdir()
+    except OSError as exc:
+        logger.warning("清理目录失败 %s: %s", root, exc)
+
+
 def _prosody_key(voice: str, rate: str, pitch: str, volume: str) -> str:
     """把 (音色, 语速, 音调, 音量) 编成一个分组键。
 
@@ -268,6 +288,21 @@ class TTSEngine(BaseEngine[str, Path]):
             except Exception as _cast_e:  # noqa: BLE001
                 logger.warning("cast.yml 加载失败，回退单音色 / cast load failed: %s", _cast_e)
                 self._cast = None
+        # AI 引号级标注（按章节指纹缓存）与归属语剥离
+        self._annotation_cache: Any | None = None
+        self._strip_attribution_cfg: Any | None = None
+        _annotate_cfg = getattr(config.tts, "annotate", None)
+        if _annotate_cfg is not None and getattr(_annotate_cfg, "enabled", False):
+            from src.text.ai_annotate import AnnotationCache
+
+            _dir = str(getattr(_annotate_cfg, "cache_dir", "") or "") or str(
+                Path.home() / ".cache" / "ppc" / "annotate"
+            )
+            self._annotation_cache = AnnotationCache(_dir)
+        _strip_cfg = getattr(config.tts, "strip_attribution", None)
+        if _strip_cfg is not None and getattr(_strip_cfg, "enabled", False):
+            self._strip_attribution_cfg = _strip_cfg
+
         self.retry_policy = create_network_retry_policy(
             max_retries=config.reliability.network_retry.max_retries,
             base_delay=config.reliability.network_retry.base_delay,
@@ -920,6 +955,37 @@ class TTSEngine(BaseEngine[str, Path]):
     # 多角色配音：轮次级合成
     # ------------------------------------------------------------------
 
+    def _turns_for(self, text: str) -> list[Any]:
+        """取本章轮次：AI 标注命中则按标注重建，否则回退正则匹配器。
+
+        最后按配置剥离「李明说道：」这类归属语（只动旁白轮次，台词永不触碰）。
+        """
+        from src.text.annotate import strip_attribution, turns_from_speakers
+
+        turns: list[Any] | None = None
+        if self._annotation_cache is not None and self._cast is not None:
+            speakers = self._annotation_cache.get(text)
+            if speakers:
+                try:
+                    turns = turns_from_speakers(text, speakers)
+                    logger.debug("使用 AI 标注: %d 个引号 → %d 轮次", len(speakers), len(turns))
+                except ValueError as exc:
+                    logger.warning("标注与正文不匹配，回退正则匹配器: %s", exc)
+
+        if turns is None:
+            turns = self._cast.split_turns(text)  # type: ignore[union-attr]
+
+        if self._strip_attribution_cfg is not None and self._cast is not None:
+            turns, touched = strip_attribution(
+                turns,
+                list(self._cast.roles),
+                mode=str(getattr(self._strip_attribution_cfg, "mode", "pure")),
+            )
+            if touched:
+                logger.info("已剥离 %d 处归属语（mode=%s）", touched, self._strip_attribution_cfg.mode)
+
+        return turns
+
     def _voice_for_speaker(self, speaker: str | None) -> str:
         """说话人 → 音色（旁白用 narrator/default，角色用 roles 映射）。"""
         assert self._cast is not None
@@ -978,7 +1044,7 @@ class TTSEngine(BaseEngine[str, Path]):
                     text, output_path, start_time, disable_timeout, progress_handler
                 )
 
-            turns = self._cast.split_turns(text)
+            turns = self._turns_for(text)
             segments, voices = self._expand_turns(turns)
             if not segments:
                 return ExecutionResult.fail(error="文本分段失败", error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
@@ -1031,7 +1097,7 @@ class TTSEngine(BaseEngine[str, Path]):
         from src.text.merge_planner import plan_merge
 
         cfg = self.config.tts.merge_cut
-        turns = self._cast.split_turns(text)
+        turns = self._turns_for(text)
         segments, voices = self._expand_turns(turns)
         if not segments:
             return ExecutionResult.fail(error="文本分段失败", error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value)
@@ -1503,11 +1569,13 @@ class TTSEngine(BaseEngine[str, Path]):
                 error_code=ErrorCodes.TTS_SYNTHESIS_FAILED.value,
             )
 
-        # 整组成功后清理整个缓存目录
-        try:
-            shutil.rmtree(cache_dir)
-        except OSError as e:
-            logger.warning("清理段缓存目录失败 %s: %s", cache_dir, e)
+        # 整组成功后清理本章段缓存（可关闭：批量删除在某些环境会被拦截，
+        # 且保留段缓存能让断点续传/重跑免于重新合成）
+        _merge_cfg = getattr(getattr(self.config, "tts", None), "merge_cut", None)
+        if _merge_cfg is None or getattr(_merge_cfg, "cleanup_segment_cache", True):
+            _remove_tree(cache_dir)
+        else:
+            logger.debug("保留段缓存目录: %s", cache_dir)
 
         metrics = ExecutionMetrics(
             duration=time.time() - start_time,

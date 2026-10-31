@@ -47,6 +47,10 @@ class MergeCutConfig(BaseModel):
         le=200000,
         description="单批 UTF-8 字节上限（传输层按 4096 字节切连接，超过只会多开连接）/ Max bytes per batch (transport splits at 4096)",
     )
+    cleanup_segment_cache: bool = Field(
+        default=True,
+        description="合并完成后删除本章段缓存（关闭后保留，便于断点续传/排查；某些环境批量删除会被拦截）",
+    )
     max_merge_pieces: int = Field(
         default=64,
         ge=2,
@@ -82,6 +86,29 @@ class LLMAssignConfig(BaseModel):
     )
     narrator: str = Field(default="", description="旁白音色（空=沿用现有配置）/ Narrator voice")
     default: str = Field(default="", description="兜底音色（空=沿用现有配置）/ Default fallback voice")
+
+
+class AnnotateConfig(BaseModel):
+    """用 LLM 标注「每个引号是谁说的」（引号级，比正则更准）。"""
+
+    enabled: bool = Field(default=False, description="启用 AI 引号级标注 / Enable LLM quote-level annotation")
+    base_url: str = Field(default="https://api.openai.com/v1", description="OpenAI 兼容端点 / OpenAI-compatible base URL")
+    api_key: str = Field(default="", description="API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）")
+    model: str = Field(default="gpt-4o-mini", description="模型名 / Model name")
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0, description="采样温度（建议 0）")
+    max_output_tokens: int = Field(default=65536, ge=1024, le=384000, description="单次输出上限（推理模型需留足）")
+    max_input_chars: int = Field(default=300000, ge=1000, le=1000000, description="单批输入字数上限（超出自动切批）")
+    max_output_chars: int = Field(default=60000, ge=1000, le=400000, description="单批输出字数上限（按引号数估算，超出切批）")
+    timeout: float = Field(default=900.0, ge=5.0, le=1800.0, description="单次请求超时（秒）")
+    cache_dir: str = Field(default="", description="标注缓存目录（空=用户缓存目录下的 annotate）/ Cache directory")
+    marker_policy: str = Field(default="all", pattern="^(all|changes)$", description="标记密度：all=每个引号 / changes=换人处")
+
+
+class StripAttributionConfig(BaseModel):
+    """剥掉「李明说道：」这类归属语，让旁白不再念它。"""
+
+    enabled: bool = Field(default=False, description="启用归属语剥离 / Strip attribution phrases")
+    mode: str = Field(default="pure", pattern="^(pure|verb)$", description="pure=整段纯归属才删 / verb=另删句尾言说动词")
 
 
 class AntiRiskControlConfig(BaseModel):
@@ -271,6 +298,14 @@ class TTSConfig(BaseModel):
     llm_assign: LLMAssignConfig = Field(
         default_factory=LLMAssignConfig,
         description="LLM 自动分配发声人 / LLM-based speaker assignment",
+    )
+    annotate: AnnotateConfig = Field(
+        default_factory=AnnotateConfig,
+        description="AI 引号级标注（每个引号是谁说的）/ LLM quote-level speaker annotation",
+    )
+    strip_attribution: StripAttributionConfig = Field(
+        default_factory=StripAttributionConfig,
+        description="剥离「李明说道：」这类归属语 / Strip attribution phrases",
     )
 
     @model_validator(mode="after")

@@ -117,6 +117,30 @@
         "desc": "音调偏移(如 +20Hz, -30Hz)；cast 中各角色的 pitch 是相对此值的偏移"
       },
       {
+        "name": "--keep-segment-cache",
+        "desc": "合并后保留本章段缓存（便于断点续传/排查；默认清理）"
+      },
+      {
+        "name": "--annotate",
+        "desc": "用 LLM 逐引号标注说话人（失败自动回退正则；结果按章节缓存）"
+      },
+      {
+        "name": "--annotate-model",
+        "desc": "标注用模型名（默认读配置 tts.annotate.model）"
+      },
+      {
+        "name": "--annotate-base-url",
+        "desc": "标注端点（OpenAI 兼容）"
+      },
+      {
+        "name": "--annotate-api-key",
+        "desc": "标注 API Key（默认读 PPC_LLM_API_KEY）"
+      },
+      {
+        "name": "--strip-attribution",
+        "desc": "剥掉「李明说道：」这类归属语，让旁白不再念它"
+      },
+      {
         "name": "--recursive, -R",
         "desc": "递归处理子目录,保持目录结构"
       },

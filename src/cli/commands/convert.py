@@ -36,6 +36,12 @@ class ConvertOptions:
     timeout_multiplier: float | None = None
     rate: str | None = None
     pitch: str | None = None
+    annotate: bool = False
+    annotate_model: str | None = None
+    annotate_base_url: str | None = None
+    annotate_api_key: str | None = None
+    strip_attribution: bool = False
+    keep_segment_cache: bool = False
     recursive: bool = False
     ramp_up: float | None = None
     strict: bool = False
@@ -202,6 +208,130 @@ def _apply_llm_assign(
     )
 
 
+def _apply_annotate(
+    options: "ConvertOptions",
+    output_dir: Path,
+    config: "PPCConfig",
+    output_formatter: "OutputFormatter",
+) -> None:
+    """转换前用 LLM 逐引号标注说话人，写入章节级缓存（引擎据此重建轮次）。
+
+    **按批合并请求**：本项目按请求次数计费，逐章一次调用会烧掉大量额度。
+    因此把多章拼成一次请求（单批上限 ``annotate.max_input_chars``，默认
+    30 万字），标注完再按「每章引号数」拆回各章。合并文本以换行分隔，不会
+    让引号跨章（成对匹配；跨章说明原文引号未闭合，该批会被剔除回退）。
+
+    失败只警告：引擎查不到缓存就回退正则匹配器，转换不受影响。
+    """
+    if not getattr(config.tts.annotate, "enabled", False):
+        return
+
+    from ...text.ai_annotate import AIAnnotator, AnnotationCache, AnnotationError
+    from ...text.annotate import quote_spans
+    from ...text.cast import Cast
+
+    cast_path = str(getattr(config.tts, "cast_file", "") or "")
+    if not cast_path:
+        output_formatter.warning("AI 标注跳过：未指定 cast 文件（无法确定候选角色）")
+        return
+    try:
+        cast = Cast.load(cast_path)
+    except Exception as e:  # noqa: BLE001
+        output_formatter.warning(f"AI 标注跳过：cast 加载失败 {e}")
+        return
+
+    ann = config.tts.annotate
+    directory = str(getattr(ann, "cache_dir", "") or "") or str(
+        Path.home() / ".cache" / "ppc" / "annotate"
+    )
+    cache = AnnotationCache(directory)
+    annotator = AIAnnotator(ann)
+    roles = cast.role_table()
+
+    if options.one:
+        files = [options.input]
+    else:
+        pattern = "**/*.txt" if options.recursive else "*.txt"
+        files = sorted(options.input.glob(pattern))
+
+    pending: list[tuple[Path, str, int]] = []   # 待标注：路径 / 正文 / 引号数
+    hit = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if cache.get(text) is not None:
+            hit += 1
+            continue
+        n = len(quote_spans(text))
+        if n == 0:
+            hit += 1
+            continue
+        pending.append((path, text, n))
+
+    if not pending:
+        output_formatter.info(f"AI 标注：全部命中缓存（{hit} 章），跳过 LLM 调用")
+        return
+
+    # 按单批输入上限切批（默认 30 万字 ≈ 1M token 上下文的安全区）
+    max_batch_chars = max(1000, int(getattr(ann, "max_input_chars", 300_000)))
+    max_out_chars = max(1000, int(getattr(ann, "max_output_chars", 60_000)))
+    batches: list[list[tuple[Path, str, int]]] = []
+    current: list[tuple[Path, str, int]] = []
+    size = 0
+    for item in pending:
+        # 输出上限按「每个引号约 12 字符游程」粗估，防止一次吐太多被截断
+        if current and (
+            size + len(item[1]) > max_batch_chars
+            or (sum(x[2] for x in current) + item[2]) * 12 > max_out_chars
+        ):
+            batches.append(current)
+            current, size = [], 0
+        current.append(item)
+        size += len(item[1]) + 1
+    if current:
+        batches.append(current)
+
+    done = quotes = failed = 0
+    for batch in batches:
+        joined = "\n".join(item[1] for item in batch)
+        try:
+            result = annotator.annotate(joined, roles)
+        except AnnotationError as e:
+            failed += len(batch)
+            output_formatter.warning(f"标注失败（{len(batch)} 章），这些章回退正则匹配: {e}")
+            continue
+        except Exception as e:  # noqa: BLE001
+            failed += len(batch)
+            output_formatter.warning(f"标注异常（{len(batch)} 章），这些章回退正则匹配: {e}")
+            continue
+
+        # 按每章引号数拆回（引号不跨章，顺序与合并顺序一致）
+        cursor = 0
+        ok = True
+        for path, text, n in batch:
+            chunk = result.speakers[cursor : cursor + n]
+            if len(chunk) != n:
+                ok = False
+                break
+            cache.put(text, chunk, model=result.model)
+            cursor += n
+        if ok:
+            done += len(batch)
+            quotes += len(result.speakers)
+        else:
+            failed += len(batch)
+            output_formatter.warning("标注结果与章节引号数不符，本批回退正则匹配")
+
+    output_formatter.info(
+        f"AI 标注完成：新标注 {done} 章 / 缓存命中 {hit} 章 / 失败 {failed} 章，"
+        f"共 {quotes} 个引号（{len(batches)} 次 LLM 调用）"
+    )
+    if done:
+        output_formatter.info(f"标注缓存目录: {directory}")
+
+
 def _build_retry_policy(config: PPCConfig):
     return create_tts_retry_policy(
         max_retries=config.reliability.tts_retry.max_retries,
@@ -343,6 +473,19 @@ def _validate_convert(
         config.tts.concurrency = options.concurrency
     if options.rate is not None:
         config.tts.rate = _normalize_rate(options.rate)
+    if getattr(options, "annotate", False):
+        config.tts.annotate.enabled = True
+        if getattr(options, "annotate_model", None):
+            config.tts.annotate.model = options.annotate_model
+        if getattr(options, "annotate_base_url", None):
+            config.tts.annotate.base_url = options.annotate_base_url
+        if getattr(options, "annotate_api_key", None):
+            config.tts.annotate.api_key = options.annotate_api_key
+    if getattr(options, "strip_attribution", False):
+        config.tts.strip_attribution.enabled = True
+    if getattr(options, "keep_segment_cache", False):
+        config.tts.merge_cut.cleanup_segment_cache = False
+
     if options.pitch is not None:
         # pitch 由 schema 校验器归一化（+0Hz / -20Hz）
         config.tts.pitch = options.pitch
@@ -653,6 +796,8 @@ def handle_convert(
 
     # LLM 发声人分配（可选）：在构建 TTSEngine 之前把 cast 落好
     _apply_llm_assign(options, output_dir, config, output_formatter)
+    # AI 引号级标注（可选）：写章节缓存，引擎按指纹取用
+    _apply_annotate(options, output_dir, config, output_formatter)
 
     if options.one:
         if options.book:

@@ -154,6 +154,45 @@ tts:
     # 兜底音色（空=沿用现有配置）/ Default fallback voice (empty = existing config)
     default: ""
 
+  # --- AI 引号级标注 / LLM quote-level speaker annotation ---
+  annotate:
+    # 启用（需要 pip install openai；失败自动回退正则匹配器）
+    # Enable (requires the openai package; falls back to the regex matcher on failure)
+    enabled: false
+    # OpenAI 兼容端点 / OpenAI-compatible base URL
+    base_url: "https://api.openai.com/v1"
+    # API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）
+    api_key: ""
+    # 模型名（DeepSeek 等推理模型需留足 max_output_tokens）
+    # Model name (reasoning models need a generous max_output_tokens)
+    model: "gpt-4o-mini"
+    # 采样温度（0 最稳）/ Sampling temperature
+    temperature: 0.0
+    # 单次输出 token 上限 / Max output tokens per call
+    max_output_tokens: 65536
+    # 单批输入字数上限（多章会合并成一次请求，超出自动切批）
+    # Max input chars per request (chapters are batched; split when exceeded)
+    max_input_chars: 300000
+    # 单批输出字数上限（按引号数估算）/ Max output chars per request (estimated)
+    max_output_chars: 60000
+    # 请求超时（秒）/ Request timeout (seconds)
+    timeout: 900.0
+    # 标注缓存目录（空=用户缓存目录下 ppc/annotate；按章节指纹缓存，重跑零成本）
+    # Annotation cache dir (empty = <user cache>/ppc/annotate, keyed by chapter hash)
+    cache_dir: ""
+    # 标记密度：all=每个引号都带 / changes=只在换人处带
+    # Marker density: all = per quote, changes = only on speaker switch
+    marker_policy: all
+
+  # --- 归属语剥离 / Attribution stripping ---
+  strip_attribution:
+    # 剥掉「李明说道：」这类归属语，让旁白不再念它
+    # Drop "Li Ming said:" style attributions so the narrator does not read them
+    enabled: false
+    # pure=整段纯归属才删 / verb=另删句尾言说动词（保留动作描写）
+    # pure = only pure attribution segments / verb = also trim trailing speech verbs
+    mode: pure
+
   # --- 风控规避配置 / Anti-Risk-Control ---
   anti_risk_control:
     # 启用风控规避 / Enable anti-risk-control strategies

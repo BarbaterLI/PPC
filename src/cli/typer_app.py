@@ -262,6 +262,18 @@ def convert(
     timeout: int | None = typer.Option(None, "--timeout", help="固定超时时间(秒)，仅 timeout_mode=fixed 时生效"),
     rate: str | None = typer.Option(None, "--rate", help="音频播放速度(如 +10%, -10%, +0%,范围 -100% 到 +100%)"),
     pitch: str | None = typer.Option(None, "--pitch", help="音调偏移(如 +20Hz, -30Hz)；cast 中各角色的 pitch 是相对此值的偏移"),
+    annotate: bool = typer.Option(
+        False, "--annotate", help="用 LLM 逐引号标注说话人（比正则更准；失败自动回退，结果按章节缓存）"
+    ),
+    strip_attribution: bool = typer.Option(
+        False, "--strip-attribution", help="剥掉「李明说道：」这类归属语，让旁白不再念它"
+    ),
+    keep_segment_cache: bool = typer.Option(
+        False, "--keep-segment-cache", help="合并后保留本章段缓存（便于断点续传/排查；默认清理）"
+    ),
+    annotate_model: str | None = typer.Option(None, "--annotate-model", help="标注用模型名（默认读配置 tts.annotate.model）"),
+    annotate_base_url: str | None = typer.Option(None, "--annotate-base-url", help="标注端点（OpenAI 兼容）"),
+    annotate_api_key: str | None = typer.Option(None, "--annotate-api-key", help="标注 API Key（默认读 PPC_LLM_API_KEY）"),
     recursive: bool = typer.Option(False, "--recursive", "-R", help="递归处理子目录,保持目录结构"),
     ramp_up: float | None = typer.Option(
         None, "--ramp-up", help="并发预热时间(秒),从1并发逐步增加到设定并发,规避风控(如 30 表示30秒内完成预热)"
@@ -346,6 +358,12 @@ def convert(
             timeout_multiplier=timeout_multiplier,
             rate=rate,
             pitch=pitch,
+            annotate=annotate,
+            strip_attribution=strip_attribution,
+            keep_segment_cache=keep_segment_cache,
+            annotate_model=annotate_model,
+            annotate_base_url=annotate_base_url,
+            annotate_api_key=annotate_api_key,
             recursive=recursive,
             ramp_up=ramp_up,
             strict=strict,

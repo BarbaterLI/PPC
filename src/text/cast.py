@@ -106,6 +106,29 @@ def _parse_one(value: Any, label: str, where: str) -> tuple[str | None, dict[str
     return voice, profile
 
 
+def _parse_aliases(raw: Any, where: str) -> dict[str, list[str]]:
+    """解析 ``aliases``：角色 → 别名列表（只喂给 AI 标注，绝不改正文）。"""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"cast.aliases 应为映射（角色: [别名…]）: {where}")
+    out: dict[str, list[str]] = {}
+    for key, value in raw.items():
+        name = str(key).strip() if key else ""
+        if not name:
+            continue
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, (list, tuple)):
+            items = [str(v) for v in value]
+        else:
+            raise ValueError(f"cast.aliases.{name} 应为字符串或列表: {where}")
+        cleaned = [a.strip() for a in items if a and str(a).strip()]
+        if cleaned:
+            out[name] = cleaned
+    return out
+
+
 def _parse_roles(raw: Any, where: str) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     """解析 ``roles``：角色名 → 音色 / 韵律偏移。"""
     if raw is None:
@@ -154,6 +177,7 @@ class Cast:
     default: str | None = None
     source: str | None = None  # 来源 cast.yml 路径（诊断用）
     profiles: dict[str, dict[str, str]] = field(default_factory=dict)
+    aliases: dict[str, list[str]] = field(default_factory=dict)  # 角色 → 别名（仅用于 AI 标注，不改正文）
 
     # ------------------------------------------------------------------ 加载
 
@@ -173,6 +197,7 @@ class Cast:
             raise ValueError(f"cast 文件顶层应为映射（default/narrator/roles）: {p}")
 
         roles, profiles = _parse_roles(raw.get("roles"), where=str(p))
+        aliases = _parse_aliases(raw.get("aliases"), where=str(p))
         narrator, narrator_profile = _parse_one(raw.get("narrator"), "narrator", str(p))
         default, default_profile = _parse_one(raw.get("default"), "default", str(p))
         if narrator_profile:
@@ -186,12 +211,14 @@ class Cast:
             default=default,
             source=str(p),
             profiles=profiles,
+            aliases=aliases,
         )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], source: str | None = None) -> Cast:
         """从已解析的 dict 构建（供测试与程序化注入）。"""
         roles, profiles = _parse_roles(data.get("roles"), where=source or "<dict>")
+        aliases = _parse_aliases(data.get("aliases"), where=source or "<dict>")
         narrator, narrator_profile = _parse_one(data.get("narrator"), "narrator", source or "<dict>")
         default, default_profile = _parse_one(data.get("default"), "default", source or "<dict>")
         if narrator_profile:
@@ -204,10 +231,15 @@ class Cast:
             default=default,
             source=source,
             profiles=profiles,
+            aliases=aliases,
         )
 
     def __bool__(self) -> bool:
         return bool(self.roles)
+
+    def role_table(self) -> dict[str, list[str]]:
+        """给 AI 标注用的「规范名 → 别名」表（仅本角色表内的角色）。"""
+        return {name: list(self.aliases.get(name, [])) for name in self.roles}
 
     def profile_for(
         self, speaker: str | None, fallback_voice: str
