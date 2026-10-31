@@ -52,7 +52,10 @@ class CircuitBreakerConfig(BaseModel):
     slow_call_rate_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="慢调用率熔断阈值")
     consecutive_failure_threshold: int = Field(default=5, ge=1, le=50, description="连续失败熔断阈值")
     half_open_canary_ratio: float = Field(
-        default=0.05, ge=0.0, le=1.0, description="半开探活金丝雀比例(0-1)"
+        default=0.05,
+        gt=0.0,
+        le=1.0,
+        description="半开探活金丝雀比例(0,1]；必须 >0——0 会让熔断器永久卡在半开",
     )
 
     @model_validator(mode="after")

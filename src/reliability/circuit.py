@@ -104,6 +104,8 @@ class HalfOpenLimiter:
             if self._current_calls >= self._max_calls:
                 return False
             if self._canary_ratio <= 0.0:
+                # 语义上「0% 探活比例」= 不放任何探针。这个值会让状态机永久
+                # 卡在 half_open，因此由配置层（gt=0）拒绝，运行期保留旧语义。
                 return False
             if self._canary_ratio < 1.0:
                 canary_window = max(1, int(round(self._max_calls * self._canary_ratio)))

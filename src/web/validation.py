@@ -30,3 +30,26 @@ def validate_path(path_str: str) -> bool:
         return True
     except Exception:  # noqa: BLE001 - 解析失败统一视为非法
         return False
+
+def safe_join(base: Path | str, name: str) -> Path | None:
+    """把**文件名**安全地拼到 ``base`` 下；越界返回 ``None``。
+
+    触发条件：``base / "C:/Windows/win.ini"`` —— Windows 上绝对路径会直接
+    丢掉左侧的 base；``base / "\\\\srv/share/x"``（UNC）同理。
+    后果（旧实现只用 ``validate_path`` 拦 ``..``）：任务下载接口可以用
+    ``?file=C:/Windows/win.ini`` 读到服务器任意文件。
+
+    注意：目录类入参（input_dir/output_dir）允许绝对路径（桌面场景的正常用法），
+    文件名类入参必须走本函数。
+    """
+    if not name or not isinstance(name, str):
+        return None
+    if name.startswith(("\\\\", "/", "\\")) or (len(name) > 1 and name[1] == ":"):
+        return None
+    base_path = Path(base).resolve()
+    try:
+        candidate = (base_path / name).resolve()
+        candidate.relative_to(base_path)
+    except (OSError, ValueError):
+        return None
+    return candidate

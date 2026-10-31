@@ -55,7 +55,7 @@ class AudioProcessor:
     """Audio file processor (WAV/PCM 基线)"""
 
     SUPPORTED_FORMATS = {".wav", ".mp3"}
-    DEFAULT_MIN_SIZE = 1024  # 1KB
+    DEFAULT_MIN_SIZE = 512  # 1KB
     DEFAULT_MAX_RATIO = 0.5
     DEFAULT_SILENCE_RMS_THRESHOLD = 500  # 16-bit PCM RMS threshold
     DEFAULT_SILENCE_MIN_DURATION_MS = 100
@@ -91,6 +91,8 @@ class AudioProcessor:
         except OSError as e:
             return False, f"无法读取文件状态: {e}"
         if size < self.min_size:
+            # 24kHz/48kbps 单声道下 144B ≈ 24ms；1024B ≈ 0.17s 会把「嗯。」这类
+            # 合法短句判成坏文件，进而被熔断器记成失败（5 次即整本停摆）。
             return False, f"文件太小: {size} < {self.min_size}"
         suffix = path.suffix.lower()
         if suffix not in self.SUPPORTED_FORMATS:

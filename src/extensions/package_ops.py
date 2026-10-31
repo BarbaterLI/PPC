@@ -24,6 +24,10 @@ from src.version import __version__
 
 logger = logging.getLogger(__name__)
 
+#: 扩展名白名单：与 package_validation 的清单校验保持同一口径。
+#: 卸载路径曾直接用 `extensions_dir / name`，`..` 与绝对路径都能越界。
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 class ExtensionInstaller:
     """扩展安装组件：从 .zip 包安装扩展并写入安装标记。"""
@@ -228,7 +232,20 @@ class ExtensionUninstaller:
         Returns:
             {"success": bool, "name": str, "error": str or None}
         """
+        # 卸载是唯一「按用户输入删除目录」的入口：必须白名单 + 越界校验。
+        # 触发条件：`ppc ext uninstall ..` 或 DELETE /api/extensions/.. 。
+        # 后果（旧实现）：`Path(ext_dir) / ".."` 解析到项目根并递归删除；
+        # `Path(ext_dir) / "C:/Windows"` 因绝对路径覆盖直接命中任意目录。
+        if not isinstance(name, str) or not _SAFE_NAME_RE.match(name):
+            return {"success": False, "name": str(name), "error": f"非法扩展名: {name!r}"}
+
         target_dir = self._extensions_dir / name
+        try:
+            if target_dir.resolve().parent != self._extensions_dir.resolve():
+                return {"success": False, "name": name, "error": f"扩展名越界: {name!r}"}
+        except OSError as exc:
+            return {"success": False, "name": name, "error": f"扩展路径解析失败: {exc}"}
+
         if not target_dir.exists():
             return {
                 "success": False,

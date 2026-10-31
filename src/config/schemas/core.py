@@ -31,7 +31,10 @@ class SplitConfig(BaseModel):
 
     preset: str = Field(default="chinese_novel", description="章节预设: chinese_novel | english_novel | default")
     min_chapter_length: int = Field(default=100, ge=10, description="最小章节长度")
-    encoding_fallback: list[str] = Field(default_factory=lambda: ["utf-8", "gbk", "gb2312"], description="编码回退列表")
+    encoding_fallback: list[str] = Field(
+        default_factory=lambda: ["utf-8", "gb18030", "gbk", "gb2312", "utf-16"],
+        description="编码回退列表（含整数宽编码；gb18030 覆盖 gbk/gb2312）",
+    )
     encoding_detect_buffer: int = Field(default=1024, ge=256, le=8192, description="编码检测缓冲区大小(字节)")
     max_filename_length: int = Field(default=100, ge=50, le=200, description="文件名最大长度")
     custom_rules: list[CustomRule] = Field(default_factory=list, description="自定义分割规则列表")

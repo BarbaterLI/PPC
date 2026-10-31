@@ -659,6 +659,15 @@ def _validate_convert(
     if getattr(options, "keep_segment_cache", False):
         config.tts.merge_cut.cleanup_segment_cache = False
 
+    if getattr(options, "timeout_mode", None):
+        allowed = {"fixed", "auto", "adaptive", "synthetic"}
+        if options.timeout_mode not in allowed:
+            raise CLIError(
+                E.E_BUSINESS,
+                f"无效的 timeout-mode: '{options.timeout_mode}'，可选 {sorted(allowed)}",
+                hint="拼写错误会被超时计算器当成 auto，导致超时策略与预期不符",
+            )
+
     if options.pitch is not None:
         config.tts.pitch = _normalize_pitch(options.pitch)
     if options.timeout_multiplier is not None:

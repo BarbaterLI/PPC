@@ -59,7 +59,7 @@ def _v6_defaults(
         "split": {
             "preset": "chinese_novel",
             "min_chapter_length": 100,
-            "encoding_fallback": ["utf-8", "gbk", "gb2312"],
+            "encoding_fallback": ["utf-8", "gb18030", "gbk", "gb2312", "utf-16"],
             "encoding_detect_buffer": 1024,
             "max_filename_length": 100,
         },

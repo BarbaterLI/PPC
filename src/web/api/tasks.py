@@ -213,9 +213,13 @@ def create_tasks_bp(task_manager: TaskManager) -> Blueprint:
             path = Path(target)
             file_param = request.args.get("file")
             if file_param:
-                if not validate_path(file_param):
+                from ..validation import safe_join
+
+                base = path if path.is_dir() else path.parent
+                joined = safe_join(base, file_param)
+                if joined is None:
                     return error_response("Invalid file parameter", code="BAD_REQUEST", status_code=400)
-                path = (path / file_param) if path.is_dir() else path
+                path = joined
 
             if path.is_file():
                 return send_file(path, as_attachment=True, download_name=path.name)
