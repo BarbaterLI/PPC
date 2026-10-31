@@ -127,9 +127,13 @@ class EdgeTTSClient(ABC):
 
         offset = int(last_chunk_offset or 0)
         try:
-            async for chunk in self._synthesize(
-                text, voice, rate=rate, volume=volume, pitch=pitch
-            ):
+            # pitch 只在非默认值时传：既有/第三方客户端实现的是
+            # ``_synthesize(text, voice, *, rate, volume)``，无条件传会导致
+            # TypeError 并被误判为网络错误重试（集成测试的三个假客户端即如此）。
+            kwargs: dict[str, Any] = {"rate": rate, "volume": volume}
+            if pitch and pitch != "+0Hz":
+                kwargs["pitch"] = pitch
+            async for chunk in self._synthesize(text, voice, **kwargs):
                 if offset and chunk.offset < offset:
                     continue
                 yield chunk

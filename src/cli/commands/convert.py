@@ -131,6 +131,34 @@ def _parse_role_map(value: str) -> dict[str, str]:
     return out
 
 
+def _normalize_pitch(pitch: str) -> str:
+    """校验并归一化 ``--pitch``（与 ``--rate`` 同一套 CLIError 语义）。
+
+    此前直接 ``config.tts.pitch = options.pitch``：``TTSConfig`` 没开
+    ``validate_assignment``，非法值会一路带到合成层才炸（cast 路径报成
+    「轮次级配音合成失败」，非 cast 路径直接把 ``abc`` 发给服务端）。
+    """
+    from ...text.cast_prosody import PITCH_LIMIT, normalize_pitch
+
+    try:
+        value = normalize_pitch(pitch)
+    except ValueError as exc:
+        raise CLIError(
+            E.E_BUSINESS,
+            f"无效的 pitch 参数: '{pitch}'，应为 '+0Hz'、'+20Hz'、'-30Hz' 等格式",
+            hint="pitch 必须带正负号前缀和 Hz，例如 --pitch +20Hz 或 --pitch -30Hz",
+        ) from exc
+
+    hz = int(value[:-2])
+    if abs(hz) > PITCH_LIMIT:
+        raise CLIError(
+            E.E_BUSINESS,
+            f"pitch 超出范围: {value}（允许 -{PITCH_LIMIT}Hz ~ +{PITCH_LIMIT}Hz）",
+            hint="超出范围会被服务端拒绝或产生失真，请减小偏移",
+        )
+    return value
+
+
 def _read_text(path: Path) -> str:
     """按**与执行器相同**的策略读取章节：编码探测 + 去 BOM。
 
@@ -632,8 +660,7 @@ def _validate_convert(
         config.tts.merge_cut.cleanup_segment_cache = False
 
     if options.pitch is not None:
-        # pitch 由 schema 校验器归一化（+0Hz / -20Hz）
-        config.tts.pitch = options.pitch
+        config.tts.pitch = _normalize_pitch(options.pitch)
     if options.timeout_multiplier is not None:
         config.tts.timeout_multiplier = options.timeout_multiplier
     if options.timeout_mode is not None:

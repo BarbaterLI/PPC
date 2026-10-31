@@ -96,8 +96,18 @@ class AnnotateConfig(BaseModel):
     api_key: str = Field(default="", description="API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）")
     model: str = Field(default="gpt-4o-mini", description="模型名 / Model name")
     temperature: float = Field(default=0.0, ge=0.0, le=2.0, description="采样温度（建议 0）")
-    max_output_tokens: int = Field(default=65536, ge=1024, le=384000, description="单次输出上限（推理模型需留足）")
-    max_input_chars: int = Field(default=300000, ge=1000, le=1000000, description="单批输入字数上限（超出自动切批）")
+    max_output_tokens: int = Field(
+        default=16384,
+        ge=1024,
+        le=384000,
+        description="单次输出上限（默认按 OpenAI 主流上限 16k；推理模型需自行调大）",
+    )
+    max_input_chars: int = Field(
+        default=80000,
+        ge=1000,
+        le=1000000,
+        description="单批输入字数上限（默认 8 万，约 12 万 token；1M 上下文模型可调大）",
+    )
     max_output_chars: int = Field(default=60000, ge=1000, le=400000, description="单批输出字数上限（按引号数估算，超出切批）")
     max_calls: int = Field(
         default=0,

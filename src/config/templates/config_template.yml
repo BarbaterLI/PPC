@@ -169,10 +169,10 @@ tts:
     # 采样温度（0 最稳）/ Sampling temperature
     temperature: 0.0
     # 单次输出 token 上限 / Max output tokens per call
-    max_output_tokens: 65536
+    max_output_tokens: 16384
     # 单批输入字数上限（多章会合并成一次请求，超出自动切批）
     # Max input chars per request (chapters are batched; split when exceeded)
-    max_input_chars: 300000
+    max_input_chars: 80000
     # 单批输出字数上限（按引号数估算）/ Max output chars per request (estimated)
     max_output_chars: 60000
     # 单次运行的最大调用数（0=不限；超出后剩余章节回退正则匹配）

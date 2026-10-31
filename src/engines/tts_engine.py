@@ -766,9 +766,10 @@ class TTSEngine(BaseEngine[str, Path]):
                     store_key = build_cache_key(
                         effective_voice,
                         normalized_text,
-                        self.tts_config.rate,
-                        self.tts_config.volume,
+                        rate,
+                        volume,
                         self._backend_cache_tag(),
+                        pitch,
                     )
                 else:
                     store_key = cache_key
@@ -1162,7 +1163,16 @@ class TTSEngine(BaseEngine[str, Path]):
             *,
             boundary_sink: Any | None = None,
         ) -> None:
-            """回退路径：该片段单独合成（复用既有段级缓存/超时/熔断跳过）。"""
+            """回退/单片路径：该片段单独合成。
+
+            需要 boundary（字幕）时必须绕开段缓存：缓存里只有音频没有 cue，
+            命中缓存会让这一片的字幕静默消失、后续片的时间轴整体前移。
+            """
+            if boundary_sink is not None:
+                try:
+                    _seg_path(piece_idx).unlink(missing_ok=True)
+                except OSError:
+                    pass
             _, res = await self._synthesize_segment(
                 piece_idx + 1,
                 piece_text,
@@ -1190,7 +1200,9 @@ class TTSEngine(BaseEngine[str, Path]):
             piece_cues[piece_idx] = (0, total_ticks, list(timeline.cues))
 
         async def _run_request(order: int, req: Any) -> None:
-            if _already_done(req):
+            # 需要字幕时不能走「已全部完成」的跳过路径：段缓存没有 boundary，
+            # 跳过会让这一批的 cue 全部丢失、且后续片起点整体前移。
+            if _already_done(req) and not cfg.subtitle_output:
                 for piece_idx in req.piece_indices:
                     piece_paths[piece_idx] = _seg_path(piece_idx)
                 if progress_handler:
@@ -1354,14 +1366,15 @@ class TTSEngine(BaseEngine[str, Path]):
                 error_code=ErrorCodes.TTS_SEGMENTATION_FAILED.value,
             )
 
-        if cfg.subtitle_output:
-            self._write_chapter_srt(
-                output_path, plan, piece_cues, sorted(piece_paths), silence_ms
-            )
-
         result = await self._finalize_merged_audio(
             output_path, cache_dir, temp_files, start_time
         )
+        # 字幕必须在音频原子落盘成功之后再写：否则合成失败会留下一份与旧音频
+        # 不匹配的新 srt（覆盖上一版正确的字幕），且无回滚。
+        if result.success and cfg.subtitle_output:
+            self._write_chapter_srt(
+                output_path, plan, piece_cues, sorted(piece_paths), silence_ms
+            )
         if result.success and progress_handler is not None:
             logger.info("合并截断完成: %d 段 / %d 请求", plan.segment_count, plan.request_count)
         return result
@@ -1444,11 +1457,24 @@ class TTSEngine(BaseEngine[str, Path]):
         # 音色（多角色显式穿透优先，否则按 cast/配置解析）与合成参数构成
         # 音频指纹：仅改 tts.voice（文本与输出字节数不变）时也会判为失配，
         # 杜绝复用上一音色的段文件导致整书音色前后不一致。
-        seg_voice = voice or self._resolve_voice(segment)
+        if voice and _PROSODY_SEP in voice:
+            # 多角色路径传的是 prosody 键：指纹要按本次**实际**韵律算，
+            # 否则「改了角色语速/音调」仍会命中旧段文件（非 cast 路径尤其明显）。
+            seg_voice, seg_rate, seg_pitch, seg_volume = _split_prosody_key(
+                voice, self.tts_config.rate, self.tts_config.pitch, self.tts_config.volume
+            )
+        else:
+            seg_voice = voice or self._resolve_voice(segment)
+            seg_rate, seg_pitch, seg_volume = (
+                self.tts_config.rate,
+                self.tts_config.pitch,
+                self.tts_config.volume,
+            )
         sig_kwargs = {
             "voice": seg_voice,
-            "rate": self.tts_config.rate,
-            "volume": self.tts_config.volume,
+            "rate": seg_rate,
+            "volume": seg_volume,
+            "pitch": seg_pitch,
         }
         if temp_file.exists() and temp_file.stat().st_size > 0:
             if journal is not None and journal.has(index):

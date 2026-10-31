@@ -113,7 +113,12 @@ def test_expand_turns_yields_two_same_voice_segments(tmp_path) -> None:
     engine, _ = _make_engine(tmp_path)
     segments, voices = engine._expand_turns(engine._cast.split_turns(_TEXT))
     assert len(segments) == 2, segments
-    assert voices == ["VN", "VN"]
+    # _expand_turns 现在返回 (音色, 语速, 音调, 音量) 组合键（合并按韵律分组），
+    # 断言前需要解码，否则只是断言了实现细节的编码格式。
+    from src.engines.tts_engine import _split_prosody_key
+
+    decoded = [_split_prosody_key(v, "+0%", "+0Hz", "+0%")[0] for v in voices]
+    assert decoded == ["VN", "VN"]
     # 每段恰好一句，边界落在句末（时间轴才能对齐）
     assert segments[0].endswith("。"), segments
     assert segments[1].endswith("。"), segments
