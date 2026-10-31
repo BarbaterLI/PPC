@@ -136,7 +136,11 @@ class AnnotationCache:
             "quotes": len(speakers),
             "speakers": speakers,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        # 原子写：另一个进程（如并发的 --annotate-only）可能同时读该文件，
+        # 直接 write_text 会留下半截 JSON，被 get() 判为损坏并触发新一轮付费调用。
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
         return path
 
 
@@ -172,15 +176,25 @@ class AIAnnotator:
 
     @staticmethod
     def _numbered(text: str) -> tuple[str, int]:
-        """在每个开引号前插入 ⟦i⟧（只用于发给模型定位）。"""
+        """在每个**引号区间起点**插入 ⟦i⟧（只用于发给模型定位）。
+
+        必须复用 :func:`src.text.annotate.quote_spans`，不能按「字符是否属于
+        开引号集合」计数：半角 ``"`` 同时是开引号与闭引号，按字符计会得到 2
+        倍数量（``他说"走吧"`` → 4 个标记 vs 2 个区间），嵌套引号同理。
+        两套计数器一旦漂移，模型返回的说话人数就会多于实际区间数，切片时
+        前半段被静默错位使用 —— 听起来就是「两个人声音串了」，且日志显示成功。
+        """
+        from .annotate import quote_spans
+
+        spans = quote_spans(text)
         out: list[str] = []
-        n = 0
-        for ch in text:
-            if ch in "“「『\"":
-                out.append(f"⟦{n}⟧")
-                n += 1
-            out.append(ch)
-        return "".join(out), n
+        prev = 0
+        for index, (start, _end) in enumerate(spans):
+            out.append(text[prev:start])
+            out.append(f"⟦{index}⟧")
+            prev = start
+        out.append(text[prev:])
+        return "".join(out), len(spans)
 
     @staticmethod
     def _role_table(roles: dict[str, list[str]]) -> str:

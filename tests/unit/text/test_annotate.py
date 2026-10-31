@@ -180,3 +180,45 @@ def test_cache_rejects_length_mismatch(tmp_path) -> None:
     text = "“一”“二”"
     cache.put(text, ["甲"], model="m", roles_sig=None)
     assert cache.get(text) is None       # 引号 2 个、标注 1 个 → 视为损坏
+
+
+# ------------------------------------------------ 引号扫描：单一计数来源
+
+
+def _strip_index(text: str) -> str:
+    import re
+
+    return re.sub(r"⟦\d+⟧", "", text)
+
+
+def test_numbered_matches_quote_spans_for_ascii_quotes() -> None:
+    """半角 " 既是开引号也是闭引号：按字符计数会翻倍，必须与区间数一致。"""
+    text = '他说"走吧"。她又说"好"。'
+    marked, n = AIAnnotator._numbered(text)
+    assert n == len(quote_spans(text)) == 2
+    assert _strip_index(marked) == text
+
+
+def test_numbered_matches_quote_spans_for_nested() -> None:
+    text = "「他说：“走。”」"
+    marked, n = AIAnnotator._numbered(text)
+    assert n == len(quote_spans(text)) == 1
+    assert _strip_index(marked) == text
+
+
+def test_numbered_supports_single_quotes() -> None:
+    text = "‘甲’与‘乙’"
+    assert len(quote_spans(text)) == 2
+
+
+def test_unclosed_quote_does_not_swallow_following_dialogue() -> None:
+    """未闭合的开引号不能被后面那句的闭引号「借走」。"""
+    text = "“未闭合的句子。后面“正常的”对白。"
+    spans = quote_spans(text)
+    assert len(spans) == 1
+    assert text[spans[0][0] : spans[0][1]] == "“正常的”"
+
+
+def test_unclosed_quote_does_not_drop_later_quotes() -> None:
+    text = "“未闭合 开头。中间“甲”结尾“乙”"
+    assert len(quote_spans(text)) == 2

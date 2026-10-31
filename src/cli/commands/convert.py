@@ -131,6 +131,23 @@ def _parse_role_map(value: str) -> dict[str, str]:
     return out
 
 
+def _read_text(path: Path) -> str:
+    """按**与执行器相同**的策略读取章节：编码探测 + 去 BOM。
+
+    触发条件：章节是 GBK/GB2312/UTF-16，或带 BOM。
+    后果（旧实现用 utf-8 强读）：标注缓存的正文指纹与引擎侧 `read_text_auto`
+    算出的不一致 → 缓存永不命中，每次运行都白跑一遍 LLM，而且送进模型的正文
+    还是乱码。实测这条会让「标注」在多编码语料上完全失效。
+    """
+    try:
+        from ...utils.files import read_text_auto
+
+        text, _encoding = read_text_auto(path)
+        return text
+    except Exception:  # noqa: BLE001 - 探测失败时退回旧的宽松读取，保证不阻断
+        return path.read_text(encoding="utf-8", errors="replace")
+
+
 def _apply_llm_assign(
     options: "ConvertOptions",
     output_dir: Path,
@@ -151,7 +168,7 @@ def _apply_llm_assign(
     texts: list[str] = []
     if options.one:
         try:
-            texts.append(options.input.read_text(encoding="utf-8", errors="replace"))
+            texts.append(_read_text(options.input))
         except OSError as e:
             output_formatter.warning(f"LLM 分配跳过：读取输入失败 {e}")
             return
@@ -159,7 +176,7 @@ def _apply_llm_assign(
         pattern = "**/*.txt" if options.recursive else "*.txt"
         for txt in sorted(options.input.glob(pattern)):
             try:
-                texts.append(txt.read_text(encoding="utf-8", errors="replace"))
+                texts.append(_read_text(txt))
             except OSError:
                 continue
 
@@ -265,7 +282,7 @@ def _apply_annotate(
     hit = 0
     for path in files:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = _read_text(path)
         except OSError:
             continue
         if cache.get(text, sig) is not None:
@@ -333,19 +350,27 @@ def _apply_annotate(
             continue
 
         joined = "\n".join(item[1] for item in batch)
-        calls += 1
-        try:
-            result = annotator.annotate(joined, roles)
-            ok = _store(batch, result.speakers, result.model)
-            if ok:
-                done += len(batch)
-                quotes += len(result.speakers)
-                continue
-            reason = "标注结果与章节引号数不符"
-        except AnnotationError as e:
-            reason = str(e)
-        except Exception as e:  # noqa: BLE001
-            reason = f"{type(e).__name__}: {e}"
+        expected = sum(item[2] for item in batch)
+        actual = len(quote_spans(joined))
+        reason = ""
+        if actual != expected:
+            # 某章以未闭合引号结尾时，会与下一章的开引号配对，整批偏移一位。
+            # 这种批不能送模型（拆回时前半段对、后半段全错），直接降级。
+            reason = f"跨章引号配对异常（各章合计 {expected} → 合并后 {actual}）"
+        else:
+            calls += 1
+            try:
+                result = annotator.annotate(joined, roles)
+                ok = _store(batch, result.speakers, result.model)
+                if ok:
+                    done += len(batch)
+                    quotes += len(result.speakers)
+                    continue
+                reason = "标注结果与章节引号数不符"
+            except AnnotationError as e:
+                reason = str(e)
+            except Exception as e:  # noqa: BLE001
+                reason = f"{type(e).__name__}: {e}"
 
         # 整批不合格 → 拆成单章重试，避免一章拖累整批（每章 1 次调用）
         if len(batch) > 1 and _has_budget(len(batch)):
@@ -431,7 +456,7 @@ def _write_annotated_previews(
     minor: Counter[str] = Counter()
     for path in files:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = _read_text(path)
         except OSError:
             continue
         speakers = cache.get(text, sig)

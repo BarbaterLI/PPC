@@ -115,3 +115,59 @@ def test_success_path_uses_single_call(tmp_path, monkeypatch) -> None:
     cache = AnnotationCache(cache_dir)
     sig = roles_signature(Cast.load(cast).role_table())
     assert cache.get(texts[0], sig) == ["李明", "李明"]
+
+
+def test_cross_chapter_quote_pairing_falls_back_to_single(tmp_path, monkeypatch) -> None:
+    """某章以未闭合引号结尾时，合并批的引号数会变 → 必须拆单章，不能错位。"""
+    txt_dir = tmp_path / "txt"
+    txt_dir.mkdir()
+    a = "李明：“好。”他说：“未完"          # 故意未闭合
+    b = "”然后走了。王芳：“嗯。”"
+    (txt_dir / "001.txt").write_text(a, encoding="utf-8")
+    (txt_dir / "002.txt").write_text(b, encoding="utf-8")
+
+    cast = tmp_path / "cast.yml"
+    cast.write_text(
+        "\n".join(["narrator: VN", "roles:", "  李明: VL", "  王芳: VW", ""]),
+        encoding="utf-8",
+    )
+
+    cfg = get_preset("balanced")
+    cfg.tts.cast_file = str(cast)
+    cfg.tts.annotate.enabled = True
+    cfg.tts.annotate.cache_dir = str(tmp_path / "ann")
+
+    opts = ConvertOptions(
+        input=txt_dir, output=tmp_path / "out", voice=None, concurrency=None,
+        preset="balanced", one=False, annotate=True,
+    )
+
+    seen: list[str] = []
+
+    class Fake:
+        def __init__(self, _cfg) -> None:
+            pass
+
+        def annotate(self, text, roles):
+            seen.append(text)
+            n = len(quote_spans(text))
+            return AnnotationResult(speakers=["李明"] * n, model="m", runs=1, cached=False)
+
+    monkeypatch.setattr(ann_mod, "AIAnnotator", Fake)
+    _apply_annotate(opts, tmp_path / "out", cfg, _Fmt())
+
+    # 不应把两章拼在一起送给模型
+    assert seen == [a, b]
+
+
+def test_read_text_handles_gbk(tmp_path) -> None:
+    """CLI 读章节必须与执行器一致：GBK 文本不能被 utf-8 强读成乱码。"""
+    from src.cli.commands.convert import _read_text
+    from src.utils.files import read_text_auto
+
+    path = tmp_path / "gbk.txt"
+    body = "李明：“走吧。”"
+    path.write_bytes(body.encode("gb18030"))
+
+    assert _read_text(path) == body
+    assert _read_text(path) == read_text_auto(path)[0]

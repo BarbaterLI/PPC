@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 #: 成对引号（含中文直角/书名号与半角双引号）
-_QUOTE_PAIRS = {"“": "”", "「": "」", "『": "』", '"': '"'}
+_QUOTE_PAIRS = {"“": "”", "「": "」", "『": "』", "‘": "’", '"': '"'}
 
 #: 归属语里的言说动词，长的放前面（正则交替按顺序匹配）
 _SPEECH_VERBS = "说道|问道|答道|喊道|叫道|笑道|低声道|冷哼道|说|道|问|答"
@@ -90,8 +90,19 @@ def quote_spans(text: str) -> list[tuple[int, int]]:
             i += 1
             continue
         j = text.find(close, i + 1)
+        # 中间又出现一个同类开引号、且它在闭引号之前 → 当前这个开引号多半是
+        # 未闭合的（`“A。后面“B”`）。直接配对会把两句话并成一句，跳过更安全。
+        if j >= 0 and ch != close:
+            nested = text.find(ch, i + 1)
+            if 0 <= nested < j:
+                i += 1
+                continue
         if j < 0:
-            break
+            # 未闭合：跳过这个开引号，继续找后面的合法配对。
+            # 旧实现直接 break —— 后续全部引号丢失；若改用「找下一个闭合」
+            # 又会把两句不同人的台词并成一句，两种都比跳过更糟。
+            i += 1
+            continue
         spans.append((i, j + 1))
         i = j + 1
     return spans
