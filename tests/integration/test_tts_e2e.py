@@ -80,11 +80,10 @@ class TestFakeTTSEngine:
     def test_engine_synthesize_to_file(self, tmp_path: Path) -> None:
         """使用 FakeEdgeClient 驱动 TTSEngine 写入文件。"""
         from src.config.presets import get_preset
-        from src.engines.edge_tts_client import (
-            DEFAULT_RESUME_OFFSET,
-            EdgeTTSClient,
-            VoiceInfo,
-        )
+        # 模块早已拆分（edge_tts_client → client_base/tts_types），旧导入让这两个
+        # 用例长期在 integration marker 下静默失败/跳过。
+        from src.engines.client_base import EdgeTTSClient
+        from src.engines.tts_types import DEFAULT_RESUME_OFFSET, VoiceInfo
         from src.engines.tts_engine import TTSEngine
 
         class FakeClient(EdgeTTSClient):
@@ -163,9 +162,7 @@ class TestCacheIntegration:
     def test_repeat_synthesize_uses_cache(self, tmp_path: Path) -> None:
         from src.cache.multilevel_cache import MultiLevelCache
         from src.config.presets import get_preset
-        from src.engines.edge_tts_client import (
-            EdgeTTSClient,
-        )
+        from src.engines.client_base import EdgeTTSClient
         from src.engines.tts_engine import TTSEngine
 
         class CountingClient(EdgeTTSClient):
