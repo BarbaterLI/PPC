@@ -87,12 +87,41 @@
   见 `config_template.yml`。
 
 ### 修复
+- **安全（P0）**：扩展卸载不再能删除任意目录（`ppc ext uninstall ..` /
+  `C:/Windows` 曾经直接 `rmtree` 越界目标）；任务下载接口不再能读取任意文件
+  （`?file=C:/Windows/win.ini` 因 Windows 路径语义丢掉 base）。新增
+  `safe_join` 与扩展名白名单 + 越界校验。
+- **安全（P1）**：扩展安装改为事务式（`.tmp-*` 解压 → STRICT 扫描 → 原子替换），
+  升级失败会回滚旧版本，半装目录对加载器不可见；安装阶段强制扫描，AST 解析
+  失败按 HIGH 上报（此前只写 debug 就放行）；分布式 NodePool/MasterUnit 补
+  `Authorization`（此前一开 `--api-token` 分布式即不可用）。
+- **标注正确性**：`_numbered` 与 `quote_spans` 统一为同一扫描器（半角 `"` 曾
+  使计数翻倍 → 说话人整体错位且日志显示成功）；CLI 与执行器统一用
+  `read_text_auto`（GBK/BOM 章节的缓存指纹曾永不相等，每次都白跑 LLM）；
+  跨章拼接先校验引号总数（未闭合引号曾导致整批错位）。
+- **音频/字幕**：语音回退后的缓存键与段级指纹补上 pitch（变调音频曾写进默认
+  韵律的键）；断点续跑不再丢字幕（命中段缓存时绕过「已完成」快路径，因为段
+  缓存没有 boundary）；字幕改为音频落盘成功后再写；第三方客户端不再因
+  `pitch=` 参数报 TypeError。
+- **重试语义**：`QuotaError`/`PermanentError` 不再重试（额度用尽时每章仍重试
+  3 次）；`RetryPolicy.should_retry` 认 `non_retryable_exceptions`。
+- **编码探测**：`quick_probe` 增加解码质量判据（NUL/控制符占比），无 BOM 的
+  UTF-16LE 不再被 gbk 静默解成乱码；候选链补 `utf-16-le`/`utf-16-be`。
+- **正文保真**：`mode=verb` 不再把「她没有回答」裁成「她没有回」；全角数字/
+  假名不再被判「无可发音」而丢弃；空白旁白保留；`旁白` 正确映射到 narrator。
+- **默认配置**：`max_input_chars` 30 万 → 8 万、`max_output_tokens` 65536 →
+  16384（原默认在 gpt-4o-mini 上首批必 400）；`--pitch` 走 CLI 校验。
 - `client_base.synthesize_to_file` 新增可选 `boundary_sink`：`WordBoundary` /
   `SentenceBoundary` 元数据不再被丢弃（此前只写 `chunk.data`，字幕与切分数据
   全丢）。不传该参数时行为与旧实现完全一致。
 - LLM 分配会**继承已给 cast 的角色**：LLM 未观察到的角色不再凭空消失
   （否则 `--cast cast.yml` 与 `--llm-assign` 同用时角色被清空、退化成旁白）。
 - LLM 分配结果落盘失败时退化到系统临时目录，避免输出目录只读时白跑一次 LLM。
+
+### 性能
+- **`TTSEngine()` 构造 12.5s → 2.5s**：`DiskCache._load_metadata` 此前对每个缓存
+  条目调 `Path.resolve()`（Windows 上每条 ~1.4ms，5000 条 = 7 秒），已改为纯路径
+  计算越界校验；启动慢会让每个章节的引擎构造都白等几秒。
 
 ## [12.0.0] - 2026-09
 

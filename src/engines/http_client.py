@@ -248,24 +248,30 @@ class EdgeTTSHttpClient(EdgeTTSClient):
         kwargs: dict[str, Any] = {
             "rate": rate,
             "volume": volume,
-            "pitch": pitch,
             "connector": None,
             "proxy": (self._anti_risk_config.proxy or None) if self._anti_risk_config.enabled else None,
         }
-        # Forward ``request_timeout_seconds`` when the backend ``Communicate``
-        # constructor exposes a ``timeout`` keyword.  Backends that do not
-        # support it (e.g. the customized ``edge_tts.Communicate`` which
-        # only has ``connect_timeout``/``receive_timeout``) are instead
-        # guarded by ``asyncio.wait_for`` while streaming in ``_synthesize``.
+        # ``timeout`` / ``pitch`` 只在后端 Communicate **支持**时才传：
+        # 旧版 edge_tts 的 Communicate 没有这两个参数，无条件下发会直接
+        # TypeError（被误判为网络错误重试）。定制 Communicate、测试替身同理。
+        # pitch 不被支持时只能放弃音调（语言上已无替代方案），记一次告警。
         try:
             sig = inspect.signature(self._communicate_cls.__init__)
             params = sig.parameters
-            if "timeout" in params or any(
+            accepts_var_kw = any(
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-            ):
+            )
+            if "timeout" in params or accepts_var_kw:
                 kwargs["timeout"] = self._request_timeout_seconds
+            if "pitch" in params or accepts_var_kw:
+                kwargs["pitch"] = pitch
+            elif pitch not in ("", "+0Hz"):
+                logger.warning(
+                    "当前 Edge TTS 后端不支持 pitch 参数，已忽略音调 %s（请升级 edge-tts）",
+                    pitch,
+                )
         except (ValueError, TypeError):  # pragma: no cover - signature inspection failure
-            pass
+            kwargs["pitch"] = pitch
 
         communicate = self._communicate_cls(text, voice, **kwargs)
 

@@ -14,6 +14,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """纯路径计算判断 ``path`` 是否在 ``root`` 内（不触盘）。
+
+    用于替代 ``path.resolve().relative_to(root.resolve())``：后者每次都要走
+    ``GetFinalPathNameByHandle``（Windows 上 ~1.4ms/次），缓存条目一多就成为
+    启动瓶颈。``os.path.normpath`` 已能归一 ``..`` 与反斜杠，足以拦住越界。
+    """
+    norm = os.path.normpath(str(path))
+    if not os.path.isabs(norm):
+        norm = os.path.normpath(os.path.join(str(root), norm))
+    try:
+        Path(norm).relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass
 class DiskCacheEntry:
     """Disk cache entry metadata"""
@@ -79,14 +96,17 @@ class DiskCache:
         """Load metadata"""
         try:
             if self._metadata_file.exists():
-                cache_dir_resolved = self._cache_dir.resolve()
+                # 只 resolve 一次缓存根目录；条目用 **纯路径计算** 判越界。
+                # 触发条件：缓存条目数千条时每次启动都 `Path.resolve()` 每条
+                # （Windows 上每条 ~1.4ms，5000 条 = 7 秒）+ exists() 一次 stat。
+                # 后果：TTSEngine() 构造实测 12.5 秒，用户感知为「启动卡住」。
+                # normpath 能识别 `..` 与绝对路径越界，无需触盘。
+                cache_dir_abs = Path(os.path.abspath(str(self._cache_dir)))
                 with open(self._metadata_file, encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         file_path = Path(entry_data["file_path"])
-                        try:
-                            file_path.resolve().relative_to(cache_dir_resolved)
-                        except ValueError:
+                        if not _is_within(file_path, cache_dir_abs):
                             logger.warning(
                                 f"Cache metadata entry outside cache dir, skipping: {key} ({file_path})"
                             )
