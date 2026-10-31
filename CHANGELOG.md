@@ -119,9 +119,14 @@
 - LLM 分配结果落盘失败时退化到系统临时目录，避免输出目录只读时白跑一次 LLM。
 
 ### 性能
-- **`TTSEngine()` 构造 12.5s → 2.5s**：`DiskCache._load_metadata` 此前对每个缓存
+- **`ppc --version` 快 440ms + 250ms**：`platform.platform()` 在 Windows 上要读
+  注册表拿系统版本（首次 ~440ms），改为 `sys.getwindowsversion()`（纯 C 调用，
+  ~0ms）；`--version` 改纯文本输出并跳过 rich 导入（~250ms）。两条路径共用
+  `version_info_dict()`，信息与 rich 卡片一致。版本路径模块数 205 → 123。
+- **`TTSEngine()` 构造 12.5s → 1.0s**：`DiskCache._load_metadata` 此前对每个缓存
   条目调 `Path.resolve()`（Windows 上每条 ~1.4ms，5000 条 = 7 秒），已改为纯路径
-  计算越界校验；启动慢会让每个章节的引擎构造都白等几秒。
+  计算越界校验；`exists()` 也改为懒校验（孤儿条目在 `get()` 里免费剔除）。
+  启动慢会让每个章节的引擎构造都白等几秒。
 
 ## [12.0.0] - 2026-09
 

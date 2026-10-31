@@ -37,9 +37,10 @@ FORBIDDEN = (
 MODULE_LINE = re.compile(r"import time:\s+(\d+)\s*\|\s*(\d+)\s*\|\s*(\S+)")
 
 # 预算上限：第三方模块数量 / 第三方 import 自耗时合计（ms）。
-# 当前实测约 205 模块 / 230ms（rich 为版本卡片渲染刚需），留 ~40% 余量。
-MAX_MODULES = 280
-MAX_SELF_MS = 320.0
+# 当前实测约 123 模块 / ~150ms（`--version` 已改纯文本输出，不再拉 rich；
+# 之前 rich 是版本卡片渲染刚需，205 模块 / 230ms）。留 ~40% 余量。
+MAX_MODULES = 180
+MAX_SELF_MS = 240.0
 
 
 def _capture_importtime() -> tuple[list[tuple[int, str]], list[str]]:
@@ -94,14 +95,14 @@ def _third_party_self_ms(entries: list[tuple[int, str]]) -> float:
 def test_version_importtime_budget():
     """第三方导入总量必须低于预算上限（防新依赖/eager import 悄悄上线）。
 
-    采样 3 次取最小：``importtime`` 自耗时是代码的**结构性成本**，但单次采样
+    采样 5 次取最小：``importtime`` 自耗时是代码的**结构性成本**，但单次采样
     在冷页缓存 / 满负载下会被磁盘 I/O 与 CPU 争用抬高 → 假阳性（本测试曾因此
     在全量套件下偶发失败）。取 min 近似暖/空载成本；结构性回归（新增重导入）
     会抬高**每个**采样，min 仍会超预算而被拦截，门禁不削弱。
     """
     best_ms: float | None = None
     best_modules = 0
-    for _ in range(3):
+    for _ in range(5):
         entries, modules = _capture_importtime()
         ms = _third_party_self_ms(entries)
         if best_ms is None or ms < best_ms:

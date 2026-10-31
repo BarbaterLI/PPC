@@ -9,30 +9,12 @@ from rich.panel import Panel
 
 from src.cli.design import atoms, layouts
 from src.cli.design.tokens import COLORS, SPACING, get_icon, get_style
+from src.cli.version_info import (
+    _dist_version_from_site,
+    fast_platform as _fast_platform,
+    version_info_dict,
+)
 from src.version import __version__
-
-
-def _dist_version_from_site(dist: str) -> str:
-    """从 site-packages 的 ``*.dist-info`` 目录名解析已安装包版本（零 metadata 解析）。
-
-    仅扫描目录名，避免 importlib.metadata 连带导入 email/zipfile 解析栈；
-    找不到（源码运行 / Nuitka standalone）时返回 ``"-"``。
-    """
-    try:
-        import glob
-        import sysconfig
-
-        purelib = sysconfig.get_path("purelib") or ""
-        for variant in (dist, dist.replace("_", "-")):
-            for path in glob.glob(os.path.join(purelib, f"{variant}-*.dist-info")):
-                stem = os.path.basename(path.rstrip("\\/")).split(".dist-info")[0]
-                _, _, ver = stem.rpartition("-")
-                if ver and ver[0].isdigit():
-                    return ver
-    except Exception:  # noqa: BLE001 - 版本展示失败绝不影响启动
-        pass
-    return "-"
-
 
 class BrandAssets:
     """Brand assets."""
@@ -49,7 +31,6 @@ class BrandAssets:
     TAGLINE = "Ultimate Text-to-Speech Tool"
     COPYRIGHT = "© 2026 BLY Team. All rights reserved."
 
-
 class StatusIcons:
     """Status icons."""
 
@@ -62,7 +43,6 @@ class StatusIcons:
     INFO = ("i", "blue")
     SUCCESS = ("+", "green")
 
-
 class BrandingMixin:
     """品牌渲染 mixin：版本卡片 / 欢迎页 / 品牌横幅。"""
 
@@ -72,27 +52,10 @@ class BrandingMixin:
         - ``json`` 模式:单行 JSON,含 version / commit / python / platform / edge_tts / rich / repository。
         - 其它:Rich Panel,内嵌 Table。
         """
-        commit = os.environ.get("PPC_COMMIT", "-")
-        py_ver = platform.python_version()
-        plat = platform.platform()
-
-        # 轻量读取依赖版本：importlib.metadata 会连带拉入 email/zipfile 解析
-        # 栈（冷启动 ~40ms），这里改为 dist-info 目录名直查 + rich 模块属性。
-        edge_tts_ver = _dist_version_from_site("edge_tts")
-
-        rich_ver = _dist_version_from_site("rich")
-
-        repository = os.environ.get("PPC_REPOSITORY", "https://github.com/BarbaterLI/PPC")
-
-        info = {
-            "version": __version__,
-            "commit": commit,
-            "python": py_ver,
-            "platform": plat,
-            "edge_tts": edge_tts_ver,
-            "rich": rich_ver,
-            "repository": repository,
-        }
+        # 与纯文本路径共用同一份数据，避免两条渲染各自漂移
+        info = version_info_dict()
+        commit, py_ver, plat = info["commit"], info["python"], info["platform"]
+        edge_tts_ver, rich_ver, repository = info["edge_tts"], info["rich"], info["repository"]
 
         if self.mode == "json":
             sys.stdout.write(json.dumps(info, ensure_ascii=False))

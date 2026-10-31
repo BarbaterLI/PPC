@@ -111,9 +111,10 @@ class DiskCache:
                                 f"Cache metadata entry outside cache dir, skipping: {key} ({file_path})"
                             )
                             continue
-                        if not file_path.exists():
-                            logger.warning(f"Cache file missing, skipping metadata entry: {key}")
-                            continue
+                        # 不在启动时做 exists()：每条一次 stat，5000 条缓存
+                        # 就是 5000 次系统调用（Windows 上 ~0.5ms/次，合计 2.5s）。
+                        # 孤儿条目（文件已丢）在 ``get()`` 里按未命中剔除——那里
+                        # 本来就要读文件，顺带的检查是免费的。
                         self._metadata[key] = DiskCacheEntry(
                             key=key,
                             file_path=entry_data["file_path"],

@@ -98,6 +98,14 @@ def run_webui(host=None, port=None, debug=False, api_token=None):
 def main():
     """主入口。"""
     try:
+        # `--version` 是最快的路径，必须在任何 rich 导入之前拦截：
+        # setup_console() 会拉起 rich（~250ms），对只看版本号的场景是纯浪费。
+        if "-V" in sys.argv or "--version" in sys.argv:
+            from src.cli.version_info import print_version_plain
+
+            print_version_plain()
+            return 0
+
         from src.cli.output import setup_console
 
         setup_console()
@@ -108,15 +116,6 @@ def main():
                 style="dim",
             )
             return run_webui(host=host, port=port, debug=debug, api_token=api_token)
-
-        argv = sys.argv[1:]
-        if "-V" in argv or "--version" in argv:
-            # 版本卡片超快路径：与 typer_app.run() 内的兜底逻辑语义一致，
-            # 但提前拦截可完全跳过 typer/click 导入链（省 ~30ms 冷启动）。
-            from src.cli.output import get_output
-
-            get_output().print_version_card()
-            return 0
 
         from src.cli.typer_app import run as run_cli
         sys.argv = ["ppc"] + sys.argv[1:]
