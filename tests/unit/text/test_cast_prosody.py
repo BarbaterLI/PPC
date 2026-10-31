@@ -130,3 +130,9 @@ def test_profile_for_role_and_fallback() -> None:
     assert cast.profile_for("路人", "fb") == ("v-d", {})
     # 旁白 → narrator
     assert cast.profile_for(None, "fb") == ("v-n", {})
+
+
+def test_narrator_alias_maps_to_narrator_voice() -> None:
+    """标注会输出「旁白」这个名字，它必须等于 narrator，而不是 default。"""
+    cast = Cast.from_dict({"narrator": "v-n", "default": "v-d", "roles": {"李明": "v-a"}})
+    assert cast.profile_for("旁白", "fb")[0] == "v-n"

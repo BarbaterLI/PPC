@@ -215,7 +215,14 @@ class AIAnnotator:
             if not (isinstance(item, (list, tuple)) and len(item) == 3):
                 return None, f"坏游程 {item!r}"
             try:
-                lo, hi, name = int(item[0]), int(item[1]), str(item[2]).strip()
+                # 浮点下标是模型常见笔误（0.7）：int() 会静默截断到 0，
+                # 必须当成坏游程拒掉，否则说话人整体偏移。
+                if isinstance(item[0], float) or isinstance(item[1], float):
+                    return None, f"游程下标不是整数 {item!r}"
+                lo, hi = int(item[0]), int(item[1])
+                raw_name = item[2]
+                # null 会被 str() 变成 "None"，凭空造出一个角色
+                name = "" if raw_name is None else str(raw_name).strip()
             except (TypeError, ValueError):
                 return None, f"坏游程 {item!r}"
             if lo < 0 or hi >= n or hi < lo:
@@ -235,10 +242,18 @@ class AIAnnotator:
         resp = self.client.chat.completions.create(  # type: ignore[attr-defined]
             model=str(getattr(self.config, "model", "")),
             temperature=float(getattr(self.config, "temperature", 0.0)),
-            max_tokens=int(getattr(self.config, "max_output_tokens", 65536)),
+            max_tokens=int(getattr(self.config, "max_output_tokens", 16384)),
             messages=messages,
         )
-        return (resp.choices[0].message.content or "").strip()
+        choices = getattr(resp, "choices", None) or []
+        if not choices:
+            # 空 choices 说明端点异常；抛 AnnotationError 让上层按「整章回退」
+            # 处理，而不是 IndexError 穿透成「合成失败」。
+            raise AnnotationError("LLM 返回空 choices")
+        content = choices[0].message.content or ""
+        if not content.strip():
+            raise AnnotationError("LLM 返回空内容（可能是 max_output_tokens 过小）")
+        return content.strip()
 
     # ------------------------------------------------------------------ 对外
 

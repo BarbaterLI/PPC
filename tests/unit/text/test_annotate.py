@@ -222,3 +222,62 @@ def test_unclosed_quote_does_not_swallow_following_dialogue() -> None:
 def test_unclosed_quote_does_not_drop_later_quotes() -> None:
     text = "“未闭合 开头。中间“甲”结尾“乙”"
     assert len(quote_spans(text)) == 2
+
+
+# ------------------------------------------- P2：可发音/裁剪/空白/空值
+
+
+def test_fullwidth_digits_and_kana_are_speakable() -> None:
+    """`“１２３”`/`“はい”` 不是「无可发音字符」，不能被并掉或丢弃。"""
+    for body in ("“１２３”", "“はい”", "“〇”"):
+        turns = turns_from_speakers(body, ["李明"])
+        assert turns, body
+        assert "".join(t.text for t in turns) == body
+
+
+def test_verb_mode_keeps_single_char_verbs() -> None:
+    """单字 说/道/问/答 不能参与句尾裁剪，否则会截掉正常句子。"""
+    for body in ("她没有回答", "他转过身，不再多说"):
+        turns, touched = strip_attribution([Utterance(None, body)], ["李明"], mode="verb")
+        assert touched == 0, body
+        assert turns[0].text == body
+
+
+def test_verb_mode_still_trims_multi_char_verb() -> None:
+    turns, touched = strip_attribution([Utterance(None, "李明皱眉说道：")], ["李明"], mode="verb")
+    assert touched == 1
+    assert turns[0].text == "李明皱眉"
+
+
+def test_whitespace_narration_preserved() -> None:
+    text = "“走”  \n  “好”"
+    turns = turns_from_speakers(text, ["李明", "王芳"])
+    assert "".join(t.text for t in turns) == text
+
+
+def test_null_speaker_becomes_narrator_not_string_none() -> None:
+    client = _FakeClient(['{"runs": [[0, 0, null]], "suspects": []}'])
+    result = AIAnnotator(_cfg(), client=client).annotate("“一”", {"李明": []})
+    assert result.speakers == ["?"]
+
+
+def test_float_index_is_rejected() -> None:
+    client = _FakeClient(['{"runs": [[0.7, 0.7, "李明"]], "suspects": []}'])
+    from src.text.ai_annotate import AnnotationError
+
+    with pytest.raises(AnnotationError):
+        AIAnnotator(_cfg(), client=client).annotate("“一”", {"李明": []})
+
+
+def test_empty_choices_raise_annotation_error() -> None:
+    from types import SimpleNamespace
+
+    from src.text.ai_annotate import AnnotationError
+
+    class _Empty:
+        chat = SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_: SimpleNamespace(choices=[]))
+        )
+
+    with pytest.raises(AnnotationError):
+        AIAnnotator(_cfg(), client=_Empty()).annotate("“一”", {"李明": []})

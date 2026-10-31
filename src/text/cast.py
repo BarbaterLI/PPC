@@ -249,7 +249,10 @@ class Cast:
         旁白取 ``narrator``（可配韵律）；角色取 ``roles``；未登记的角色回落到
         ``default``（含其韵律）。偏移为空 dict 表示「跟随全局」。
         """
-        if speaker is None:
+        # 标注提示词要求「书信/标语/屏幕文字记为 旁白」，但角色表里没有这个名字。
+        # 不显式认它就会落到 default 音色（旁白与配角同一个嗓子），且不进未入表
+        # 统计，完全静默。
+        if speaker in (None, "旁白", "narrator", "Narrator"):
             voice = self.narrator or self.default or fallback_voice
             profile = self.profiles.get("__narrator__")
             if profile is None and not self.narrator:

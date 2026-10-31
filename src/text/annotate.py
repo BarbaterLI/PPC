@@ -41,8 +41,19 @@ _SPEECH_VERBS = "说道|问道|答道|喊道|叫道|笑道|低声道|冷哼道|�
 
 _TRAILING_VERB = re.compile(rf"(?:{_SPEECH_VERBS})\s*[：:，,]?\s*$")
 
+#: verb 模式专用的「多字言说动词」。单字 `说/道/问/答` 绝不能参与句尾裁剪，
+#: 否则会把 `她没有回答`→`她没有回`、`他知道`→`他知`（正文被静默改写）。
+_TRAILING_VERB_SAFE = re.compile(
+    r"(?:说道|问道|答道|喊道|叫道|笑道|低声道|冷哼道)\s*[：:，,]?\s*$"
+)
+
 #: 「可发音字符」——中文/字母/数字。纯标点（如 `“……”`）没有可读内容。
-_SPEAKABLE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
+#: 覆盖 CJK、拉丁、数字（含全角）、假名、谚文与〇：这些都能读出来。
+#: 旧集合只认「CJK + 半角字母数字」，导致 `“１２３”`/`“はい”`/`“〇”` 被判为
+#: 「无可发音字符」而整段并入相邻轮次（无前轮时直接丢弃，音频里凭空少一句）。
+_SPEAKABLE = re.compile(
+    r"[\u4e00-\u9fffA-Za-z0-9\u3040-\u30ff\u3007\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uac00-\ud7af]"
+)
 
 
 def _absorb_unspeakable(turns: list[Utterance]) -> list[Utterance]:
@@ -134,7 +145,9 @@ def turns_from_speakers(text: str, speakers: list[str | None]) -> list[Utterance
     for (start, end), raw in zip(spans, speakers):
         if start > cursor:
             narration = text[cursor:start]
-            if narration.strip():
+            # 空白（换行/缩进）也保留：TTS 会当停顿，丢掉会让 `"".join()` 与原文
+            # 不等。纯空白段由 _absorb_unspeakable 并进相邻轮次，不会单独成段。
+            if narration:
                 turns.append(Utterance(None, narration))
         name = (raw or "").strip()
         turns.append(Utterance(None if name in ("", "?") else name, text[start:end]))
@@ -142,7 +155,7 @@ def turns_from_speakers(text: str, speakers: list[str | None]) -> list[Utterance
 
     if cursor < len(text):
         tail = text[cursor:]
-        if tail.strip():
+        if tail:
             turns.append(Utterance(None, tail))
 
     return _coalesce(_absorb_unspeakable(turns))
@@ -182,7 +195,7 @@ def strip_attribution(
             touched += 1
             continue
         if mode == "verb":
-            stripped = _TRAILING_VERB.sub("", body).strip()
+            stripped = _TRAILING_VERB_SAFE.sub("", body).strip()
             if stripped and stripped != body:
                 touched += 1
                 out.append(replace(turn, text=stripped))
