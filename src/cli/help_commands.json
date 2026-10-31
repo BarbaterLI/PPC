@@ -125,6 +125,10 @@
         "desc": "用 LLM 逐引号标注说话人（失败自动回退正则；结果按章节缓存）"
       },
       {
+        "name": "--annotate-only",
+        "desc": "只输出标注预览 <章节>.annotated.txt，不合成音频（便于人工校对）"
+      },
+      {
         "name": "--annotate-model",
         "desc": "标注用模型名（默认读配置 tts.annotate.model）"
       },

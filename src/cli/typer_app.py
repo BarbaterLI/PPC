@@ -265,6 +265,9 @@ def convert(
     annotate: bool = typer.Option(
         False, "--annotate", help="用 LLM 逐引号标注说话人（比正则更准；失败自动回退，结果按章节缓存）"
     ),
+    annotate_only: bool = typer.Option(
+        False, "--annotate-only", help="只输出标注预览 <章节>.annotated.txt，不合成音频（便于人工校对）"
+    ),
     strip_attribution: bool = typer.Option(
         False, "--strip-attribution", help="剥掉「李明说道：」这类归属语，让旁白不再念它"
     ),
@@ -359,6 +362,7 @@ def convert(
             rate=rate,
             pitch=pitch,
             annotate=annotate,
+            annotate_only=annotate_only,
             strip_attribution=strip_attribution,
             keep_segment_cache=keep_segment_cache,
             annotate_model=annotate_model,

@@ -960,11 +960,14 @@ class TTSEngine(BaseEngine[str, Path]):
 
         最后按配置剥离「李明说道：」这类归属语（只动旁白轮次，台词永不触碰）。
         """
+        from src.text.ai_annotate import roles_signature
         from src.text.annotate import strip_attribution, turns_from_speakers
 
         turns: list[Any] | None = None
         if self._annotation_cache is not None and self._cast is not None:
-            speakers = self._annotation_cache.get(text)
+            speakers = self._annotation_cache.get(
+                text, roles_signature(self._cast.role_table())
+            )
             if speakers:
                 try:
                     turns = turns_from_speakers(text, speakers)
@@ -985,13 +988,6 @@ class TTSEngine(BaseEngine[str, Path]):
                 logger.info("已剥离 %d 处归属语（mode=%s）", touched, self._strip_attribution_cfg.mode)
 
         return turns
-
-    def _voice_for_speaker(self, speaker: str | None) -> str:
-        """说话人 → 音色（旁白用 narrator/default，角色用 roles 映射）。"""
-        assert self._cast is not None
-        if speaker is None:
-            return self._cast.narrator or self._cast.default or self.tts_config.voice
-        return self._cast.roles.get(speaker) or self._cast.default or self._cast.narrator or self.tts_config.voice
 
     def _expand_turns(self, turns: list[Any]) -> tuple[list[str], list[str]]:
         """轮次 → (segments, voices)：长轮次内部按 max_segment_length 再切。

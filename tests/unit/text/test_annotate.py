@@ -11,7 +11,7 @@ from src.text.annotate import (
     strip_markers,
     turns_from_speakers,
 )
-from src.text.ai_annotate import AIAnnotator
+from src.text.ai_annotate import AIAnnotator, AnnotationCache, roles_signature
 from src.text.speaker_turns import Utterance
 
 
@@ -151,3 +151,32 @@ def test_annotator_raises_after_two_bad_replies() -> None:
     client = _FakeClient(['{"runs": []}', '{"runs": []}'])
     with pytest.raises(AnnotationError):
         AIAnnotator(_cfg(), client=client).annotate("“一”", {"李明": []})
+
+
+# ------------------------------------------------------------ 标注缓存
+
+
+def test_cache_roundtrip_and_roles_invalidation(tmp_path) -> None:
+    cache = AnnotationCache(tmp_path)
+    text = "甲“一”乙“二”"
+    sig1 = roles_signature({"甲": [], "乙": []})
+    cache.put(text, ["甲", "乙"], model="m", roles_sig=sig1)
+    assert cache.get(text, sig1) == ["甲", "乙"]
+
+    # 角色表变了（加了角色/改了别名）→ 旧标注作废，避免静默降级到 default 音色
+    sig2 = roles_signature({"甲": [], "乙": ["乙某"]})
+    assert cache.get(text, sig2) is None
+
+    # 不传指纹时保持向后兼容（旧调用方/旧缓存文件）
+    assert cache.get(text) == ["甲", "乙"]
+
+
+def test_roles_signature_ignores_order() -> None:
+    assert roles_signature({"甲": ["a"], "乙": []}) == roles_signature({"乙": [], "甲": ["a"]})
+
+
+def test_cache_rejects_length_mismatch(tmp_path) -> None:
+    cache = AnnotationCache(tmp_path)
+    text = "“一”“二”"
+    cache.put(text, ["甲"], model="m", roles_sig=None)
+    assert cache.get(text) is None       # 引号 2 个、标注 1 个 → 视为损坏

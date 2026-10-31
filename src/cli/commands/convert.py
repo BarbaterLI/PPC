@@ -37,6 +37,7 @@ class ConvertOptions:
     rate: str | None = None
     pitch: str | None = None
     annotate: bool = False
+    annotate_only: bool = False
     annotate_model: str | None = None
     annotate_base_url: str | None = None
     annotate_api_key: str | None = None
@@ -226,7 +227,12 @@ def _apply_annotate(
     if not getattr(config.tts.annotate, "enabled", False):
         return
 
-    from ...text.ai_annotate import AIAnnotator, AnnotationCache, AnnotationError
+    from ...text.ai_annotate import (
+        AIAnnotator,
+        AnnotationCache,
+        AnnotationError,
+        roles_signature,
+    )
     from ...text.annotate import quote_spans
     from ...text.cast import Cast
 
@@ -247,6 +253,7 @@ def _apply_annotate(
     cache = AnnotationCache(directory)
     annotator = AIAnnotator(ann)
     roles = cast.role_table()
+    sig = roles_signature(roles)
 
     if options.one:
         files = [options.input]
@@ -261,7 +268,7 @@ def _apply_annotate(
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if cache.get(text) is not None:
+        if cache.get(text, sig) is not None:
             hit += 1
             continue
         n = len(quote_spans(text))
@@ -315,7 +322,7 @@ def _apply_annotate(
             if len(chunk) != n:
                 ok = False
                 break
-            cache.put(text, chunk, model=result.model)
+            cache.put(text, chunk, model=result.model, roles_sig=sig)
             cursor += n
         if ok:
             done += len(batch)
@@ -330,6 +337,62 @@ def _apply_annotate(
     )
     if done:
         output_formatter.info(f"标注缓存目录: {directory}")
+
+
+def _write_annotated_previews(
+    options: "ConvertOptions",
+    output_dir: Path,
+    config: "PPCConfig",
+    output_formatter: "OutputFormatter",
+) -> int:
+    """把缓存里的标注渲染成 ``<章节>.annotated.txt``（不合成音频）。
+
+    用途：人工校对「这段到底谁读」——可疑的换人、`?` 兜底、其他:* 命名，
+    都能一眼看出来；改完 cast 或用编辑器修正后重跑即可复用。
+    """
+    from ...text.ai_annotate import AnnotationCache, roles_signature
+    from ...text.annotate import render_markers
+    from ...text.cast import Cast
+
+    cast_path = str(getattr(config.tts, "cast_file", "") or "")
+    if not cast_path:
+        output_formatter.warning("标注预览跳过：未指定 cast 文件")
+        return 0
+    try:
+        cast = Cast.load(cast_path)
+    except Exception as e:  # noqa: BLE001
+        output_formatter.warning(f"标注预览跳过：cast 加载失败 {e}")
+        return 0
+
+    ann = config.tts.annotate
+    directory = str(getattr(ann, "cache_dir", "") or "") or str(
+        Path.home() / ".cache" / "ppc" / "annotate"
+    )
+    cache = AnnotationCache(directory)
+    sig = roles_signature(cast.role_table())
+    policy = str(getattr(ann, "marker_policy", "all") or "all")
+
+    if options.one:
+        files = [options.input]
+    else:
+        pattern = "**/*.txt" if options.recursive else "*.txt"
+        files = sorted(options.input.glob(pattern))
+
+    written = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        speakers = cache.get(text, sig)
+        if not speakers:
+            continue
+        target = output_dir / f"{path.stem}.annotated.txt"
+        target.write_text(render_markers(text, speakers, policy=policy), encoding="utf-8")
+        written += 1
+
+    output_formatter.info(f"已输出 {written} 份标注预览（marker_policy={policy}），未合成音频")
+    return written
 
 
 def _build_retry_policy(config: PPCConfig):
@@ -798,6 +861,9 @@ def handle_convert(
     _apply_llm_assign(options, output_dir, config, output_formatter)
     # AI 引号级标注（可选）：写章节缓存，引擎按指纹取用
     _apply_annotate(options, output_dir, config, output_formatter)
+    if getattr(options, "annotate_only", False):
+        _write_annotated_previews(options, output_dir, config, output_formatter)
+        return
 
     if options.one:
         if options.book:

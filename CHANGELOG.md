@@ -19,6 +19,11 @@
     归一，**不改正文一个字**；`marker_policy` 控制标记密度（all / changes）。
   - 纯标点引号（如 `“……”`）会并入相邻轮次：实测边缘 TTS 对无可发音字符的文本
     返回 `NoAudioReceived`，会让整章合成失败。
+- **`--annotate-only`**：只把缓存里的标注渲染成 `<章节>.annotated.txt`（`[voice:角色名]`
+  标记，密度由 `marker_policy` 控制），供人工校对「这段到底谁读」，不合成音频。
+- **标注缓存随角色表失效**：缓存键加入「角色名 + 别名」指纹——改 cast 后旧标注作废并
+  重标，避免已删除的角色被 `profile_for` 静默降级到 `default` 音色（台词不丢但整条线
+  换了音色，且无告警）。
 - **归属语剥离（`tts.strip_attribution` / `--strip-attribution`）**：剥掉
   「李明说道：」这类纯归属语，旁白不再念；`mode=verb` 额外修剪句尾言说动词并
   保留动作描写。只动旁白轮次，台词永不触碰。

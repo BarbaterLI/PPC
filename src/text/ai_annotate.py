@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -25,7 +26,24 @@ from .annotate import quote_spans, text_fingerprint
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AnnotationError", "AnnotationResult", "AnnotationCache", "AIAnnotator"]
+__all__ = [
+    "AnnotationError",
+    "AnnotationResult",
+    "AnnotationCache",
+    "AIAnnotator",
+    "roles_signature",
+]
+
+
+def roles_signature(roles: dict[str, list[str]]) -> str:
+    """角色表指纹（规范名 + 别名，顺序无关）。
+
+    触发条件：改了 cast（改名/加别名/删角色）但章节正文没变。
+    后果（不校验时）：旧标注仍被复用，其中已被删除的角色名会被 `profile_for`
+    静默降级到 default 音色——台词没丢，但整条线换成了兜底音色，且没有告警。
+    """
+    parts = [f"{name}:{','.join(sorted(aliases))}" for name, aliases in sorted(roles.items())]
+    return hashlib.sha1("\x00".join(parts).encode("utf-8")).hexdigest()[:16]
 
 _SYSTEM = """你是中文有声书的配音标注器。你的唯一任务是判定引号片段由哪个角色说出。
 
@@ -82,7 +100,7 @@ class AnnotationCache:
     def path_for(self, text: str) -> Path:
         return self.directory / f"{text_fingerprint(text)}.json"
 
-    def get(self, text: str) -> list[str] | None:
+    def get(self, text: str, roles_sig: str | None = None) -> list[str] | None:
         path = self.path_for(text)
         if not path.exists():
             return None
@@ -90,6 +108,15 @@ class AnnotationCache:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
+        stored_roles = data.get("roles")
+        if roles_sig is not None and stored_roles is not None and stored_roles != roles_sig:
+            # 角色表变了 → 旧标注作废（否则会被静默降级到 default 音色）
+            logger.info("标注缓存失效（角色表已变）: %s", path.name)
+            return None
+        if roles_sig is not None and stored_roles is None:
+            # 历史条目没有指纹（该字段是后加的）：无法判断角色表是否一致，
+            # 保守接受并提示一次，避免升级后整库标注全部作废、白跑 LLM。
+            logger.debug("标注缓存无角色指纹（旧格式，按兼容接受）: %s", path.name)
         speakers = data.get("speakers")
         if not isinstance(speakers, list):
             return None
@@ -98,10 +125,17 @@ class AnnotationCache:
             return None
         return [str(s) for s in speakers]
 
-    def put(self, text: str, speakers: list[str], *, model: str) -> Path:
+    def put(
+        self, text: str, speakers: list[str], *, model: str, roles_sig: str | None = None
+    ) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.path_for(text)
-        payload = {"model": model, "quotes": len(speakers), "speakers": speakers}
+        payload = {
+            "model": model,
+            "roles": roles_sig,
+            "quotes": len(speakers),
+            "speakers": speakers,
+        }
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return path
 

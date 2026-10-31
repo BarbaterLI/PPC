@@ -103,6 +103,30 @@ roles:
 注：同一音色但韵律不同的角色**不会被合进同一批**请求——合并以
 `(音色, 语速, 音调, 音量)` 为分组键。
 
+### AI 引号级标注（可选）
+
+正则匹配器靠「人名 + 冒号」推断说话人，遇到「引号在前、归属在后」「连续引号换人」
+「整段都是内心独白」就容易串音。开启标注后由 LLM 逐引号判定，实测 20 章 633 个
+引号只需 **1 次**调用：
+
+```bash
+# 只出标注预览（不合成），人工看一眼再决定
+ppc convert ./txt ./out --cast cast.yml --annotate --annotate-only
+
+# 标注 + 合成（结果按章节缓存，重跑不再调用 LLM）
+ppc convert ./txt ./out --cast cast.yml --annotate --merge-cut --subtitles \
+    --strip-attribution --keep-segment-cache
+```
+
+- 失败（无 key / 网络 / JSON 非法 / 覆盖不全）只告警，**整章回退正则匹配器**，不阻断转换。
+- 标注按「章节正文 + 角色表」指纹缓存：改 cast（改名/加别名）会让旧标注自动作废并重标，
+  避免已删除的角色被静默降级到 `default` 音色。
+- `cast.yml` 的 `aliases` 只喂给模型做归一（如「太白金星」→ 李长），**不改正文一个字**。
+- `--strip-attribution` 剥掉「李明说道：」这类纯归属语，旁白不再念；`mode: verb`
+  额外修剪句尾言说动词并保留动作描写。
+- 纯标点引号（`“……”`）会自动并入相邻轮次——边缘 TTS 对无可发音字符的文本返回
+  `NoAudioReceived`，否则整章会失败。
+
 ## 扩展体系
 
 `extensions/` 目录下的 `.ppcext`（zip）包可注册 CLI 子命令、文本/音频处理钩子、
