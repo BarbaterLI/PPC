@@ -1,19 +1,13 @@
 """品牌渲染 - 版本卡片 / 欢迎页 / 品牌横幅与品牌资产常量。"""
 
 import json
-import os
-import platform
 import sys
 
 from rich.panel import Panel
 
 from src.cli.design import atoms, layouts
 from src.cli.design.tokens import COLORS, SPACING, get_icon, get_style
-from src.cli.version_info import (
-    _dist_version_from_site,
-    fast_platform as _fast_platform,
-    version_info_dict,
-)
+from src.cli.version_info import version_info_dict
 from src.version import __version__
 
 class BrandAssets:

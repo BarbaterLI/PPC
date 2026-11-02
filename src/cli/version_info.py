@@ -15,7 +15,6 @@ rich 渲染的卡片仍由 :mod:`src.cli.branding` 提供，两条路径共用
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import sys

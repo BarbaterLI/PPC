@@ -397,7 +397,7 @@ def _sha256_init(data: bytes) -> Tuple[int, ...]:
     )
     _expand_sha256_schedule(words, 31)
     working = _sha256_rounds(_SHA256_STATE, words, 14)
-    return tuple((x + y) & mask for x, y in zip(_SHA256_INITIAL, working))
+    return tuple((x + y) & mask for x, y in zip(_SHA256_INITIAL, working, strict=True))
 
 
 def _sha256_digest(data: bytes) -> bytes:
@@ -413,7 +413,7 @@ def _sha256_digest(data: bytes) -> bytes:
         words = list(struct.unpack(">16I", padded[offset : offset + 64]))
         _expand_sha256_schedule(words)
         working = _sha256_rounds(state, words)
-        state = tuple((x + y) & mask for x, y in zip(state, working))
+        state = tuple((x + y) & mask for x, y in zip(state, working, strict=True))
     return struct.pack(">8I", *state)
 
 

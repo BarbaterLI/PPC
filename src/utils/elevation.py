@@ -213,7 +213,7 @@ def _print_permission_hint(exc: BaseException) -> None:
         console.print()
         if is_windows():
             console.print('请使用管理员权限的 CMD 或 PowerShell 重新运行:')
-            console.print(f'  1. 右键点击 CMD/PowerShell → "以管理员身份运行"')
+            console.print('  1. 右键点击 CMD/PowerShell → "以管理员身份运行"')
             console.print(f"  2. 执行: {cmd}")
         else:
             console.print("请使用 sudo 重新运行:")
@@ -229,7 +229,7 @@ def _print_permission_hint(exc: BaseException) -> None:
         print(f"  错误: {exc}")
         print()
         print("请使用管理员权限的 CMD 或 PowerShell 重新运行:")
-        print(f'  1. 右键点击 CMD/PowerShell → "以管理员身份运行"')
+        print('  1. 右键点击 CMD/PowerShell → "以管理员身份运行"')
         print(f"  2. 执行: {cmd}")
         print("=" * 60)
     else:

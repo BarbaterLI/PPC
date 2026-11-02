@@ -116,7 +116,7 @@ def build_chapter_tag(chapters: list[tuple[str, int, int]], meta: BookMeta | Non
     # 表示法；文档 %0ehg0000 的 0x60 反被 ffmpeg 解析器忽略）
     toc_body = _cstr(toc_id) + bytes([0x03, len(chapters)]) + b"".join(_cstr(i) for i in ids)
     frames.append(_frame("CTOC", toc_body))
-    for i, ((title, start_ms, end_ms), eid) in enumerate(zip(chapters, ids)):
+    for i, ((title, start_ms, end_ms), eid) in enumerate(zip(chapters, ids, strict=True)):
         frames.append(_chap_frame(eid, title if meta is None or meta.embed else "", start_ms, end_ms))
 
     if meta is not None and meta.embed:
@@ -161,7 +161,7 @@ def merge_chapters_to_book(
 
     probes = [probe_mp3(c.path) for c in valid]
     if any(p is None for p in probes):
-        failed = [(c.path, "无法探测") for c, p in zip(valid, probes) if p is None]
+        failed = [(c.path, "无法探测") for c, p in zip(valid, probes, strict=True) if p is None]
         return BookResult(success=False, degraded_reason="unprobeable", failed_files=failed)
     typed = [p for p in probes if p is not None]
 
@@ -184,7 +184,7 @@ def merge_chapters_to_book(
         start_frames: list[int] = []
         cursor_frames = 1  # 第 0 帧 = Xing 信息帧（统一合成/重写字段）
         audio_parts: list[bytes] = []
-        for idx, (chapter, probe) in enumerate(zip(valid, typed)):
+        for idx, (chapter, probe) in enumerate(zip(valid, typed, strict=True)):
             start_frames.append(cursor_frames)
             start_ms = int((cursor_frames - 1) * ms_per_frame)
             with chapter.path.open("rb") as fh:

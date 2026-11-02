@@ -9,7 +9,7 @@ from src.core.result import Result
 from .retry import RetryConfig, _calculate_delay
 
 if TYPE_CHECKING:
-    from .circuit import CircuitBreaker
+    from .circuit import CircuitBreaker, TripStrategy
 
 T = TypeVar("T")
 

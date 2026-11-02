@@ -7,8 +7,6 @@ import importlib.util
 import logging
 from pathlib import Path
 
-from src.utils.core import deep_merge as _deep_merge
-
 logger = logging.getLogger(__name__)
 
 

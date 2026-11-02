@@ -147,7 +147,7 @@ def concat_mp3_files(
         total_samples = 0
         params = probes[0].params
         with output_path.open("wb") as out:
-            for idx, (f, p) in enumerate(zip(files, probes)):
+            for idx, (f, p) in enumerate(zip(files, probes, strict=True)):
                 if idx > 0 and silence_ms > 0:
                     gap = silent_frames_for_ms(params, silence_ms)
                     if not gap:

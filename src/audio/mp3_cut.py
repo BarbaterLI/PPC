@@ -113,7 +113,7 @@ def cut_by_ticks(data: bytes, cut_ticks: list[int]) -> list[bytes] | None:
 
     # 严格升序且每片至少一帧，否则视为不可靠
     frame_bounds.append(audio_end)
-    for prev, nxt in zip(frame_bounds, frame_bounds[1:]):
+    for prev, nxt in zip(frame_bounds, frame_bounds[1:], strict=False):
         if nxt <= prev:
             return None
 

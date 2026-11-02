@@ -41,13 +41,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _BUILTIN_COMMUNICATE = None
 _BUILTIN_LIST_VOICES = None
-_BUILTIN_EXCEPTIONS = None
 _BUILTIN_BACKEND_NAME = None
 
 try:
     from src.engines.edge_tts import Communicate as _BUILTIN_COMMUNICATE
     from src.engines.edge_tts import list_voices as _BUILTIN_LIST_VOICES
-    from src.engines.edge_tts import exceptions as _BUILTIN_EXCEPTIONS
 
     _BUILTIN_BACKEND_NAME = "src.engines.edge_tts (customized)"
 except ImportError as _exc:

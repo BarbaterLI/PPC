@@ -49,7 +49,6 @@ from src.distributed.executor_factory import ExecutorFactory
 from src.distributed.master_http_server import MasterHttpServer
 
 if TYPE_CHECKING:
-    from aiohttp import web
 
     from src.config import PPCConfig
 

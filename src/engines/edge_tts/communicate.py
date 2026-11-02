@@ -1,7 +1,6 @@
 """Communicate with the service. Only the Communicate class should be used by
 end-users. The other classes and functions are for internal use only."""
 
-import asyncio
 import json
 import ssl
 import time

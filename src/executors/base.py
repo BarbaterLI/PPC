@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from ..config import PPCConfig
 from ..reliability import (

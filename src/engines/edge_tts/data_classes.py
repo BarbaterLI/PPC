@@ -2,7 +2,6 @@
 
 # pylint: disable=too-few-public-methods
 
-import argparse
 import re
 from dataclasses import dataclass
 

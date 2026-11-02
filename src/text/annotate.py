@@ -142,7 +142,7 @@ def turns_from_speakers(text: str, speakers: list[str | None]) -> list[Utterance
 
     turns: list[Utterance] = []
     cursor = 0
-    for (start, end), raw in zip(spans, speakers):
+    for (start, end), raw in zip(spans, speakers, strict=True):
         if start > cursor:
             narration = text[cursor:start]
             # 空白（换行/缩进）也保留：TTS 会当停顿，丢掉会让 `"".join()` 与原文
@@ -233,7 +233,7 @@ def render_markers(text: str, speakers: list[str | None], *, policy: str = "all"
     out: list[str] = []
     cursor = 0
     prev: str | None = None
-    for (start, end), raw in zip(spans, speakers):
+    for (start, end), raw in zip(spans, speakers, strict=True):
         name = _marker_safe_name(raw or "旁白")
         out.append(text[cursor:start])
         if policy == "all" or name != prev:
