@@ -106,9 +106,8 @@ class RateLimiter:
 
 def _is_protected(path: str, method: str) -> bool:
     for prefix, methods in _PROTECTED:
-        if path == prefix or path.startswith(prefix + "/"):
-            if method in methods:
-                return True
+        if (path == prefix or path.startswith(prefix + "/")) and method in methods:
+            return True
     return False
 
 

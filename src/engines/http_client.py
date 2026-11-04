@@ -356,7 +356,11 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                         current_voice,
                         classified,
                     )
-                    raise classified
+                    # 保留到原始异常的链；分类器可能原样返回 exc，此时
+                    # `raise x from x` 会自我引用，退回裸 raise。
+                    if classified is exc:
+                        raise
+                    raise classified from exc
                 last_quota_exc = classified
                 is_last = idx == len(voices_to_try) - 1
                 if is_last:
@@ -367,7 +371,9 @@ class EdgeTTSHttpClient(EdgeTTSClient):
                         voices_to_try,
                         classified,
                     )
-                    raise classified
+                    if classified is exc:
+                        raise
+                    raise classified from exc
                 next_voice = voices_to_try[idx + 1]
                 logger.info(
                     "Edge TTS voice 回退 / voice fallback: from %s to %s (reason: %s)",

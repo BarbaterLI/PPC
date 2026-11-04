@@ -35,9 +35,9 @@ from .execution import (
 from .rate_limiter import (
     AsyncSlidingWindow,
     AsyncTokenBucket,
+    RateLimiter,
     RateLimitResult,
     RateLimitStrategy,
-    RateLimiter,
     SlidingWindowRateLimiter,
     TierRateLimiterConfig,
     TokenBucketRateLimiter,

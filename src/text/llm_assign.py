@@ -276,9 +276,9 @@ class LLMSpeakerAssigner:
 
     def persist(self, cast: Any, path: str) -> None:
         """把 cast 写入 YAML（供下次 `--cast` 直接复用）。"""
-        import yaml
-
         from pathlib import Path
+
+        import yaml
 
         data: dict[str, Any] = {"roles": dict(getattr(cast, "roles", {}) or {})}
         if getattr(cast, "narrator", None):

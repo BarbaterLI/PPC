@@ -243,7 +243,7 @@ class NodeClient:
                     self.probe(),
                     timeout=self._config.heartbeat_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._healthy = False
             except asyncio.CancelledError:
                 break

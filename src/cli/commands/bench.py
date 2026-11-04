@@ -281,9 +281,9 @@ def bench_io(files: int = 12, chars_per_file: int = 8000) -> dict[str, Any]:
     orig_split = segmenter_mod.TextSegmenter.split
     try:
         from ...config.schemas import PPCConfig
+        from ...engines.tts_engine import TTSEngine
         from ...executors import TTSExecutor
         from ...reliability import ExecutionResult
-        from ...engines.tts_engine import TTSEngine
 
         def detect_counter(p: Path, *a: Any, **kw: Any) -> Any:
             if Path(p).suffix.lower() == ".txt":

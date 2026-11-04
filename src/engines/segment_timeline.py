@@ -106,8 +106,9 @@ class SegmentTimeline:
         if not self.cues:
             return ""
         # 延迟导入：只有真正落字幕时才依赖 srt 子模块
-        from .edge_tts.srt_composer import Subtitle, compose
         from datetime import timedelta
+
+        from .edge_tts.srt_composer import Subtitle, compose
 
         subs = [
             Subtitle(

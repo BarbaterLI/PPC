@@ -158,12 +158,12 @@ class OpenAIHTTPBackend:
         url = self.base_url + path
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout) as session:  # noqa: SIM117 - resp 依赖 session，分开写更清晰
                 async with session.post(url, json=payload, headers=self._headers()) as resp:
                     body = await resp.read()
                     if resp.status == 429:
                         raise TransientError("openai_http 429: 限流 / rate limited")
-                    if 500 <= resp.status:
+                    if resp.status >= 500:
                         raise TransientError(f"openai_http {resp.status}: {body[:200]!r}")
                     if resp.status >= 400:
                         raise PermanentError(f"openai_http {resp.status}: {body[:200]!r}")
@@ -180,7 +180,7 @@ class OpenAIHTTPBackend:
 
         url = self.base_url + path
         timeout = aiohttp.ClientTimeout(total=min(self.timeout, 10.0))
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:  # noqa: SIM117 - resp 依赖 session，分开写更清晰
             async with session.get(url, headers=self._headers()) as resp:
                 if resp.status >= 400:
                     raise NetworkError(f"openai_http GET {path}: HTTP {resp.status}")

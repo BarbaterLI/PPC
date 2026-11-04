@@ -100,7 +100,7 @@ def _check_entry_file(names: list[str], manifest: dict) -> list[str]:
     return [f"入口文件 '{entry_file}' 在扩展包中不存在"]
 
 
-def _parse_version_lenient(raw: object) -> "pkg_version.Version | None":
+def _parse_version_lenient(raw: object) -> pkg_version.Version | None:
     """把展示用版本号解析为可比较版本；无法解析返回 ``None``。
 
     触发条件：版本号采用 **git tag 风格**（如 ``1.2.3-rc1-pre.9``）——它

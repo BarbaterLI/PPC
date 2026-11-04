@@ -116,7 +116,7 @@ def build_chapter_tag(chapters: list[tuple[str, int, int]], meta: BookMeta | Non
     # 表示法；文档 %0ehg0000 的 0x60 反被 ffmpeg 解析器忽略）
     toc_body = _cstr(toc_id) + bytes([0x03, len(chapters)]) + b"".join(_cstr(i) for i in ids)
     frames.append(_frame("CTOC", toc_body))
-    for i, ((title, start_ms, end_ms), eid) in enumerate(zip(chapters, ids, strict=True)):
+    for (title, start_ms, end_ms), eid in zip(chapters, ids, strict=True):
         frames.append(_chap_frame(eid, title if meta is None or meta.embed else "", start_ms, end_ms))
 
     if meta is not None and meta.embed:

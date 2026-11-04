@@ -85,7 +85,7 @@ class WelcomeLayout(BaseLayout):
 
         return components
 
-    
+
 
 
 class CommandHelpLayout(BaseLayout):
@@ -120,7 +120,7 @@ class CommandHelpLayout(BaseLayout):
             )
         ]
 
-    
+
 
 
 class TaskDashboardLayout(BaseLayout):
@@ -172,7 +172,7 @@ class TaskDashboardLayout(BaseLayout):
         components.append(atoms.StatGrid(items=items, title="任务统计"))
         return components
 
-    
+
 
 
 class CompletionReportLayout(BaseLayout):
@@ -251,7 +251,7 @@ class CompletionReportLayout(BaseLayout):
 
         return components
 
-    
+
 
 
 class ConfigPreviewLayout(BaseLayout):
@@ -283,7 +283,7 @@ class ConfigPreviewLayout(BaseLayout):
 
         return [atoms.Table(headers=["配置项", "值"], rows=rows, title="当前配置")]
 
-    
+
 
 
 class ErrorLayout(BaseLayout):
@@ -338,7 +338,7 @@ class ErrorLayout(BaseLayout):
 
         return components
 
-    
+
 
 
 class StepLayout(BaseLayout):
@@ -370,4 +370,4 @@ class StepLayout(BaseLayout):
         )
         return [message, progress]
 
-    
+

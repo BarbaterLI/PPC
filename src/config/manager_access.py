@@ -24,7 +24,6 @@ from src.config.schemas import (
     SplitConfig,
     TTSConfig,
 )
-
 from src.utils.core import fill_missing
 
 logger = logging.getLogger(__name__)

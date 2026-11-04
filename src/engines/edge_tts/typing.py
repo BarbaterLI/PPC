@@ -3,9 +3,9 @@
 # pylint: disable=too-few-public-methods
 
 from dataclasses import dataclass
-from typing import List
+from typing import Literal, NotRequired
 
-from typing_extensions import Literal, NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 
 class TTSChunk(TypedDict):
@@ -21,8 +21,8 @@ class TTSChunk(TypedDict):
 class VoiceTag(TypedDict):
     """VoiceTag data."""
 
-    ContentCategories: List[str]
-    VoicePersonalities: List[str]
+    ContentCategories: list[str]
+    VoicePersonalities: list[str]
 
 
 class Voice(TypedDict):

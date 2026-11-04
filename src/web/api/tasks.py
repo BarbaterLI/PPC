@@ -247,7 +247,7 @@ def _send_directory_as_zip(directory: Path) -> Response:
     修复：打包完成后先把 zip 整体读入内存，再立即删除临时文件，最后用
     ``BytesIO`` 返回——响应体与磁盘句柄解耦，清理不再阻塞响应也不会抛异常。
     """
-    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)  # noqa: SIM115 - delete=False 后必须立即 close，Windows 上才能被 zipfile 重开
     tmp_path = Path(tmp.name)
     tmp.close()
 

@@ -6,8 +6,8 @@ Split out of the former ``tts_engine`` module.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from src.cache.multilevel_cache import CacheLevel, MultiLevelCache
 

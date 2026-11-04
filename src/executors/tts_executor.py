@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import PPCConfig
-from ..core.exceptions import ErrorCodes
+from ..core.exceptions import ErrorCodes, ExecutorError
 from ..reliability import (
     BatchResult,
     ExecutionMetrics,
@@ -67,7 +67,7 @@ _FATAL_ERROR_MARKERS = (
 )
 
 
-def _fatal_error_from_message(message: str | None) -> BaseException | None:
+def _fatal_error_from_message(message: str | None) -> Exception | None:
     """把引擎的失败字符串映射为不可重试异常（无法判定时返回 None）。
 
     为什么需要：引擎把 ``QuotaError`` / ``PermanentError`` 统一压成
@@ -513,6 +513,19 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             input_dir, output_dir, progress_handler=None, voice=voice, pattern=pattern, recursive=recursive
         )
 
+    def _require_pool(self) -> WorkerPool:
+        """返回已初始化的 worker pool；未初始化时 fail-fast。
+
+        触发条件：调用方跳过 ``initialize()`` 直接跑批（或 ``initialize``
+        中途抛异常后仍继续）。
+        后果（旧实现）：在 ``self._worker_pool.start(...)`` 处抛
+        ``AttributeError: 'NoneType' object has no attribute 'start'``——
+        错误信息与真实原因（未初始化）无关，排查时几乎无法定位。
+        """
+        if self._worker_pool is None:
+            raise ExecutorError("TTS 执行器未初始化：请先 await initialize()")
+        return self._worker_pool
+
     async def add_batch_with_progress(
         self,
         input_dir: Path,
@@ -550,11 +563,12 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             progress_handler.set_total_tasks(total)
 
         self._is_running = True
-        await self._worker_pool.start(progress_handler)
-        await self._worker_pool.wait_all()
+        pool = self._require_pool()
+        await pool.start(progress_handler)
+        await pool.wait_all()
         # 隔离任务到期后自动重试（此前隔离队列只写不读，重试从未发生）
         await self._drain_quarantine(progress_handler)
-        await self._worker_pool.shutdown()
+        await pool.shutdown()
 
         # 批次结束必须落一次最终检查点：_save_checkpoint_if_needed 仅每
         # checkpoint_interval(5) 个任务存一次，末尾不足 5 个的完成任务不会落盘。
@@ -592,12 +606,12 @@ class TTSExecutor(BaseExecutor[Path, Any]):
                     attempts=q_task.failure_count,
                 )
                 self._tasks[q_task.task_id] = task
-                await self._worker_pool.enqueue(task)
+                await self._require_pool().enqueue(task)
                 if progress_handler:
                     progress_handler.register_task(q_task.task_id, Path(data["input_file"]).name)
 
             logger.info("重新入队 %d 个到期隔离任务，等待重试完成", len(ready))
-            await self._worker_pool.wait_all()
+            await self._require_pool().wait_all()
 
     async def _resume_from_checkpoint(self, progress_handler: Any | None) -> bool:
         """从检查点恢复任务到队列。返回是否发生了恢复。"""
@@ -658,7 +672,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             self._tasks[task_id] = task
 
             if task.status == "pending":
-                await self._worker_pool.enqueue(task)
+                await self._require_pool().enqueue(task)
 
                 if progress_handler:
                     input_path = (
@@ -669,7 +683,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         logger.info(
             "已恢复 %d 个任务，其中 %d 个已完成",
             len(self._tasks),
-            len(self._tasks) - self._worker_pool.queue.qsize(),
+            len(self._tasks) - self._require_pool().queue.qsize(),
         )
         return True
 
@@ -717,7 +731,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
             self._remember_text(str(txt_file), file_text)
 
             self._tasks[task_id] = task
-            await self._worker_pool.enqueue(task)
+            await self._require_pool().enqueue(task)
 
             if progress_handler:
                 progress_handler.register_task(task_id, txt_file.name)
@@ -839,7 +853,7 @@ class TTSExecutor(BaseExecutor[Path, Any]):
         error_msg: str,
         progress_handler: Any | None,
         delay_override: float = 0.0,
-        error: BaseException | None = None,
+        error: Exception | None = None,
     ) -> bool:
         """准备一次重试（日志/回调/计数/退避睡眠）。返回是否继续重试。
 

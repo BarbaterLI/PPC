@@ -501,9 +501,7 @@ class CircuitBreaker:
 
     async def _acquire_probe_slot(self) -> bool:
         """Acquire a half-open probe slot (serialized on the dedicated loop)."""
-        if not await self._half_open_limiter.acquire():
-            return False
-        return True
+        return await self._half_open_limiter.acquire()
 
     async def _release_probe_slot(self) -> None:
         """Release a held half-open probe slot (serialized on the dedicated loop).
@@ -568,8 +566,10 @@ class CircuitBreaker:
         """Trip the breaker according to the configured strategy."""
         strategy = self.config.trip_strategy
 
-        if strategy in (TripStrategy.CONSECUTIVE_FAILURES, TripStrategy.COMBINED):
-            if self._stats.consecutive_failures >= self.config.consecutive_failure_threshold:
+        if strategy in (
+            TripStrategy.CONSECUTIVE_FAILURES,
+            TripStrategy.COMBINED,
+        ) and self._stats.consecutive_failures >= self.config.consecutive_failure_threshold:
                 await self._transition_to(CircuitState.OPEN)
                 logger.warning(
                     "Circuit breaker %s opened: %d consecutive failures",

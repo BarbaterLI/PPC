@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 
 from .speaker_turns import Utterance
@@ -220,7 +221,7 @@ def _marker_safe_name(raw: str) -> str:
     return name or "旁白"
 
 
-def render_markers(text: str, speakers: list[str | None], *, policy: str = "all") -> str:
+def render_markers(text: str, speakers: Sequence[str | None], *, policy: str = "all") -> str:
     """把标注渲染成 ``[voice:角色名]“…”`` 的可读文本（供人工校对/存档）。
 
     ``policy="all"``：每个引号都带标记；``policy="changes"``：只在说话人变化

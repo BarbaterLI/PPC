@@ -7,7 +7,8 @@ from rich.live import Live
 from rich.panel import Panel
 
 from .design.layouts import TaskDashboardLayout
-from .output import OutputFormatter, console as _global_console
+from .output import OutputFormatter
+from .output import console as _global_console
 
 
 @dataclass

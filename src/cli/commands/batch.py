@@ -5,10 +5,10 @@ from pathlib import Path
 from src.cli.output import get_output
 
 from ...config import ConfigManager
-from ...executors import BatcherExecutor
-from ...executors.batcher import AUDIO_PATTERNS
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E
+from ...executors import BatcherExecutor
+from ...executors.batcher import AUDIO_PATTERNS
 from ._async_runner import run_cli_async
 
 

@@ -8,7 +8,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -45,7 +45,7 @@ class TaskAssignment:
     assigned_node: str | None = None
     attempts: int = 0
     error: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration: float = 0.0
@@ -135,7 +135,7 @@ class TaskQueue:
         try:
             await asyncio.wait_for(self._queue.join(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     async def mark_completed(self) -> None:

@@ -1,4 +1,5 @@
 from src.web.auth import auth_headers
+
 """分布式节点池管理
 负责节点信息管理、健康检查、负载均衡
 """
@@ -8,7 +9,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -41,7 +42,7 @@ class NodeInfo:
     failed_requests: int = 0
     avg_response_time: float = 0.0
     last_health_check: datetime | None = None
-    added_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    added_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

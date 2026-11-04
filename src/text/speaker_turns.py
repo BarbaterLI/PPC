@@ -225,7 +225,7 @@ def _find_colon_labels(text: str, matcher: _RoleMatcher, inside_spans: list[tupl
     # 计算每个标签直述内容的结束位置：下一个标签 / 下一个引号开 / 段末
     quote_starts = [s for s, _e in inside_spans]
     resolved: list[tuple[int, int, str]] = []
-    for idx, (label_start, body_start, role) in enumerate(labels):
+    for idx, (_label_start, body_start, role) in enumerate(labels):
         # 区段 = 冒号**之后**的直述内容（标签 `角色：` 留给旁白读出）
         candidates = [lbl[0] for lbl in labels[idx + 1 :]]
         candidates += [qs for qs in quote_starts if qs > body_start]

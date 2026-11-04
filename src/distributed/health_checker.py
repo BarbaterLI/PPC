@@ -7,8 +7,8 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from aiohttp import ClientSession
 
@@ -85,7 +85,7 @@ class HealthChecker:
                         if failure_counts[node_id] >= self._unhealthy_threshold:
                             node.status = NodeStatus.UNHEALTHY
 
-                    node.last_health_check = datetime.now(timezone.utc)
+                    node.last_health_check = datetime.now(UTC)
 
                 if old_status != node.status and on_status_changed is not None:
                     await on_status_changed(node, old_status, node.status)

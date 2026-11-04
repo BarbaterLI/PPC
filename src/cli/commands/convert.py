@@ -6,21 +6,21 @@ import copy
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from src.cli.output import get_output
 
 from ...config import ConfigManager, get_preset
-from ...executors import TTSExecutor
-from ...reliability import create_tts_retry_policy
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E
+from ...executors import TTSExecutor
+from ...reliability import create_tts_retry_policy
 from ..simple_progress import SimpleProgressHandler
 from ._async_runner import run_cli_async
 
 if TYPE_CHECKING:
-    from src.config import PPCConfig
     from src.cli.output import OutputFormatter
+    from src.config import PPCConfig
 
 
 @dataclass
@@ -178,10 +178,10 @@ def _read_text(path: Path) -> str:
 
 
 def _apply_llm_assign(
-    options: "ConvertOptions",
+    options: ConvertOptions,
     output_dir: Path,
-    config: "PPCConfig",
-    output_formatter: "OutputFormatter",
+    config: PPCConfig,
+    output_formatter: OutputFormatter,
 ) -> None:
     """转换前用 LLM 生成 cast 并注入 ``tts.cast_file``。
 
@@ -192,7 +192,7 @@ def _apply_llm_assign(
         return
 
     from ...text.cast import Cast
-    from ...text.llm_assign import LLMSpeakerAssignError, LLMSpeakerAssigner
+    from ...text.llm_assign import LLMSpeakerAssigner, LLMSpeakerAssignError
 
     texts: list[str] = []
     if options.one:
@@ -282,10 +282,10 @@ def _split_oversized(text: str, limit: int) -> list[str]:
 
 
 def _apply_annotate(
-    options: "ConvertOptions",
+    options: ConvertOptions,
     output_dir: Path,
-    config: "PPCConfig",
-    output_formatter: "OutputFormatter",
+    config: PPCConfig,
+    output_formatter: OutputFormatter,
 ) -> None:
     """转换前用 LLM 逐引号标注说话人，写入章节级缓存（引擎据此重建轮次）。
 
@@ -517,10 +517,10 @@ def _apply_annotate(
 
 
 def _write_annotated_previews(
-    options: "ConvertOptions",
+    options: ConvertOptions,
     output_dir: Path,
-    config: "PPCConfig",
-    output_formatter: "OutputFormatter",
+    config: PPCConfig,
+    output_formatter: OutputFormatter,
 ) -> int:
     """把缓存里的标注渲染成 ``<章节>.annotated.txt``（不合成音频）。
 
@@ -706,9 +706,9 @@ def _validate_convert(
 
     # balanced 预设直接取管理器共享配置：必须深拷贝，避免 CLI 覆盖
     # （voice/concurrency/rate/...）污染全局配置；其余预设每次构建全新实例。
-    if options.preset == "balanced":
+    if options.preset == "balanced":  # noqa: SIM108 - 两分支各带注释，三元会损失可读性
         config = copy.deepcopy(config_manager.get_config())
-    else:
+    else:  # noqa: SIM108 - 分支各带注释，三元表达式会损失可读性
         config = get_preset(options.preset)
 
     # 未知 preset 警告：get_preset 对未知名称静默回退到 balanced
@@ -755,7 +755,8 @@ def _validate_convert(
     if options.timeout_multiplier is not None:
         config.tts.timeout_multiplier = options.timeout_multiplier
     if options.timeout_mode is not None:
-        config.tts.timeout_mode = options.timeout_mode
+        # 上面已按白名单校验过取值，此处收窄为 schema 的 Literal 类型
+        config.tts.timeout_mode = cast(Any, options.timeout_mode)
     if options.timeout is not None:
         config.tts.timeout = options.timeout
     if options.ramp_up is not None:

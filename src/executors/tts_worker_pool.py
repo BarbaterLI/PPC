@@ -6,6 +6,7 @@ processor callback, so the pool never touches executor internals.
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -124,10 +125,8 @@ class WorkerPool:
         # 满 timeout 才强制取消（实测 ~5s 关停延迟）。
         if self._ramp_up_task is not None:
             self._ramp_up_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._ramp_up_task
-            except asyncio.CancelledError:
-                pass
             if self._ramp_up_task in self.workers:
                 self.workers.remove(self._ramp_up_task)
             self._ramp_up_task = None
@@ -139,7 +138,7 @@ class WorkerPool:
             try:
                 await asyncio.wait_for(asyncio.gather(*self.workers, return_exceptions=True), timeout=timeout)
                 logger.info("所有工作协程已安全退出")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("等待工作协程退出超时，强制取消")
                 for worker in self.workers:
                     if not worker.done():

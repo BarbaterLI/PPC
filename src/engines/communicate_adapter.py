@@ -7,6 +7,7 @@ monolithic ``edge_tts_client`` module.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 from typing import Any
@@ -81,7 +82,7 @@ class CommunicateAdapter:
             if self._muid_manager is not None and self._config.muid_persist:
                 try:
                     muid = self._muid_manager.get_muid()
-                    setattr(self._communicate, "_muid", muid)
+                    self._communicate._muid = muid
                 except Exception as e:  # noqa: BLE001
                     logger.debug("MUID 注入失败 / MUID injection failed: %s", e)
             if self._config.user_agents:
@@ -108,7 +109,7 @@ class CommunicateAdapter:
                     existing = getattr(self._communicate, "_extra_headers", None) or {}
                     existing = dict(existing)
                     existing["User-Agent"] = selected_ua
-                    setattr(self._communicate, "_extra_headers", existing)
+                    self._communicate._extra_headers = existing
                 except Exception as e:  # noqa: BLE001
                     logger.debug("UA 注入失败 / UA injection failed: %s", e)
         # Record for external inspection (UA switch verification).
@@ -126,9 +127,12 @@ class CommunicateAdapter:
             # ``_synthesize_single_voice`` which has the UA-switch
             # verification logic (retry with a different UA, revoke
             # mark if all UAs fail). Handling it here would double-count.
-            if selected_ua is not None and self._ua_health_filter is not None:
-                if UAHealthFilter.is_ua_failure(exc):
-                    self._ua_health_filter.mark_unhealthy(selected_ua)
+            if (
+                selected_ua is not None
+                and self._ua_health_filter is not None
+                and UAHealthFilter.is_ua_failure(exc)
+            ):
+                self._ua_health_filter.mark_unhealthy(selected_ua)
             raise
         finally:
             # On success, reset the NoAudioReceived counter for this UA
@@ -145,7 +149,6 @@ class CommunicateAdapter:
             # "Session is closed" errors on subsequent streams.
             aclose = getattr(inner_gen, "aclose", None)
             if aclose is not None:
-                try:
+                # 关闭失败不影响主流程（流已超时/取消，异常无意义）
+                with contextlib.suppress(Exception):
                     await aclose()
-                except Exception:  # noqa: BLE001
-                    pass

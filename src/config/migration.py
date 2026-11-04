@@ -5,7 +5,7 @@
 import configparser
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +109,7 @@ class ConfigMigrator:
 
         v8_config["_migrated_from"] = {
             "source": str(v8_config_path),
-            "migrated_at": datetime.now(timezone.utc).isoformat(),
+            "migrated_at": datetime.now(UTC).isoformat(),
             "source_version": v8_version,
         }
 
@@ -155,7 +155,7 @@ class ConfigMigrator:
         cfg["version"] = __version__
         cfg["_migrated_from"] = {
             "source": str(v11_config_path),
-            "migrated_at": datetime.now(timezone.utc).isoformat(),
+            "migrated_at": datetime.now(UTC).isoformat(),
             "source_version": source_version,
         }
 
@@ -227,7 +227,7 @@ class ConfigMigrator:
         v6_config["network"]["timeout"] = self._get_nested(v5_config, "network.timeout", 5)
         v6_config["_migrated_from"] = {
             "source": str(source_path),
-            "migrated_at": datetime.now(timezone.utc).isoformat(),
+            "migrated_at": datetime.now(UTC).isoformat(),
             "source_version": "5.0",
         }
 

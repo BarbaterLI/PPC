@@ -144,7 +144,7 @@ class SegmentJournal:
             entries = {}
 
         journal = cls(path, entries)
-        if journal._merge_log():
+        if journal._merge_log():  # noqa: SIM102 - _merge_log() 有副作用，嵌套更明确
             # 归并成功后立即压实：下次启动只读一份快照 + 空日志。
             # 若在「写完快照」与「删日志」之间崩溃，日志内容与快照一致，
             # 重放是幂等的，不会产生错误条目。

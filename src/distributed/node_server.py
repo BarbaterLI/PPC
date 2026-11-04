@@ -21,7 +21,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -57,7 +57,7 @@ class NodeStats:
     total_bytes_processed: int = 0
     current_concurrency: int = 0
     peak_concurrency: int = 0
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_request_at: datetime | None = None
 
     @property
@@ -77,7 +77,7 @@ class NodeStats:
     @property
     def uptime_seconds(self) -> float:
         """返回服务运行时间（秒）"""
-        return (datetime.now(timezone.utc) - self.started_at).total_seconds()
+        return (datetime.now(UTC) - self.started_at).total_seconds()
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式"""
@@ -98,7 +98,7 @@ class NodeStats:
     def record_request(self, success: bool, duration: float, bytes_processed: int = 0):
         """记录请求结果"""
         self.total_requests += 1
-        self.last_request_at = datetime.now(timezone.utc)
+        self.last_request_at = datetime.now(UTC)
         self.total_duration_seconds += duration
 
         if success:

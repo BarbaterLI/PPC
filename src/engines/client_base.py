@@ -6,6 +6,7 @@ Split out of the former monolithic ``edge_tts_client`` module.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -254,10 +255,8 @@ class EdgeTTSClient(ABC):
         except BaseException:
             # 任何异常（包括 CancelledError）都要删除临时文件，
             # 避免缓存目录中残留不完整的音频数据。
-            try:
+            with contextlib.suppress(OSError):
                 temp_path.unlink()
-            except OSError:
-                pass
             raise
         return written
 
@@ -279,7 +278,7 @@ class EdgeTTSClient(ABC):
         # Edge TTS library-specific exceptions (looked up by name).
         if cls_name == "NoAudioReceived":
             no_audio_exc = TransientError("Edge TTS returned no audio (transient)")
-            setattr(no_audio_exc, "error_code", "TTS_NO_AUDIO_RECEIVED")
+            no_audio_exc.error_code = "TTS_NO_AUDIO_RECEIVED"
             return no_audio_exc
         if cls_name == "SkewAdjustmentError":
             return TransientError("Edge TTS skew adjustment failure (transient)")

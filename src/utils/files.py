@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import contextlib
 import logging
 import os
 import re
@@ -185,10 +186,8 @@ def _commit_part(tmp_path: Path, path: Path) -> None:
             os.fsync(fh.fileno())
         os.replace(str(tmp_path), str(path))
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass
         raise
 
 
@@ -211,10 +210,8 @@ def atomic_write_bytes(path: Path | str, data: bytes) -> Path:
             fh.flush()
             os.fsync(fh.fileno())
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp.unlink()
-        except OSError:
-            pass
         raise
     _commit_part(tmp, target)
     return target
@@ -238,10 +235,8 @@ def atomic_copy_file(src: Path | str, dst: Path | str) -> Path:
             fdst.flush()
             os.fsync(fdst.fileno())
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp.unlink()
-        except OSError:
-            pass
         raise
     _commit_part(tmp, target)
     return target

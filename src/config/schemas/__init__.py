@@ -47,8 +47,8 @@ from src.config.schemas.rules import (
     VolumePatternType,
 )
 from src.config.schemas.tts import (
-    AntiRiskControlConfig,
     AnnotateConfig,
+    AntiRiskControlConfig,
     LLMAssignConfig,
     MergeCutConfig,
     StripAttributionConfig,

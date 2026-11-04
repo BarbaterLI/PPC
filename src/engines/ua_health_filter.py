@@ -121,12 +121,8 @@ class UAHealthFilter:
         """
         # aiohttp.ClientResponseError has a ``status`` attribute
         status = getattr(exc, "status", None)
-        if status == 403:
-            return True
-        # Fallback: check message for 403
-        if "403" in str(exc):
-            return True
-        return False
+        # 状态码优先；无 status 属性时回退到消息匹配
+        return status == 403 or "403" in str(exc)
 
     @staticmethod
     def is_no_audio_failure(exc: BaseException) -> bool:

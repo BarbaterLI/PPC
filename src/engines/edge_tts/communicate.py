@@ -5,24 +5,15 @@ import json
 import ssl
 import time
 import uuid
-from contextlib import nullcontext
+from collections.abc import AsyncGenerator, Generator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from io import TextIOWrapper
-from typing import (
-    AsyncGenerator,
-    ContextManager,
-    Dict,
-    Generator,
-    List,
-    Optional,
-    Tuple,
-    Union,
-)
+from typing import Literal
 from xml.sax.saxutils import escape, unescape
 
 import aiohttp
 import certifi
-from typing_extensions import Literal
 
 from .constants import (
     DEFAULT_VOICE,
@@ -55,7 +46,7 @@ _INCOMPATIBLE_CHARS_TABLE = str.maketrans(
 
 def get_headers_and_data(
     data: bytes, header_length: int
-) -> Tuple[Dict[bytes, bytes], bytes]:
+) -> tuple[dict[bytes, bytes], bytes]:
     """
     Returns the headers and data from the given data.
 
@@ -77,7 +68,7 @@ def get_headers_and_data(
     return headers, data[header_length + 2 :]
 
 
-def remove_incompatible_characters(string: Union[str, bytes]) -> str:
+def remove_incompatible_characters(string: str | bytes) -> str:
     """
     The service does not support a couple character ranges.
     Most important being the vertical tab character which is
@@ -191,7 +182,7 @@ def _adjust_split_point_for_xml_entity(text: bytes, split_at: int) -> int:
 
 
 def split_text_by_byte_length(
-    text: Union[str, bytes], byte_length: int
+    text: str | bytes, byte_length: int
 ) -> Generator[bytes, None, None]:
     """
     Splits text into chunks, each not exceeding a maximum byte length.
@@ -266,7 +257,7 @@ def split_text_by_byte_length(
         yield remaining_chunk
 
 
-def mkssml(tc: TTSConfig, escaped_text: Union[str, bytes]) -> str:
+def mkssml(tc: TTSConfig, escaped_text: str | bytes) -> str:
     """
     Creates a SSML string from the given parameters.
 
@@ -337,10 +328,10 @@ class CommunicateConfig:
     volume: str = "+0%"
     pitch: str = "+0Hz"
     boundary: Literal["WordBoundary", "SentenceBoundary"] = "SentenceBoundary"
-    connector: Optional[aiohttp.BaseConnector] = None
-    proxy: Optional[str] = None
-    connect_timeout: Optional[int] = 10
-    receive_timeout: Optional[int] = 60
+    connector: aiohttp.BaseConnector | None = None
+    proxy: str | None = None
+    connect_timeout: int | None = 10
+    receive_timeout: int | None = 60
 
     def __post_init__(self) -> None:
         # Validate the proxy parameter.
@@ -385,11 +376,11 @@ class Communicate:
         volume: str = "+0%",
         pitch: str = "+0Hz",
         boundary: Literal["WordBoundary", "SentenceBoundary"] = "SentenceBoundary",
-        connector: Optional[aiohttp.BaseConnector] = None,
-        proxy: Optional[str] = None,
-        connect_timeout: Optional[int] = 10,
-        receive_timeout: Optional[int] = 60,
-        drm: Optional[DRM] = None,
+        connector: aiohttp.BaseConnector | None = None,
+        proxy: str | None = None,
+        connect_timeout: int | None = 10,
+        receive_timeout: int | None = 60,
+        drm: DRM | None = None,
     ):
         # Validate the text parameter.
         if not isinstance(text, str):
@@ -416,8 +407,8 @@ class Communicate:
             4096,
         )
 
-        self.proxy: Optional[str] = self.config.proxy
-        self.connector: Optional[aiohttp.BaseConnector] = self.config.connector
+        self.proxy: str | None = self.config.proxy
+        self.connector: aiohttp.BaseConnector | None = self.config.connector
         self.session_timeout = self.config.make_session_timeout()
 
         # DRM instance (clock skew state) — shared default keeps the
@@ -431,13 +422,13 @@ class Communicate:
         # ``_extra_headers``: merged on top of ``WSS_HEADERS`` for each
         # request — used for per-stream User-Agent rotation without mutating
         # the shared ``BASE_HEADERS`` dict.
-        self._muid: Optional[str] = None
-        self._extra_headers: Dict[str, str] = {}
+        self._muid: str | None = None
+        self._extra_headers: dict[str, str] = {}
 
         # Store current state of TTS.
         self.state: CommunicateState = CommunicateState()
 
-    def _parse_metadata(self, data: bytes) -> List[TTSChunk]:
+    def _parse_metadata(self, data: bytes) -> list[TTSChunk]:
         """解析一条 ``audio.metadata`` 帧，返回其中**全部** boundary 块。
 
         触发条件：服务端把多个 ``WordBoundary``/``SentenceBoundary`` 事件
@@ -449,7 +440,7 @@ class Communicate:
         未知类型仍按旧语义处理：**首个**有效 boundary 之前出现未知类型即抛
         :class:`UnknownResponse`；之后出现则忽略（旧实现此时已 return）。
         """
-        chunks: List[TTSChunk] = []
+        chunks: list[TTSChunk] = []
         for meta_obj in json.loads(data)["Metadata"]:
             meta_type = meta_obj["Type"]
             if meta_type in ("WordBoundary", "SentenceBoundary"):
@@ -494,7 +485,7 @@ class Communicate:
         )
         self.state.chunk_audio_bytes = 0
 
-    def _build_request_headers(self) -> Dict[str, str]:
+    def _build_request_headers(self) -> dict[str, str]:
         """Build per-request headers for the WebSocket connection.
 
         Build per-request headers: start from WSS_HEADERS, apply per-stream
@@ -537,7 +528,7 @@ class Communicate:
 
     def _handle_text_message(
         self, received
-    ) -> Tuple[Optional[List[TTSChunk]], bool]:
+    ) -> tuple[list[TTSChunk] | None, bool]:
         """Handle a TEXT websocket message.
 
         Returns ``(chunks, is_turn_end)``: 该帧解析出的全部 metadata 块
@@ -566,7 +557,7 @@ class Communicate:
             raise UnknownResponse("Unknown path received")
         return None, False
 
-    def _parse_audio_message(self, received) -> Optional[bytes]:
+    def _parse_audio_message(self, received) -> bytes | None:
         """Handle a BINARY websocket message; return the audio payload.
 
         Returns None for the expected empty stream-termination frame;
@@ -696,7 +687,8 @@ class Communicate:
         self.state.stream_was_called = True
 
         # Stream the audio and metadata from the service.
-        for self.state.partial_text in self.texts:
+        # 故意把当前分片写进 self.state（下游 _stream 读它），非覆盖笔误
+        for self.state.partial_text in self.texts:  # noqa: B020
             self.state.chunk_audio_bytes = 0
             try:
                 async for message in self._stream():
@@ -712,14 +704,14 @@ class Communicate:
 
     async def save(
         self,
-        audio_fname: Union[str, bytes],
-        metadata_fname: Optional[Union[str, bytes]] = None,
+        audio_fname: str | bytes,
+        metadata_fname: str | bytes | None = None,
     ) -> None:
         """
         Save the audio and metadata to the specified files.
         """
-        metadata: Union[TextIOWrapper, ContextManager[None]] = (
-            open(metadata_fname, "w", encoding="utf-8")
+        metadata: TextIOWrapper | AbstractContextManager[None] = (  # noqa: SIM115 - 交给下方 with 管理
+            open(metadata_fname, "w", encoding="utf-8")  # noqa: SIM115 - 句柄由下方 with 统一管理
             if metadata_fname is not None
             else nullcontext()
         )

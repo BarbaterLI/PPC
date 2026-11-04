@@ -54,7 +54,7 @@ def _decode_from_l2(value: Any) -> Any:
             if marker == "tuple":
                 return tuple(_decode_from_l2(item) for item in value["items"])
             if marker == "set":
-                return set(_decode_from_l2(item) for item in value["items"])
+                return {_decode_from_l2(item) for item in value["items"]}
             if marker == "frozenset":
                 return frozenset(_decode_from_l2(item) for item in value["items"])
         return {key: _decode_from_l2(item) for key, item in value.items()}

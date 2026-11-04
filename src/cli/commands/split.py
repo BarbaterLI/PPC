@@ -6,9 +6,9 @@ from pathlib import Path
 from src.cli.output import get_output
 
 from ...config import ConfigManager, CustomRule, get_preset, get_preset_names
-from ...executors import SplitterExecutor
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E
+from ...executors import SplitterExecutor
 from ._async_runner import run_cli_async
 
 

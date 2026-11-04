@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +108,7 @@ class ConfigManager(ConfigStore):
                 return False
 
             event = ConfigChangeEvent(
-                key=key, old_value=old_value, new_value=value, timestamp=datetime.now(timezone.utc), source=source
+                key=key, old_value=old_value, new_value=value, timestamp=datetime.now(UTC), source=source
             )
             self._notifier.record(event)
             self._notifier.notify(event)
@@ -137,7 +137,7 @@ class ConfigManager(ConfigStore):
                     key="*",
                     old_value="preset:" + (old_config.tts.preset if old_config else "unknown"),
                     new_value="preset:" + preset,
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=datetime.now(UTC),
                     source="preset",
                 )
                 self._notifier.record(event)

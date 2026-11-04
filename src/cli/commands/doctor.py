@@ -13,9 +13,10 @@ import platform
 import shutil
 import socket
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..output import console
 

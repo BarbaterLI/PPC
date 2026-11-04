@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -282,14 +283,10 @@ class EventBroker:
         try:
             q.put_nowait(item)
         except Full:
-            try:
+            with contextlib.suppress(Empty):
                 q.get_nowait()
-            except Empty:
-                pass
-            try:
+            with contextlib.suppress(Full):
                 q.put_nowait(item)
-            except Full:
-                pass
 
     def publish(self, subscribers: list[Queue], event: str, data: dict[str, Any]) -> None:
         message = json.dumps({"event": event, "data": data})

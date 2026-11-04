@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import socket
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -25,6 +26,20 @@ from src.extensions.ipc.transports import IPCTransport, NamedPipeTransport, Sock
 from src.extensions.ipc.win32_compat import _WIN32_AVAILABLE, win32pipe
 
 logger = logging.getLogger(__name__)
+
+
+def _set_bind_flag(sock: socket.socket) -> None:
+    """设置「独占绑定」标志，让端口冲突真的报错。
+
+    Windows 的 ``SO_REUSEADDR`` 语义与 POSIX **相反**：它允许两个 socket
+    绑定同一 ``(addr, port)``，后绑的会「抢走」连接。表现是并行跑两个进程时
+    IPC 客户端连到了另一进程的服务端（报「无响应」，而不是「端口占用」）。
+    Windows 上正确做法是 ``SO_EXCLUSIVEADDRUSE``。
+    """
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 
 class IPCServer:
@@ -123,20 +138,33 @@ class IPCServer:
     # -- socket 传输 --
 
     def _start_socket(self) -> None:
-        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         port = _derive_port(self._pipe_name)
-        # 端口被占用时尝试后续端口（最多 50 次）
+        last_error: OSError | None = None
+        # 端口被占用时尝试后续端口（最多 50 次）。
+        #
+        # 关键：每轮必须**新建** socket。同一个 socket 对象 bind 失败后再 bind，
+        # Windows 上会持续返回 EINVAL——旧实现就是这个写法，于是「重试 50 个
+        # 端口」实际上从第二次起必然失败，端口一冲突就整体不可用（测试并行跑
+        # 时尤其明显：报错永远是「无法绑定 ... port=45074」）。
         for offset in range(50):
+            candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                self._server_socket.bind(("127.0.0.1", port + offset))
-                self._server_socket.listen(1)
-                self._bound_port = port + offset
-                return
-            except OSError:
+                _set_bind_flag(candidate)
+                candidate.bind(("127.0.0.1", port + offset))
+                candidate.listen(1)
+            except OSError as exc:
+                last_error = exc
+                candidate.close()
                 continue
+            self._server_socket = candidate
+            self._bound_port = port + offset
+            if offset:
+                logger.debug(
+                    "IPC 端口 %d 被占用，改用 %d（name=%s）", port, port + offset, self._pipe_name
+                )
+            return
         raise IPCError(
-            f"无法绑定 IPC socket (name={self._pipe_name}, port={port})"
+            f"无法绑定 IPC socket (name={self._pipe_name}, port={port}): {last_error}"
         )
 
     def _stop_socket(self) -> None:
@@ -298,12 +326,10 @@ class IPCServer:
                         msg.id,
                         f"{IDENTITY_MISMATCH}: expected={self._pipe_name}, got={msg.identity}",
                     )
-                    try:
+                    with contextlib.suppress(IPCError):
                         transport.send(
                             (json.dumps(mismatch.to_dict()) + "\n").encode("utf-8")
                         )
-                    except IPCError:
-                        pass
                     return
             elif not self._legacy_identity_warned:
                 # 向后兼容：旧客户端不发送 identity，按原行为继续处理。

@@ -3,11 +3,10 @@ correct voice based on their attributes."""
 
 import json
 import ssl
-from typing import Any, List, Optional
+from typing import Any, Unpack
 
 import aiohttp
 import certifi
-from typing_extensions import Unpack
 
 from .constants import SEC_MS_GEC_VERSION, VOICE_HEADERS, VOICE_LIST
 from .drm import DEFAULT_DRM as _DRM
@@ -15,8 +14,8 @@ from .typing import Voice, VoicesManagerFind, VoicesManagerVoice
 
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 async def __list_voices(
-    session: aiohttp.ClientSession, ssl_ctx: ssl.SSLContext, proxy: Optional[str]
-) -> List[Voice]:
+    session: aiohttp.ClientSession, ssl_ctx: ssl.SSLContext, proxy: str | None
+) -> list[Voice]:
     """
     Private function that makes the request to the voice list URL and parses the
     JSON response. This function is used by list_voices() and makes it easier to
@@ -38,7 +37,7 @@ async def __list_voices(
         ssl=ssl_ctx,
         raise_for_status=True,
     ) as url:
-        data: List[Any] = json.loads(await url.text())
+        data: list[Any] = json.loads(await url.text())
 
     for voice in data:
         if "VoiceTag" not in voice:
@@ -54,8 +53,8 @@ async def __list_voices(
 
 
 async def list_voices(
-    *, connector: Optional[aiohttp.BaseConnector] = None, proxy: Optional[str] = None
-) -> List[Voice]:
+    *, connector: aiohttp.BaseConnector | None = None, proxy: str | None = None
+) -> list[Voice]:
     """
     List all available voices and their attributes.
 
@@ -87,12 +86,12 @@ class VoicesManager:
     """
 
     def __init__(self) -> None:
-        self.voices: List[VoicesManagerVoice] = []
+        self.voices: list[VoicesManagerVoice] = []
         self.called_create: bool = False
 
     @classmethod
     async def create(
-        cls, custom_voices: Optional[List[Voice]] = None
+        cls, custom_voices: list[Voice] | None = None
     ) -> "VoicesManager":
         """
         Creates a VoicesManager object and populates it with all available voices.
@@ -105,7 +104,7 @@ class VoicesManager:
         self.called_create = True
         return self
 
-    def find(self, **kwargs: Unpack[VoicesManagerFind]) -> List[VoicesManagerVoice]:
+    def find(self, **kwargs: Unpack[VoicesManagerFind]) -> list[VoicesManagerVoice]:
         """
         Finds all matching voices based on the provided attributes.
         """

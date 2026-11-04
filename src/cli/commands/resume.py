@@ -7,9 +7,9 @@
 
 from pathlib import Path
 
-from ...executors.checkpoint import CheckpointManager
 from ...core.exceptions import CLIError
 from ...core.exceptions import ErrorCodes as E
+from ...executors.checkpoint import CheckpointManager
 from ..output import get_output
 
 

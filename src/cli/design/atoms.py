@@ -184,7 +184,7 @@ class Trace:
             lines = lines[: self.max_lines] + ["... (truncated)"]
         return "\n".join(lines)
 
-    def to_rich(self) -> "Traceback":
+    def to_rich(self) -> Traceback:
         """返回 Rich Traceback。"""
         # rich.traceback 会连带拉入 pygments 全家桶（~60ms），仅在真正渲染
         # traceback 时导入，避免污染 CLI 冷启动路径。

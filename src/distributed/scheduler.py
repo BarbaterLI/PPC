@@ -25,7 +25,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -327,7 +327,7 @@ class DistributedScheduler:
         """Execute a single task by forwarding it to a worker (or running locally)."""
         task.status = TaskStatus.RUNNING
         task.attempts += 1
-        task.started_at = datetime.now(timezone.utc)
+        task.started_at = datetime.now(UTC)
 
         # 远程失败标记：只有“远端确定未产出”的失败（RemoteExecutionError）
         # 才允许在重试耗尽后走本地兜底，响应解析失败不允许（避免重复合成）。
@@ -490,7 +490,7 @@ class DistributedScheduler:
 
                     duration_header = response.headers.get("X-Duration", "0")
                     task.duration = float(duration_header)
-                    task.completed_at = datetime.now(timezone.utc)
+                    task.completed_at = datetime.now(UTC)
                     task.status = TaskStatus.COMPLETED
                     await self._task_queue.mark_completed()
 
@@ -570,7 +570,7 @@ class DistributedScheduler:
                 result = await self._local_worker_unit.handle_convert_request(request)
 
                 task.duration = time.time() - start_time
-                task.completed_at = datetime.now(timezone.utc)
+                task.completed_at = datetime.now(UTC)
 
                 if not result.success:
                     raise RuntimeError(result.error or "Local execution failed")

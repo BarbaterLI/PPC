@@ -15,10 +15,9 @@ of a class-level mutable attribute. 注意：上游 7.3.1 的
 
 import secrets
 import struct
+from datetime import UTC
 from datetime import datetime as dt
-from datetime import timezone as tz
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 
@@ -173,7 +172,7 @@ def _rol16(value: int) -> int:
     return ((value << 16) | (value >> 16)) & _U32_MASK
 
 
-def _words_le4_even(data: bytes) -> List[int]:
+def _words_le4_even(data: bytes) -> list[int]:
     """Split data into little-endian 32-bit words, zero-padded to an even count."""
     padded = data + b"\x00" * ((-len(data)) % 4)
     if not padded:
@@ -199,8 +198,8 @@ def _sigma1(value: int) -> int:
 
 
 def _sha256_rounds(
-    state: Tuple[int, ...], words: List[int], first_round: int = 0
-) -> Tuple[int, ...]:
+    state: tuple[int, ...], words: list[int], first_round: int = 0
+) -> tuple[int, ...]:
     """Run SHA-256 rounds, optionally resuming inside the first block."""
     a, b, c, d, e, f, g, h = state
     mask = _U32_MASK
@@ -350,7 +349,7 @@ def _sha256_rounds(
     return a, b, c, d, e, f, g, h
 
 
-def _expand_sha256_schedule(words: List[int], first_word: int = 16) -> None:
+def _expand_sha256_schedule(words: list[int], first_word: int = 16) -> None:
     """Expand SHA-256 words, combining rotations before modular addition."""
     mask = _U32_MASK
     for index in range(first_word, 64):
@@ -362,7 +361,7 @@ def _expand_sha256_schedule(words: List[int], first_word: int = 16) -> None:
 
 
 @lru_cache(maxsize=1)
-def _sha256_init(data: bytes) -> Tuple[int, ...]:
+def _sha256_init(data: bytes) -> tuple[int, ...]:
     """Compute the initial SHA-256 state for token data."""
     mask = _U32_MASK
     words = [0] * 14 + [int.from_bytes(data[:3], "big")]
@@ -417,7 +416,7 @@ def _sha256_digest(data: bytes) -> bytes:
     return struct.pack(">8I", *state)
 
 
-def _cs64_digest(data: bytes, digest: bytes) -> Tuple[int, int]:
+def _cs64_digest(data: bytes, digest: bytes) -> tuple[int, int]:
     """Compute the CS64 digest words for token data."""
     mask = _U32_MASK
     key_a, key_b = struct.unpack_from("<II", digest)
@@ -466,7 +465,7 @@ def _cs64_digest(data: bytes, digest: bytes) -> Tuple[int, int]:
 
 
 @lru_cache(maxsize=1)
-def _token_hash(data: bytes) -> Tuple[str, str]:
+def _token_hash(data: bytes) -> tuple[str, str]:
     """Compute the token hash components."""
     digest = _sha256_digest(data)
     cs64 = struct.pack("<II", *_cs64_digest(data, digest)).hex().upper()
@@ -491,7 +490,7 @@ def _sec_ms_gec_from_timestamp(ticks_unix: float) -> str:
     return f"{cs64}-{sha256}"
 
 
-def generate_sec_ms_gec_v2(unix_timestamp: Optional[float] = None) -> str:
+def generate_sec_ms_gec_v2(unix_timestamp: float | None = None) -> str:
     """Generate a v2 Sec-MS-GEC token value.
 
     Args:
@@ -526,7 +525,7 @@ class ClockSkew:
 
     def get_unix_timestamp(self) -> float:
         """Gets the current timestamp in Unix format with clock skew correction."""
-        return dt.now(tz.utc).timestamp() + self._seconds
+        return dt.now(UTC).timestamp() + self._seconds
 
 
 # Shared default skew state: 403-driven skew corrections learned by one
@@ -540,7 +539,7 @@ class DRM:
     Class to handle DRM operations with clock skew correction.
     """
 
-    def __init__(self, clock_skew: Optional[ClockSkew] = None) -> None:
+    def __init__(self, clock_skew: ClockSkew | None = None) -> None:
         self._clock_skew = clock_skew if clock_skew is not None else DEFAULT_CLOCK_SKEW
 
     def adj_clock_skew_seconds(self, skew_seconds: float) -> None:
@@ -552,12 +551,12 @@ class DRM:
         return self._clock_skew.get_unix_timestamp()
 
     @staticmethod
-    def parse_rfc2616_date(date: str) -> Optional[float]:
+    def parse_rfc2616_date(date: str) -> float | None:
         """Parse an RFC 2616 date string into a Unix timestamp."""
         try:
             return (
                 dt.strptime(date, "%a, %d %b %Y %H:%M:%S %Z")
-                .replace(tzinfo=tz.utc)
+                .replace(tzinfo=UTC)
                 .timestamp()
             )
         except ValueError:
@@ -571,10 +570,10 @@ class DRM:
         """
         if e.headers is None:
             raise SkewAdjustmentError("No server date in headers.") from e
-        server_date: Optional[str] = e.headers.get("Date", None)
+        server_date: str | None = e.headers.get("Date", None)
         if server_date is None or not isinstance(server_date, str):
             raise SkewAdjustmentError("No server date in headers.") from e
-        server_date_parsed: Optional[float] = DRM.parse_rfc2616_date(server_date)
+        server_date_parsed: float | None = DRM.parse_rfc2616_date(server_date)
         if server_date_parsed is None or not isinstance(server_date_parsed, float):
             raise SkewAdjustmentError(
                 f"Failed to parse server date: {server_date}"
@@ -602,7 +601,7 @@ class DRM:
         return secrets.token_hex(16).upper()
 
     @staticmethod
-    def headers_with_muid(headers: Dict[str, str], muid: Optional[str] = None) -> Dict[str, str]:
+    def headers_with_muid(headers: dict[str, str], muid: str | None = None) -> dict[str, str]:
         """Return a copy of *headers* with the MUID cookie added.
 
         Passing ``muid`` avoids the per-call ``DRM.generate_muid`` mutation that

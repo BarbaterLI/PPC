@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from ...core.exceptions import CLIError
+from ...core.exceptions import CLIError, PPCTimeoutError
 from ...core.exceptions import ErrorCodes as E
-from ...core.exceptions import PPCTimeoutError
 
 
 def run_cli_async(

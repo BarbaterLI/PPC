@@ -22,8 +22,8 @@ import contextlib
 from ..core.exceptions import CLIError, ErrorCodes
 from .app_registration import (
     is_ext_invocation,
-    register_extension_cli_apps,
     register_ext_app,
+    register_extension_cli_apps,
 )
 from .output import get_output, setup_logging
 

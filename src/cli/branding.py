@@ -10,6 +10,7 @@ from src.cli.design.tokens import COLORS, SPACING, get_icon, get_style
 from src.cli.version_info import version_info_dict
 from src.version import __version__
 
+
 class BrandAssets:
     """Brand assets."""
 

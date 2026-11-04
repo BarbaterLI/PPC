@@ -16,8 +16,8 @@ See the LICENSE-MIT file for details.
 import functools
 import logging
 import re
+from collections.abc import Generator
 from datetime import timedelta
-from typing import Generator, List, Union
 
 LOG = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class Subtitle:
 
     # pylint: disable=R0913
     def __init__(
-        self, index: Union[int, None], start: timedelta, end: timedelta, content: str
+        self, index: int | None, start: timedelta, end: timedelta, content: str
     ) -> None:
         self.index = index
         self.start = start
@@ -87,11 +87,11 @@ class Subtitle:
 
     def __repr__(self) -> str:
         # Python 2/3 cross compatibility
-        var_items = getattr(vars(self), "iteritems", getattr(vars(self), "items"))
+        var_items = getattr(vars(self), "iteritems", vars(self).items)
         item_list = ", ".join(f"{k}={v!r}" for k, v in var_items())
         return f"{type(self).__name__}({item_list})"
 
-    def to_srt(self, eol: Union[str, None] = None) -> str:
+    def to_srt(self, eol: str | None = None) -> str:
         r"""
         Convert the current :py:class:`Subtitle` to an SRT block.
 
@@ -169,7 +169,7 @@ def timedelta_to_srt_timestamp(timedelta_timestamp: timedelta) -> str:
 
 
 def sort_and_reindex(
-    subtitles: Union[Generator[Subtitle, None, None], List[Subtitle]],
+    subtitles: Generator[Subtitle, None, None] | list[Subtitle],
     start_index: int = 1,
     in_place: bool = False,
     skip: bool = True,
@@ -247,10 +247,10 @@ def _should_skip_sub(subtitle: Subtitle) -> None:
 
 
 def compose(
-    subtitles: Union[Generator[Subtitle, None, None], List[Subtitle]],
+    subtitles: Generator[Subtitle, None, None] | list[Subtitle],
     reindex: bool = True,
     start_index: int = 1,
-    eol: Union[str, None] = None,
+    eol: str | None = None,
     in_place: bool = False,
 ) -> str:
     r"""

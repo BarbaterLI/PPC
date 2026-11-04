@@ -39,9 +39,12 @@ class ConfigPersistence:
             # SubTask 6.3: mtime 是主失效信号——文件在磁盘上变化时，
             # 清空哈希缓存，强制本次重建。
             current_mtime = self._get_config_mtime()
-            if current_mtime is not None and store._config_file_mtime is not None:
-                if current_mtime != store._config_file_mtime:
-                    store._config_dict_hash = None
+            if (
+                current_mtime is not None
+                and store._config_file_mtime is not None
+                and current_mtime != store._config_file_mtime
+            ):
+                store._config_dict_hash = None
             store._config_file_mtime = current_mtime
 
             # SubTask 6.2: 解析 yaml 并 merge temp_overrides，得到最终 _config_dict

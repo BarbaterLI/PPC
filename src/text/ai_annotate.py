@@ -320,6 +320,14 @@ class AIAnnotator:
                 logger.warning("标注输出无法解析（第 %d 次）: %s", attempt + 1, reason)
                 continue
 
+            if not isinstance(data, dict):
+                # 模型整段输出里没有 JSON 对象时 extract_json_object 返回 None，
+                # 旧代码紧接着 data.get() 会 AttributeError（不是 AnnotationError，
+                # 绕过重试契约直接上抛）。
+                reason = "输出中没有 JSON 对象"
+                logger.warning("标注输出不合格（第 %d 次）: %s", attempt + 1, reason)
+                continue
+
             speakers, problem = self._expand(data.get("runs"), n)
             if speakers is None:
                 reason = problem

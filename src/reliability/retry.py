@@ -320,7 +320,7 @@ async def retry_async(
                         timeout=config.timeout,
                     )
                     return result
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise TimeoutError(f"Operation {operation_name} timed out after {config.timeout}s") from None
             else:
                 return await func(*args, **kwargs)

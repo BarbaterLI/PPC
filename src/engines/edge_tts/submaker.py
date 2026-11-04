@@ -1,7 +1,6 @@
 """SubMaker module is used to generate subtitles from WordBoundary and SentenceBoundary events."""
 
 from datetime import timedelta
-from typing import List, Optional
 
 from .srt_composer import Subtitle, compose
 from .typing import TTSChunk
@@ -13,8 +12,8 @@ class SubMaker:
     """
 
     def __init__(self) -> None:
-        self.cues: List[Subtitle] = []
-        self.type: Optional[str] = None
+        self.cues: list[Subtitle] = []
+        self.type: str | None = None
 
     def feed(self, msg: TTSChunk) -> None:
         """

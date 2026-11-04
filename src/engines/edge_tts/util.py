@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 import sys
-from typing import Optional, TextIO
+from typing import TextIO
 
 from tabulate import tabulate
 
@@ -27,7 +27,7 @@ class UtilArgs(argparse.Namespace):
     proxy: str
 
 
-async def _print_voices(*, proxy: Optional[str]) -> None:
+async def _print_voices(*, proxy: str | None) -> None:
     """Print all available voices."""
     voices = await list_voices(proxy=proxy)
     voices = sorted(voices, key=lambda voice: voice["ShortName"])
@@ -71,13 +71,13 @@ async def _run_tts(args: UtilArgs) -> None:
     )
     submaker = SubMaker()
     try:
-        audio_file = (
-            open(args.write_media, "wb")
+        audio_file = (  # noqa: SIM115 - 句柄在 finally 里关闭
+            open(args.write_media, "wb")  # noqa: SIM115 - 句柄在 finally 里关闭
             if args.write_media is not None and args.write_media != "-"
             else sys.stdout.buffer
         )
-        sub_file: Optional[TextIO] = (
-            open(args.write_subtitles, "w", encoding="utf-8")
+        sub_file: TextIO | None = (  # noqa: SIM115 - 句柄在 finally 里关闭
+            open(args.write_subtitles, "w", encoding="utf-8")  # noqa: SIM115 - 句柄在 finally 里关闭
             if args.write_subtitles is not None and args.write_subtitles != "-"
             else None
         )

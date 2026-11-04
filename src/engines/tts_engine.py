@@ -22,7 +22,7 @@ import os
 import shutil
 import time
 from collections.abc import AsyncIterator
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
 
@@ -793,7 +793,7 @@ class TTSEngine(BaseEngine[str, Path]):
                 )
                 return ExecutionResult.ok(output_path, metrics)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.tts_stats.record_error(PPCTimeoutError("TTS 合成超时"))
                 self._record_timeout(normalized_text, time.time() - start_time, success=False, timeout_occurred=True)
                 return ExecutionResult.fail(
@@ -1181,10 +1181,8 @@ class TTSEngine(BaseEngine[str, Path]):
             命中缓存会让这一片的字幕静默消失、后续片的时间轴整体前移。
             """
             if boundary_sink is not None:
-                try:
+                with suppress(OSError):
                     _seg_path(piece_idx).unlink(missing_ok=True)
-                except OSError:
-                    pass
             _, res = await self._synthesize_segment(
                 piece_idx + 1,
                 piece_text,
@@ -1264,7 +1262,7 @@ class TTSEngine(BaseEngine[str, Path]):
                             ),
                             timeout=self._calculate_timeout(req.merged_text),
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         result = None
 
             if result is None or not result.success or not tmp.exists():
@@ -1297,10 +1295,8 @@ class TTSEngine(BaseEngine[str, Path]):
                     # 强制重新合成以拿到 boundary —— 回退本身已是少数路径。
                     one = SegmentTimeline() if cfg.subtitle_output else None
                     if one is not None:
-                        try:
+                        with suppress(OSError):
                             _seg_path(piece_idx).unlink(missing_ok=True)
-                        except OSError:
-                            pass
                     await _synth_one_piece(
                         piece_idx,
                         req.pieces[k],
@@ -1552,7 +1548,7 @@ class TTSEngine(BaseEngine[str, Path]):
                         ),
                         timeout=segment_timeout,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "段 %d 合成超时 (%.0fs, 段长=%d): %s",
                         index,

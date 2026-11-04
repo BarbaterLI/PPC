@@ -24,7 +24,7 @@ class ExecutorFactory(ABC):
     """执行器工厂协议。"""
 
     @abstractmethod
-    def create_executor(self, task: "ConvertRequest | None" = None) -> "BaseExecutor":
+    def create_executor(self, task: ConvertRequest | None = None) -> BaseExecutor:
         """创建（未初始化的）执行器；调用方负责 ``initialize()`` / ``cleanup()``。
 
         ``task`` 为 None 时创建共享执行器（使用基础 config）；
@@ -39,7 +39,7 @@ class TTSExecutorFactory(ExecutorFactory):
 
     def __init__(
         self,
-        config: "PPCConfig",
+        config: PPCConfig,
         *,
         retry_policy: Any | None = None,
         tts_backend: str | None = None,
@@ -76,7 +76,7 @@ class TTSExecutorFactory(ExecutorFactory):
             )
         return self._retry_policy
 
-    def create_executor(self, task: "ConvertRequest | None" = None) -> "BaseExecutor":
+    def create_executor(self, task: ConvertRequest | None = None) -> BaseExecutor:
         from src.executors import TTSExecutor
 
         cfg: Any = self._config

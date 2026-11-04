@@ -7,6 +7,10 @@ import importlib.util
 import logging
 from pathlib import Path
 
+# re-export：``loader.py`` 从这里导入 ``_deep_merge``（历史入口在 loader_support），
+# ruff 只看本文件会误判为未使用，勿删。
+from src.utils.core import deep_merge as _deep_merge  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 

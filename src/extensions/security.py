@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -114,7 +114,7 @@ class AuditLogger:
             result = result.value
 
         entry = AuditEntry(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             extension_name=extension_name,
             action=action,
             target=target,

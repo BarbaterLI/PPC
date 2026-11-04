@@ -25,8 +25,19 @@ def _resolve_transport(transport: str) -> str:
     return "socket"
 
 
+#: 派生端口区间：**必须落在系统动态端口池之外**。
+#: Windows 默认动态端口范围是 49152-65535（``netsh int ipv4 show dynamicport tcp``），
+#: 出站连接会大量占用这段并留下 TIME_WAIT。旧实现派生 2048-62048，超过一半的
+#: 概率落进该区间——一旦用 ``SO_EXCLUSIVEADDRUSE`` 独占绑定就会 ``WSAEADDRINUSE``
+#: 连续失败（实测 57725-57774 整段不可绑）；而用 ``SO_REUSEADDR`` 则会「抢绑」
+#: 已被出站连接占用的端口，Windows 上允许这种重复绑定，表现为 IPC 客户端连到
+#: 别人的连接、随机超时。收窄到 2048-49051 并从上方留出重试余量后两者都不再发生。
+_PORT_BASE = 2048
+_PORT_SPAN = 49152 - _PORT_BASE - 128  # 给「端口被占则试下一个」留 128 个余量
+
+
 def _derive_port(name: str) -> int:
-    """从管道名确定性派生端口号（1024-65535 范围）。
+    """从管道名确定性派生端口号（2048-49051，避开系统动态端口池）。
 
     使用稳定的字符串哈希（非 Python 内置 ``hash``，避免 ``PYTHONHASHSEED``
     随机化），保证同一管道名在不同进程中得到相同端口。
@@ -34,7 +45,7 @@ def _derive_port(name: str) -> int:
     h = 0
     for ch in name:
         h = (h * 31 + ord(ch)) % (2**31)
-    return (h % 60000) + 2048  # 2048-62048
+    return (h % _PORT_SPAN) + _PORT_BASE
 
 
 def _read_line(conn: socket.socket, buf: bytearray | None = None) -> bytes:

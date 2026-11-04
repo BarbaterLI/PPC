@@ -699,3 +699,48 @@ def test_client_skips_server_with_mismatched_identity(
     assert response["status"] == "ok"
     assert response["result"] == {"owner": "b"}, "B 的请求被错误地发给了 A"
     assert a_calls == [], "身份不匹配的服务端不得执行 handler"
+
+
+# ---------------------------------------------------------------- 端口派生 / 冲突回退
+
+
+def test_derived_port_avoids_dynamic_port_pool():
+    """派生端口必须落在系统动态端口池（Windows 默认 49152-65535）之外。
+
+    旧实现派生 2048-62048，超过一半概率落进动态范围：用 SO_EXCLUSIVEADDRUSE
+    独占绑定时会与出站连接的临时端口撞车（实测 57725-57774 整段 WSAEADDRINUSE），
+    用 SO_REUSEADDR 则会「抢绑」别人的端口（Windows 允许重复绑定）→ IPC 随机超时。
+    """
+    from src.extensions.ipc.protocol import _derive_port
+
+    for name in ("a", "test_ipc_start_stop_deadbeef", "x" * 40, "管道名"):
+        port = _derive_port(name)
+        assert 1024 <= port < 49152, f"{name} 派生出 {port}，落进动态端口池"
+
+
+def test_server_falls_back_when_derived_port_taken():
+    """派生端口被占用时，服务端应改用下一个端口而不是启动失败。"""
+    from src.extensions.ipc.protocol import _derive_port
+
+    pipe_name = f"test_ipc_collision_{uuid.uuid4().hex[:8]}"
+    port = _derive_port(pipe_name)
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # SO_EXCLUSIVEADDRUSE 仅 Windows 存在；POSIX 用 REUSEADDR 即可独占
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:
+        blocker.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    try:
+        blocker.bind(("127.0.0.1", port))
+    except OSError:
+        blocker.close()
+        pytest.skip("无法预占派生端口（环境限制）")
+    blocker.listen(1)
+
+    server = IPCServer(pipe_name, transport="socket")
+    try:
+        server.start()
+        assert server.get_bound_port() == port + 1
+    finally:
+        server.stop()
+        blocker.close()

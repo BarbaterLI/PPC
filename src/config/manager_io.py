@@ -3,17 +3,18 @@
 Contains all file-related operations: load, save, export, import.
 """
 
+import contextlib
 import hmac
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from src.config.config_store import (
-    ConfigStoreProtocol,
     _CONFIG_SIGNATURE_MARKER,
+    ConfigStoreProtocol,
     _compute_config_signature,
 )
 from src.config.migration import ConfigMigrator
@@ -153,7 +154,7 @@ def save_config_to_file(manager: ConfigStoreProtocol) -> bool:
         # 保存结果不再写出已废弃的键。
         _drop_deprecated_keys(config_dict)
         config_dict["version"] = manager.CONFIG_VERSION
-        config_dict["_saved_at"] = datetime.now(timezone.utc).isoformat()
+        config_dict["_saved_at"] = datetime.now(UTC).isoformat()
 
         if not _save_with_ruamel(manager, config_dict):
             # ruamel 不可用或失败时回退到 yaml.dump（注释会丢失）
@@ -204,10 +205,8 @@ def _atomic_write(path: Path, write_fn) -> None:
             os.fsync(fh.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
 
 

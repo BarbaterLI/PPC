@@ -31,6 +31,8 @@ from src.cli.design.renderers import RENDERERS
 from src.cli.design.tokens import COLORS, get_icon, get_style
 from src.cli.design.tokens import (
     set_no_color as _tokens_set_no_color,
+)
+from src.cli.design.tokens import (
     set_no_emoji as _tokens_set_no_emoji,
 )
 from src.utils.elevation import set_console_factory
