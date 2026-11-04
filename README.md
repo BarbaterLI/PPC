@@ -154,8 +154,9 @@ TTS 后端（`ppc.tts.v1` 入口点协议）与 WebUI 页面。`ppc ext create` 
 pip install -r requirements.txt
 scripts/run_tests.sh                        # 全量离线套件（integration 默认跳过，PPC_RUN_INTEGRATION=1 启用）
 scripts/run_tests.sh tests/smoke            # CLI 冒烟
+python scripts/clean_caches.py --yes        # 清理 __pycache__ / .ruff_cache / .mypy_cache 等
 ppc bench                   # 性能基线：冷启动 / 合并 / IO 单遍 三元组
-python -m ruff check src    # lint
+python -m ruff check src    # lint（src 与 ppc.py 当前为 0 错误）
 python -m mypy src          # 类型检查
 ```
 

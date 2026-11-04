@@ -60,3 +60,12 @@ Thumbs.db
 # ===== 运行时缓存 / 前端杂项 =====
 .cache/
 .eslintcache
+# ===== 本地测试临时目录 / 补丁残留 =====
+# pytest --basetemp 在仓库内的输出（建议指向仓库外，这里兜底）
+.pt[0-9]*/
+.b[0-9]*/
+.pytest_tmp/
+# 手工合并/打补丁的残留
+*.orig
+*.rej
+*.bak

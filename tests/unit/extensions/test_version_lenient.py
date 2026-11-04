@@ -1,7 +1,7 @@
 """扩展包版本校验：git tag 风格版本号的宽松解析。
 
-背景：``__version__`` 采用 tag 形式（如 ``12.0.1-rc2-pre.1``），不是合法
-PEP 440。旧实现把「当前版本解析失败」当成 manifest 写错，导致**所有**扩展
+背景：``__version__`` 可能采用 git tag 形式（如 ``12.0.1-rc2-pre.1``），
+不是合法 PEP 440。旧实现把「当前版本解析失败」当成 manifest 写错，导致**所有**扩展
 安装都报 "min_ppc_version 版本号格式无效"。
 """
 
@@ -37,10 +37,16 @@ def test_float_version_from_yaml_is_accepted() -> None:
     assert str(_parse_version_lenient(12.0)) == "12.0"
 
 
-def test_current_tag_version_compares_as_prerelease() -> None:
-    """当前 tag 版本应视为 12.0.1rc2：低于 12.0.1 正式版要求。"""
-    assert _check_version_compatible({"min_ppc_version": "12.0.0"}) == []
-    assert _check_version_compatible({"min_ppc_version": "12.0.1"}) != []
+def test_current_version_compares_against_requirements() -> None:
+    """当前版本与 min_ppc_version 的比较（不钉死具体版本号）。
+
+    旧断言写死「当前是 12.0.1rc2 预发布 → 不满足 12.0.1」，升级正式版后必然
+    失效。这里改为结构性断言：自身版本满足自身要求、更高要求不满足。
+    """
+    from src.version import __version__
+
+    assert _check_version_compatible({"min_ppc_version": __version__}) == []
+    assert _check_version_compatible({"min_ppc_version": "99.0"}) != []
 
 
 def test_incompatible_required_version_reports_error() -> None:

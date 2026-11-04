@@ -1,5 +1,5 @@
 # PPC_NEXT 配置文件 - 终极文本转语音工具 / PPC_NEXT Config File - Ultimate Text-to-Speech Tool
-# 版本: 12.0.1-rc2-pre.1 / Version: 12.0.1-rc2-pre.1
+# 版本: 12.0.1 / Version: 12.0.1
 # BarbaterLI开发组 (BLY Team) / Bing Li Yan Dev Group (BLY Team)
 # 说明: 所有配置项均带有注释，修改后保存即可生效 / Note: All config items are commented; edit and save to take effect
 # ============================================
@@ -361,4 +361,4 @@ output:
   silence_between_chapters_ms: 500
 
 # 配置版本（自动生成，勿修改）/ Config version (auto-generated, do not modify)
-version: 12.0.1-rc2-pre.1
+version: 12.0.1

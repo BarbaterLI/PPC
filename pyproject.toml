@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppc-next"
-version = "12.0.1-rc2-pre.1"
+version = "12.0.1"
 description = "PPC_NEXT - Text-to-Speech & Content Processing Platform"
 requires-python = ">=3.12"
 
@@ -46,6 +46,24 @@ ignore = [
     # 抽象基类中提供默认空实现的 hook（如 on_enable / start / stop），
     # 并非必须子类实现的抽象方法，添加 @abstractmethod 会改变接口语义。
     "B027",
+    # ---- 以下规则「明确不适用」，附理由；新增代码请勿依赖这些豁免 ----
+    # UP042: `class X(str, Enum)` → `StrEnum` 会改变 `str(X.A)` 的返回值
+    #   （"X.A" → "a"）。项目里这些枚举参与 YAML/JSON 序列化与日志输出，
+    #   批量改造属于行为变更，收益仅为语法糖。
+    "UP042",
+    # UP046/UP047: PEP 695 泛型语法（`class Result[T]` / `def f[T]()`）要求
+    #   3.12+，且会改变 `__orig_bases__`/`__parameters__` 的形态，
+    #   影响运行时反射与部分类型检查器。保留 `Generic[T]` 写法。
+    "UP046",
+    "UP047",
+    # N803/N812/N814/N818: 这些命名来自外部协议或既有公开 API——
+    #   `EdgeTTSException` 是 edge-tts 兼容名、`_ENV_EDGE_TTS` 特意用大写
+    #   区分「环境版后端」、`CommentedMap/CommentedSeq` 是 ruamel 的参数名。
+    #   改名会破坏兼容性或误导读者。
+    "N803",
+    "N812",
+    "N814",
+    "N818",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -61,3 +79,10 @@ ignore_missing_imports = true
 warn_return_any = true
 warn_unused_configs = true
 show_error_codes = true
+# 现状（12.0.1）：mypy 尚未纳入门禁，约 220 个历史告警，集中在两类结构性盲区——
+#   * attr-defined：mixin 组合 + 在 __init__ 之外动态赋值 self._xxx（如 loader 的
+#     扫描协调器、engine 的懒初始化字段）；
+#   * no-any-return：第三方库（aiohttp/edge_tts/pydub）缺类型标注。
+# 统一放行这两类以保证「新增代码的其它错误仍然可见」，同时不制造 200+ 噪音。
+# 目标：先把 attr-defined 收敛到 0（补 __init__ 声明），再逐项去掉下面的豁免。
+disable_error_code = ["attr-defined", "no-any-return"]
