@@ -122,6 +122,15 @@
   （否则 `--cast cast.yml` 与 `--llm-assign` 同用时角色被清空、退化成旁白）。
 - LLM 分配结果落盘失败时退化到系统临时目录，避免输出目录只读时白跑一次 LLM。
 
+### 构建
+- 新增 `scripts/build_exe.ps1`：Nuitka standalone 打包，版本号/时间戳/并发数自动取值，
+  不再手写裸命令。相较裸命令补齐了 4 类静态分析看不到的依赖——
+  `--include-package-data=src`（`config_template.yml`、`help_commands.json`）、
+  `--include-package=ruamel.yaml`（漏了会丢 config.yml 全部注释）、
+  WebUI dist / `extensions/` / `balcon/` / `blb2txt/` 四个运行期目录。
+  `rich._unicode_data` 按实际安装探测（仅 rich 13.x 存在，14.x 已改回静态表，
+  写死会 FATAL）。README 增加「打包（Nuitka standalone）」章节。
+
 ### 性能
 - **`ppc --version` 快 440ms + 250ms**：`platform.platform()` 在 Windows 上要读
   注册表拿系统版本（首次 ~440ms），改为 `sys.getwindowsversion()`（纯 C 调用，

@@ -178,17 +178,35 @@ EDR/沙箱把「一轮内删除 50 个文件」当批量删除并 `SystemExit:1`
 
 ## 打包（Nuitka standalone）
 
-```bash
+前置：
+
+```powershell
 pip install nuitka
-cd webui/WebUI-Vue && npm ci && npm run build && cd ../..   # 需要 WebUI 时先构建前端
-python scripts/build_exe.py --dry-run    # 先看要执行的命令
-python scripts/build_exe.py --clean      # 编译 → compiled_output/ppc.dist/
-python scripts/build_exe.py --onefile    # 单文件版（启动稍慢）
-python scripts/build_exe.py --no-lto     # 编译更快、产物略慢
-python scripts/build_exe.py --minimal    # 不带 balcon/blb2txt（省 13MB）
+
+# 需要 WebUI 时先构建前端（本地库必须先构建，否则主项目报 "failed to resolve import"）
+cd webui\WebUI-Vue\WinUI-Web-Library; npm ci; npm run build; cd ..\..
+cd webui\WebUI-Vue; npm ci; npm run build; cd ..\..
 ```
 
-版本号与时间戳从 `src/version.py` 自动取，不需要手改命令。**不要手写裸
+打包：
+
+```powershell
+.\scripts\build_exe.ps1 -DryRun          # 先看要执行的命令
+.\scripts\build_exe.ps1 -Clean           # 编译 → compiled_output\ppc.dist\
+.\scripts\build_exe.ps1 -OneFile         # 单文件版（启动稍慢）
+.\scripts\build_exe.ps1 -NoLto           # 编译更快、产物略慢
+.\scripts\build_exe.ps1 -Minimal         # 不带 balcon/blb2txt（省 13MB）
+.\scripts\build_exe.ps1 -Jobs 8          # 限制并发（默认 CPU 核数）
+```
+
+版本号与时间戳从 `src/version.py` 自动取，不需要手改命令。首次运行若提示
+「无法加载文件 … 未对文件进行数字签名」，放开本会话策略即可：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+**不要手写裸
 `nuitka` 命令**，本项目有 3 类静态分析看不到的依赖，漏一个就是「编译成功、
 运行报错」：
 
