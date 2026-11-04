@@ -176,6 +176,58 @@ EDR/沙箱把「一轮内删除 50 个文件」当批量删除并 `SystemExit:1`
   `scripts/build_ext_zip.py` 重建（单源守护测试）；
 - 破坏性变更写入 CHANGELOG。
 
+## 打包（Nuitka standalone）
+
+```bash
+pip install nuitka
+cd webui/WebUI-Vue && npm ci && npm run build && cd ../..   # 需要 WebUI 时先构建前端
+python scripts/build_exe.py --dry-run    # 先看要执行的命令
+python scripts/build_exe.py --clean      # 编译 → compiled_output/ppc.dist/
+python scripts/build_exe.py --onefile    # 单文件版（启动稍慢）
+python scripts/build_exe.py --no-lto     # 编译更快、产物略慢
+python scripts/build_exe.py --minimal    # 不带 balcon/blb2txt（省 13MB）
+```
+
+版本号与时间戳从 `src/version.py` 自动取，不需要手改命令。**不要手写裸
+`nuitka` 命令**，本项目有 3 类静态分析看不到的依赖，漏一个就是「编译成功、
+运行报错」：
+
+| 依赖 | 漏了会怎样 |
+|---|---|
+| `--include-package-data=src` | 丢 `config_template.yml`（首次运行无法生成配置）与 `help_commands.json`（`--help` 降级） |
+| `--include-package=ruamel.yaml` | YAML 回退到 `yaml.dump`，**config.yml 里所有注释被抹掉** |
+| `rich._unicode_data` | 仅 rich 13.x 需要（它按 `unicode17-0-0` 拼名字动态导入）；14.x 已改回静态表，脚本会按实际安装自动判断 |
+
+### 哪些目录要随包，为什么
+
+| 目录 | 体积 | 谁在读 | 不带会怎样 |
+|---|---|---|---|
+| `webui/WebUI-Vue/dist` | ~1 MB | `src/web/app.py` 找 `project_root()/webui/WebUI-Vue/dist` | `/webui` 全部 404 |
+| `extensions/` | 230 KB | 启动时扫 `project_root()/extensions` 自动发现 | 三个内置扩展消失（`doctor` 显示「发现 0 个」），**核心 edge-tts 转换不受影响** |
+| `balcon/` | 1.9 MB | `extensions/balcon/extension.py` 找 `<root>/balcon/balcon.exe` | 扩展仍在列表里，选 balcon 后端时报「未找到 balcon.exe」 |
+| `blb2txt/` | 11 MB | `extensions/blb2txt` 找 `<root>/blb2txt/blb2txt.exe` | `split` 的 34 种电子书格式抽取不可用 |
+
+`--minimal` 只跳过后两项（省 13MB）：扩展本身还在，只是真正调用时才提示缺 exe，
+可用环境变量 `PPC_BALCON` / `PPC_BLB2TXT` 指向自己放置的引擎。
+
+**不打包 `*.ppcext.zip`**：它与 `extensions/` 是同一份内容的两种形式
+（zip 是 `ppc ext install` 的安装包，目录是已安装态）。dist 里已有目录再带 zip
+纯属重复，需要分发的用户可从仓库自取。
+
+**验收**：把 `extensions/`、`balcon/`、`blb2txt/` 移走后再跑
+`ppc doctor --no-network`，应显示「扩展清单 发现 0 个」且 14 项全正常——
+这说明它们都是可选增强，缺了不会让程序起不来。
+
+产物目录里 `ppc.exe` 与 `config.yml` 同级（`get_project_root()` 在 Nuitka 下
+返回 `sys.executable` 所在目录），首次运行会在该目录生成 `config.yml`。
+自检：
+
+```bash
+cd compiled_output/ppc.dist
+./ppc.exe --version          # 应输出正式版本号
+./ppc.exe doctor --no-network
+```
+
 ## 许可
 
 见 [LICENSE](LICENSE)。
