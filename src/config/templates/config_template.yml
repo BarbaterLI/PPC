@@ -93,6 +93,10 @@ tts:
   # 多角色配音 cast.yml 路径（空=单音色）/ Multi-role voicepack cast.yml path (empty = single voice)
   # 非空时按说话人轮次切分（旁白/角色逐句换音色）；亦可用 `ppc convert --cast cast.yml` 覆盖
   # When set, splits by speaker turn (narrator/roles switch per utterance); also overridable via --cast
+  # 该文件支持顶层 pool（长尾音色池）与角色值 `auto`：只需写关键角色，
+  # 其余角色按名字确定性分色，不必读完全书把角色表填全
+  # Supports top-level `pool` + role value `auto`: key roles only, the rest are
+  # assigned deterministically by name, so the cast never has to be exhaustive
   cast_file: ""
 
   # --- 多角色合并优化 / Multi-role merge-and-cut ---

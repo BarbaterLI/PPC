@@ -281,12 +281,71 @@ def _split_oversized(text: str, limit: int) -> list[str]:
     return chunks or [text]
 
 
+def _report_coverage(
+    report: Any,
+    cast: Any,
+    output_dir: Path,
+    output_formatter: OutputFormatter,
+) -> None:
+    """打印角色覆盖率并把明细写成 ``cast.coverage.json``。
+
+    这是「cast.yml 填够了没有」的判据来源：用户看到「前 12 个角色承担 91%
+    对白」就能决定收手，而不是对着几十万字猜自己还漏了谁。
+    """
+    if not getattr(report, "total", 0):
+        return
+
+    target: Path | None = output_dir / "cast.coverage.json"
+    try:
+        report.write(target, cast)
+    except OSError as e:  # 输出目录不可写不该阻断合成
+        output_formatter.warning(f"覆盖率报告写入失败（{target}）: {e}")
+        target = None
+
+    total = int(report.total)
+    top_n = min(12, len(report.named))
+    output_formatter.info(
+        f"角色覆盖率 {report.ratio * 100:.1f}%"
+        f"（{report.chapters} 章 / {total} 个引号）；"
+        f"前 {top_n} 个角色承担 {report.top_coverage(top_n) * 100:.1f}%"
+    )
+
+    if report.unlisted:
+        top = "、".join(f"{name}({cnt})" for name, cnt in report.top_unlisted(8))
+        more = " …" if len(report.unlisted) > 8 else ""
+        has_pool = bool(getattr(cast, "pool", None))
+        voice_note = (
+            f"已按 pool（{len(cast.pool)} 个音色）自动分色" if has_pool else "已用 default 音色"
+        )
+        output_formatter.info(
+            f"表外角色 {len(report.unlisted)} 个占 "
+            f"{report.unlisted_quotes / total * 100:.1f}%，{voice_note}：{top}{more}"
+        )
+        if not has_pool:
+            output_formatter.info(
+                "长尾要和旁白区分开，可在 cast.yml 顶层加 pool（音色列表）"
+            )
+
+    conflicts = report.voice_conflicts(cast) if cast is not None else []
+    if conflicts:
+        worst = conflicts[0]
+        shown = "、".join(worst["names"][:4])
+        output_formatter.info(
+            f"音色共用：{worst['voice']} 被 {worst['count']} 个角色共用"
+            f"（{shown}{' …' if worst['count'] > 4 else ''}）；"
+            f"需要区分就显式钉死音色或扩大 pool"
+        )
+
+    if target is not None:
+        output_formatter.info(f"覆盖率报告: {target}")
+
+
 def _apply_annotate(
     options: ConvertOptions,
     output_dir: Path,
     config: PPCConfig,
     output_formatter: OutputFormatter,
-) -> None:
+) -> Any | None:
     """转换前用 LLM 逐引号标注说话人，写入章节级缓存（引擎据此重建轮次）。
 
     **按批合并请求**：本项目按请求次数计费，逐章一次调用会烧掉大量额度。
@@ -295,9 +354,12 @@ def _apply_annotate(
     让引号跨章（成对匹配；跨章说明原文引号未闭合，该批会被剔除回退）。
 
     失败只警告：引擎查不到缓存就回退正则匹配器，转换不受影响。
+
+    返回覆盖率报告（已打印并落盘）；未执行标注时返回 ``None``——调用方据此
+    判断是否还要在别处补一次覆盖率输出。
     """
     if not getattr(config.tts.annotate, "enabled", False):
-        return
+        return None
 
     from ...text.ai_annotate import (
         AIAnnotator,
@@ -307,16 +369,17 @@ def _apply_annotate(
     )
     from ...text.annotate import quote_spans
     from ...text.cast import Cast
+    from ...text.cast_coverage import CoverageReport
 
     cast_path = str(getattr(config.tts, "cast_file", "") or "")
     if not cast_path:
         output_formatter.warning("AI 标注跳过：未指定 cast 文件（无法确定候选角色）")
-        return
+        return None
     try:
         cast = Cast.load(cast_path)
     except Exception as e:  # noqa: BLE001
         output_formatter.warning(f"AI 标注跳过：cast 加载失败 {e}")
-        return
+        return None
 
     ann = config.tts.annotate
     directory = str(getattr(ann, "cache_dir", "") or "") or str(
@@ -334,24 +397,31 @@ def _apply_annotate(
         files = sorted(options.input.glob(pattern))
 
     pending: list[tuple[Path, str, int]] = []   # 待标注：路径 / 正文 / 引号数
+    # 覆盖率必须覆盖**全书**，所以缓存命中的章节也要计入：否则补完角色重跑，
+    # 所有章节都命中缓存，报告会显示 0 个引号——恰好是最该看报告的时候没有数据。
+    report = CoverageReport()
     hit = 0
     for path in files:
         try:
             text = _read_text(path)
         except OSError:
             continue
-        if cache.get(text, sig) is not None:
+        cached = cache.get(text, sig)
+        if cached is not None:
             hit += 1
+            report.add_chapter(cached)
             continue
         n = len(quote_spans(text))
         if n == 0:
             hit += 1
+            report.add_chapter([])
             continue
         pending.append((path, text, n))
 
     if not pending:
         output_formatter.info(f"AI 标注：全部命中缓存（{hit} 章），跳过 LLM 调用")
-        return
+        _report_coverage(report, cast, output_dir, output_formatter)
+        return report
 
     # 按单批输入上限切批（默认 30 万字 ≈ 1M token 上下文的安全区）
     max_batch_chars = max(1000, int(getattr(ann, "max_input_chars", 300_000)))
@@ -378,11 +448,8 @@ def _apply_annotate(
     if current:
         batches.append(current)
 
-    from collections import Counter
-
     done = quotes = failed = 0
     calls = 0
-    minor: Counter[str] = Counter()
     budget = int(getattr(ann, "max_calls", 0) or 0)
 
     def _has_budget(n: int) -> bool:
@@ -401,7 +468,7 @@ def _apply_annotate(
             cursor += n
         for text, chunk in staged:
             cache.put(text, chunk, model=model, roles_sig=sig)
-            minor.update(s for s in chunk if s.startswith("其他"))
+            report.add_chapter(chunk)
         return True
 
     for batch in batches:
@@ -495,7 +562,7 @@ def _apply_annotate(
             output_formatter.warning(f"超长章节标注失败（{path.name}，{len(text)} 字），回退正则匹配")
             continue
         cache.put(text, collected, model=model, roles_sig=sig)
-        minor.update(x for x in collected if x.startswith("其他"))
+        report.add_chapter(collected)
         done += 1
         quotes += len(collected)
         output_formatter.info(
@@ -506,14 +573,10 @@ def _apply_annotate(
         f"AI 标注完成：新标注 {done} 章 / 缓存命中 {hit} 章 / 失败 {failed} 章，"
         f"共 {quotes} 个引号（{len(batches)} 批 / {calls} 次调用）"
     )
-    if minor:
-        top = "、".join(f"{name}({cnt})" for name, cnt in minor.most_common(8))
-        output_formatter.info(
-            f"未入表角色 {len(minor)} 个，已用 default 音色：{top}"
-            f"{' …' if len(minor) > 8 else ''}；建议补进 cast.yml"
-        )
+    _report_coverage(report, cast, output_dir, output_formatter)
     if done:
         output_formatter.info(f"标注缓存目录: {directory}")
+    return report
 
 
 def _write_annotated_previews(
@@ -521,15 +584,20 @@ def _write_annotated_previews(
     output_dir: Path,
     config: PPCConfig,
     output_formatter: OutputFormatter,
+    report: Any | None = None,
 ) -> int:
     """把缓存里的标注渲染成 ``<章节>.annotated.txt``（不合成音频）。
 
     用途：人工校对「这段到底谁读」——可疑的换人、`?` 兜底、其他:* 命名，
     都能一眼看出来；改完 cast 或用编辑器修正后重跑即可复用。
+
+    ``report`` 由 :func:`_apply_annotate` 传入时说明覆盖率已经打印过，这里
+    只补一次（``--annotate-only`` 直接读缓存的场景不会经过上一步）。
     """
     from ...text.ai_annotate import AnnotationCache, roles_signature
     from ...text.annotate import render_markers
     from ...text.cast import Cast
+    from ...text.cast_coverage import CoverageReport
 
     cast_path = str(getattr(config.tts, "cast_file", "") or "")
     if not cast_path:
@@ -555,10 +623,8 @@ def _write_annotated_previews(
         pattern = "**/*.txt" if options.recursive else "*.txt"
         files = sorted(options.input.glob(pattern))
 
-    from collections import Counter
-
     written = 0
-    minor: Counter[str] = Counter()
+    own_report = CoverageReport()
     for path in files:
         try:
             text = _read_text(path)
@@ -569,16 +635,13 @@ def _write_annotated_previews(
             continue
         target = output_dir / f"{path.stem}.annotated.txt"
         target.write_text(render_markers(text, speakers, policy=policy), encoding="utf-8")
-        minor.update(s for s in speakers if s.startswith("其他"))
+        own_report.add_chapter(speakers)
         written += 1
 
     output_formatter.info(f"已输出 {written} 份标注预览（marker_policy={policy}），未合成音频")
-    if minor:
-        top = "、".join(f"{name}({cnt})" for name, cnt in minor.most_common(8))
-        output_formatter.info(
-            f"未入表角色 {len(minor)} 个，已用 default 音色：{top}"
-            f"{' …' if len(minor) > 8 else ''}；建议补进 cast.yml"
-        )
+    if report is None:
+        # 标注步骤没跑（配置里未启用）：预览这边补一次覆盖率，避免信息缺失。
+        _report_coverage(own_report, cast, output_dir, output_formatter)
     return written
 
 
@@ -1061,9 +1124,11 @@ def handle_convert(
     # LLM 发声人分配（可选）：在构建 TTSEngine 之前把 cast 落好
     _apply_llm_assign(options, output_dir, config, output_formatter)
     # AI 引号级标注（可选）：写章节缓存，引擎按指纹取用
-    _apply_annotate(options, output_dir, config, output_formatter)
+    coverage_report = _apply_annotate(options, output_dir, config, output_formatter)
     if getattr(options, "annotate_only", False):
-        _write_annotated_previews(options, output_dir, config, output_formatter)
+        _write_annotated_previews(
+            options, output_dir, config, output_formatter, report=coverage_report
+        )
         return
 
     if options.one:
