@@ -69,10 +69,6 @@
       {
         "desc": "合并截断并输出字幕",
         "cmd": "ppc convert ./chapters ./out --cast cast.yml --subtitles"
-      },
-      {
-        "desc": "LLM 自动分配发声人并落盘复用",
-        "cmd": "ppc convert ./chapters ./out --llm-assign --candidate-voices zh-CN-YunxiNeural,zh-CN-XiaoxiaoNeural --save-cast cast.yml"
       }
     ],
     "options": [
@@ -119,26 +115,6 @@
       {
         "name": "--keep-segment-cache",
         "desc": "合并后保留本章段缓存（便于断点续传/排查；默认清理）"
-      },
-      {
-        "name": "--annotate",
-        "desc": "用 LLM 逐引号标注说话人（失败自动回退正则；结果按章节缓存）"
-      },
-      {
-        "name": "--annotate-only",
-        "desc": "只输出标注预览 <章节>.annotated.txt，不合成音频（便于人工校对）"
-      },
-      {
-        "name": "--annotate-model",
-        "desc": "标注用模型名（默认读配置 tts.annotate.model）"
-      },
-      {
-        "name": "--annotate-base-url",
-        "desc": "标注端点（OpenAI 兼容）"
-      },
-      {
-        "name": "--annotate-api-key",
-        "desc": "标注 API Key（默认读 PPC_LLM_API_KEY）"
       },
       {
         "name": "--strip-attribution",
@@ -195,39 +171,13 @@
       {
         "name": "--subtitles",
         "desc": "同时输出 .srt 字幕（隐含开启 --merge-cut）"
-      },
-      {
-        "name": "--llm-assign",
-        "desc": "用 OpenAI 兼容 LLM 自动分配发声人（需要 openai 库与 API Key）"
-      },
-      {
-        "name": "--llm-model",
-        "desc": "LLM 模型名（默认 gpt-4o-mini）"
-      },
-      {
-        "name": "--llm-base-url",
-        "desc": "OpenAI 兼容端点（默认 https://api.openai.com/v1）"
-      },
-      {
-        "name": "--llm-api-key",
-        "desc": "LLM API Key（默认读 PPC_LLM_API_KEY / OPENAI_API_KEY）"
-      },
-      {
-        "name": "--main-roles",
-        "desc": "主要角色→音色：JSON 串 / JSON·YAML 文件 / '角色=音色,角色=音色'"
-      },
-      {
-        "name": "--candidate-voices",
-        "desc": "候选音色池，逗号分隔（LLM 只能从中选）"
-      },
-      {
-        "name": "--save-cast",
-        "desc": "把 LLM 分配结果写入该 cast.yml 以便复用"
       }
     ],
     "see_also": [
       "split",
       "batch",
+      "ai assign",
+      "ai annotate",
       "voices",
       "resume"
     ]
@@ -744,6 +694,218 @@
     ],
     "see_also": [
       "convert"
+    ]
+  },
+  "ai assign": {
+    "category": "AI",
+    "desc": "用 OpenAI 兼容 LLM 自动分配发声人并生成 cast 文件。取代已移除的 convert --llm-assign；默认写到 <工作目录>/.cache/cast.yml，不会静默覆盖手写的 cast.yml。",
+    "usage": "ppc ai assign <input> [options]",
+    "examples": [
+      {
+        "desc": "分析目录内全部章节，结果写入 <input>/.cache/cast.yml",
+        "cmd": "ppc ai assign ./chapters"
+      },
+      {
+        "desc": "以现有 cast.yml 为基线合并，另存新文件",
+        "cmd": "ppc ai assign ./chapters --cast cast.yml --save-cast cast.llm.yml"
+      },
+      {
+        "desc": "单文件 + 指定模型与候选音色池",
+        "cmd": "ppc ai assign ./ch01.txt --one --model gpt-4o-mini --candidate-voices zh-CN-YunxiNeural,zh-CN-XiaoxiaoNeural"
+      },
+      {
+        "desc": "覆盖 --save-cast 指定的已存在文件",
+        "cmd": "ppc ai assign ./chapters --save-cast cast.yml --force"
+      }
+    ],
+    "options": [
+      {
+        "name": "--output, -o",
+        "desc": "工作目录（缺省：--one 时输入同目录，否则输入目录本身）"
+      },
+      {
+        "name": "--one",
+        "desc": "单文件模式"
+      },
+      {
+        "name": "--recursive, -R",
+        "desc": "递归处理子目录"
+      },
+      {
+        "name": "--preset, -p",
+        "desc": "配置预设"
+      },
+      {
+        "name": "--cast",
+        "desc": "作为合并基线的现有 cast.yml（只读，不会被写）"
+      },
+      {
+        "name": "--model",
+        "desc": "LLM 模型名（默认读配置 tts.llm_assign.model）"
+      },
+      {
+        "name": "--base-url",
+        "desc": "OpenAI 兼容端点"
+      },
+      {
+        "name": "--api-key",
+        "desc": "API Key（默认读 PPC_LLM_API_KEY / OPENAI_API_KEY）"
+      },
+      {
+        "name": "--main-roles",
+        "desc": "主要角色→音色：JSON 串 / 文件 / '角色=音色,角色=音色'"
+      },
+      {
+        "name": "--candidate-voices",
+        "desc": "候选音色池，逗号分隔（LLM 只能从中选）"
+      },
+      {
+        "name": "--save-cast",
+        "desc": "落盘路径（缺省 <工作目录>/.cache/cast.yml）"
+      },
+      {
+        "name": "--force, -f",
+        "desc": "允许覆盖 --save-cast 指定的已存在文件"
+      }
+    ],
+    "see_also": [
+      "ai annotate",
+      "convert"
+    ]
+  },
+  "ai annotate": {
+    "category": "AI",
+    "desc": "用 LLM 逐引号标注说话人并写入章节缓存，可选输出 <章节>.annotated.txt 预览。取代已移除的 convert --annotate / --annotate-only。",
+    "usage": "ppc ai annotate <input> [options]",
+    "examples": [
+      {
+        "desc": "标注并输出预览供人工校对",
+        "cmd": "ppc ai annotate ./chapters --cast cast.yml"
+      },
+      {
+        "desc": "只预热缓存，不写预览文件",
+        "cmd": "ppc ai annotate ./chapters --cast cast.yml --no-preview"
+      },
+      {
+        "desc": "单文件 + 限制本次请求预算",
+        "cmd": "ppc ai annotate ./ch01.txt --one --cast cast.yml --max-calls 5"
+      }
+    ],
+    "options": [
+      {
+        "name": "--output, -o",
+        "desc": "工作目录（预览文件写在这里）"
+      },
+      {
+        "name": "--one",
+        "desc": "单文件模式"
+      },
+      {
+        "name": "--recursive, -R",
+        "desc": "递归处理子目录"
+      },
+      {
+        "name": "--preset, -p",
+        "desc": "配置预设"
+      },
+      {
+        "name": "--cast",
+        "desc": "cast.yml 路径（覆盖配置 tts.cast_file）"
+      },
+      {
+        "name": "--model",
+        "desc": "标注用模型名（默认读配置 tts.annotate.model）"
+      },
+      {
+        "name": "--base-url",
+        "desc": "标注端点（OpenAI 兼容）"
+      },
+      {
+        "name": "--api-key",
+        "desc": "标注 API Key（默认读 PPC_LLM_API_KEY）"
+      },
+      {
+        "name": "--max-calls",
+        "desc": "本次 LLM 请求预算上限（0=不限）"
+      },
+      {
+        "name": "--preview, --no-preview",
+        "desc": "是否输出 <章节>.annotated.txt 预览（默认开启）"
+      }
+    ],
+    "see_also": [
+      "ai assign",
+      "convert"
+    ]
+  },
+  "ai doctor": {
+    "category": "AI",
+    "desc": "检查 AI 功能可用性：openai 依赖、两套端点的 model/base_url/key、标注缓存目录是否可写。默认不联网。",
+    "usage": "ppc ai doctor [options]",
+    "examples": [
+      {
+        "desc": "只做本地检查（不花钱）",
+        "cmd": "ppc ai doctor"
+      },
+      {
+        "desc": "额外发一次最小请求验证端点",
+        "cmd": "ppc ai doctor --network"
+      }
+    ],
+    "options": [
+      {
+        "name": "--network",
+        "desc": "额外发一次最小 chat 请求验证端点连通性"
+      }
+    ],
+    "see_also": [
+      "ai assign",
+      "ai annotate"
+    ]
+  },
+  "ai discover": {
+    "category": "AI",
+    "desc": "从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地统计，不调模型）。草案中角色以注释列出，填好音色后另存为 cast.yml。",
+    "usage": "ppc ai discover <input> [options]",
+    "examples": [
+      {
+        "desc": "分析章节目录，草案写入 <input>/.cache/cast.draft.yml",
+        "cmd": "ppc ai discover ./chapters"
+      },
+      {
+        "desc": "只看高频角色（出现≥3次且跨≥2章）",
+        "cmd": "ppc ai discover ./chapters --min-count 3 --min-chapters 2 --top 30"
+      }
+    ],
+    "options": [
+      {
+        "name": "--output, -o",
+        "desc": "工作目录（草案写到 <工作目录>/.cache/cast.draft.yml）"
+      },
+      {
+        "name": "--one",
+        "desc": "单文件模式"
+      },
+      {
+        "name": "--recursive, -R",
+        "desc": "递归处理子目录"
+      },
+      {
+        "name": "--min-count",
+        "desc": "候选最少出现次数"
+      },
+      {
+        "name": "--min-chapters",
+        "desc": "候选最少跨章节数"
+      },
+      {
+        "name": "--top",
+        "desc": "草案里列出多少个候选"
+      }
+    ],
+    "see_also": [
+      "ai assign",
+      "ai annotate"
     ]
   }
 }

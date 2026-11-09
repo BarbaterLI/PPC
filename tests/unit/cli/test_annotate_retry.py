@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 import src.text.ai_annotate as ann_mod
-from src.cli.commands.convert import ConvertOptions, _apply_annotate
+from src.cli.commands.ai_common import AiTargets, apply_annotate
 from src.config import get_preset
 from src.text.ai_annotate import AnnotationCache, AnnotationError, AnnotationResult, roles_signature
 from src.text.annotate import quote_spans
@@ -47,10 +43,7 @@ def _setup(tmp_path, n_chapters: int = 2):
     cfg.tts.annotate.cache_dir = str(cache_dir)
     cfg.tts.annotate.max_calls = 0
 
-    opts = ConvertOptions(
-        input=txt_dir, output=tmp_path / "out", voice=None, concurrency=None,
-        preset="balanced", one=False, annotate=True,
-    )
+    opts = AiTargets(input=txt_dir, one=False)
     return opts, cfg, texts, cache_dir, cast
 
 
@@ -77,7 +70,7 @@ def test_batch_failure_retries_per_chapter(tmp_path, monkeypatch) -> None:
     state = _install_fake(monkeypatch, fail_batches=1)
     fmt = _Fmt()
 
-    _apply_annotate(opts, tmp_path / "out", cfg, fmt)
+    apply_annotate(opts, tmp_path / "out", cfg, fmt)
 
     # 1 次整批失败 + 2 次单章重试
     assert state["calls"] == 3
@@ -94,7 +87,7 @@ def test_budget_stops_annotation(tmp_path, monkeypatch) -> None:
     state = _install_fake(monkeypatch, fail_batches=1)
     fmt = _Fmt()
 
-    _apply_annotate(opts, tmp_path / "out", cfg, fmt)
+    apply_annotate(opts, tmp_path / "out", cfg, fmt)
 
     # 预算 1 只够整批那一次；拆单章需要 2 次 → 放弃
     assert state["calls"] == 1
@@ -109,7 +102,7 @@ def test_success_path_uses_single_call(tmp_path, monkeypatch) -> None:
     opts, cfg, texts, cache_dir, cast = _setup(tmp_path)
     state = _install_fake(monkeypatch, fail_batches=0)
 
-    _apply_annotate(opts, tmp_path / "out", cfg, _Fmt())
+    apply_annotate(opts, tmp_path / "out", cfg, _Fmt())
 
     assert state["calls"] == 1
     cache = AnnotationCache(cache_dir)
@@ -137,10 +130,7 @@ def test_cross_chapter_quote_pairing_falls_back_to_single(tmp_path, monkeypatch)
     cfg.tts.annotate.enabled = True
     cfg.tts.annotate.cache_dir = str(tmp_path / "ann")
 
-    opts = ConvertOptions(
-        input=txt_dir, output=tmp_path / "out", voice=None, concurrency=None,
-        preset="balanced", one=False, annotate=True,
-    )
+    opts = AiTargets(input=txt_dir, one=False)
 
     seen: list[str] = []
 
@@ -154,7 +144,7 @@ def test_cross_chapter_quote_pairing_falls_back_to_single(tmp_path, monkeypatch)
             return AnnotationResult(speakers=["李明"] * n, model="m", runs=1, cached=False)
 
     monkeypatch.setattr(ann_mod, "AIAnnotator", Fake)
-    _apply_annotate(opts, tmp_path / "out", cfg, _Fmt())
+    apply_annotate(opts, tmp_path / "out", cfg, _Fmt())
 
     # 不应把两章拼在一起送给模型
     assert seen == [a, b]
@@ -162,7 +152,7 @@ def test_cross_chapter_quote_pairing_falls_back_to_single(tmp_path, monkeypatch)
 
 def test_read_text_handles_gbk(tmp_path) -> None:
     """CLI 读章节必须与执行器一致：GBK 文本不能被 utf-8 强读成乱码。"""
-    from src.cli.commands.convert import _read_text
+    from src.cli.commands.ai_common import read_text as _read_text
     from src.utils.files import read_text_auto
 
     path = tmp_path / "gbk.txt"

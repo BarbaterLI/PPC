@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.cli.commands.convert import ConvertOptions, _write_annotated_previews
+from src.cli.commands.ai_common import AiTargets, write_annotated_previews
 from src.config import get_preset
 from src.text.ai_annotate import AnnotationCache, roles_signature
 from src.text.cast import Cast
@@ -45,10 +45,8 @@ def _setup(tmp_path, *, policy: str = "all"):
     return txt, cfg, text
 
 
-def _options(txt: Path, out: Path) -> ConvertOptions:
-    return ConvertOptions(
-        input=txt, output=out, voice=None, concurrency=None, preset="balanced", one=True
-    )
+def _options(txt: Path, out: Path) -> AiTargets:
+    return AiTargets(input=txt, one=True)
 
 
 def test_writes_annotated_preview(tmp_path) -> None:
@@ -56,7 +54,7 @@ def test_writes_annotated_preview(tmp_path) -> None:
     out = tmp_path / "out"
     out.mkdir()
 
-    n = _write_annotated_previews(_options(txt, out), out, cfg, _Fmt())
+    n = write_annotated_previews(_options(txt, out), out, cfg, _Fmt())
 
     assert n == 1
     preview = (out / "ch1.annotated.txt").read_text(encoding="utf-8")
@@ -69,7 +67,7 @@ def test_changes_policy_marks_only_switches(tmp_path) -> None:
     out = tmp_path / "out"
     out.mkdir()
 
-    _write_annotated_previews(_options(txt, out), out, cfg, _Fmt())
+    write_annotated_previews(_options(txt, out), out, cfg, _Fmt())
     preview = (out / "ch1.annotated.txt").read_text(encoding="utf-8")
     # 两个引号、两个不同说话人 → 仍要 2 个标记
     assert preview.count("[voice:") == 2
@@ -83,5 +81,5 @@ def test_missing_cache_writes_nothing(tmp_path) -> None:
     out = tmp_path / "out"
     out.mkdir()
 
-    assert _write_annotated_previews(_options(txt, out), out, cfg, _Fmt()) == 0
+    assert write_annotated_previews(_options(txt, out), out, cfg, _Fmt()) == 0
     assert not list(out.glob("*.annotated.txt"))

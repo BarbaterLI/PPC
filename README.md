@@ -55,8 +55,9 @@ ppc convert ./novel_chapters ./audio --cast cast.yml --merge-cut
 # 8. 顺带输出 .srt 字幕：
 ppc convert ./novel_chapters ./audio --cast cast.yml --subtitles
 # 9. LLM 自动分配发声人（OpenAI 兼容端点），结果落盘复用：
-ppc convert ./novel_chapters ./audio --llm-assign \
+ppc ai assign ./novel_chapters \
     --candidate-voices zh-CN-YunxiNeural,zh-CN-XiaoxiaoNeural --save-cast cast.yml
+ppc convert ./novel_chapters ./audio --cast cast.yml
 # 10. WebUI：
 ppc webui            # http://127.0.0.1:5000
 # 11. 环境自诊断：
@@ -64,7 +65,8 @@ ppc doctor
 ```
 
 常用子命令：`convert` / `split`（章节分割）/ `batch`（批量归档）/ `resume` /
-`voices` / `config` / `ext`（扩展管理）/ `dist`（分布式）/ `webui` / `help` /
+`voices` / `config` / `ai`（AI 辅助）/ `ext`（扩展管理）/ `dist`（分布式）/
+`webui` / `help` /
 `bench` / `doctor`。完整参数用 `ppc <command> --help` 查看。
 
 ## 配置
@@ -103,47 +105,28 @@ roles:
 注：同一音色但韵律不同的角色**不会被合进同一批**请求——合并以
 `(音色, 语速, 音调, 音量)` 为分组键。
 
-### 长尾兜底：`pool` + `auto`
-
-长篇里角色动辄几十上百个，逐个挑音色不现实。配一份音色池后，`cast.yml` 只需要写
-关键角色，其余自动分色：
-
-```yaml
-narrator: zh-CN-YunxiNeural
-pool: [zh-CN-YunjianNeural, zh-CN-XiaoyiNeural, zh-CN-YunyangNeural]
-roles:
-  风小小: zh-CN-XiaoxiaoNeural      # 钉死
-  李长: auto                        # 要独立声线，具体音色交给 pool
-```
-
-- 显式 `auto` 的角色按**文件出现顺序**依次取池中尚未占用的音色，彼此不撞声；
-  在末尾追加角色不会改变已有角色的音色（边听边补 cast 不会全书漂移）。
-- 未登记的角色（AI 标注输出的 `其他:名称`）按名字哈希取色，只取决于名字本身。
-- 取色用 `blake2b` 而非内置 `hash()`：与进程、平台、`PYTHONHASHSEED` 无关，
-  重启不换声。池容量小于角色数时必然共用，覆盖率报告会列出谁和谁撞。
-- `default` 仍保留：不配 `pool` 时行为与旧版本完全一致。
-
 ### AI 引号级标注（可选）
 
 正则匹配器靠「人名 + 冒号」推断说话人，遇到「引号在前、归属在后」「连续引号换人」
-「整段都是内心独白」就容易串音。开启标注后由 LLM 逐引号判定，实测 20 章 633 个
-引号只需 **1 次**调用：
+「整段都是内心独白」就容易串音。标注由 `ppc ai annotate` 完成，逐引号判定，
+实测 20 章 633 个引号只需 **1 次**调用：
 
 ```bash
-# 只出标注预览（不合成），人工看一眼再决定
-ppc convert ./txt ./out --cast cast.yml --annotate --annotate-only
+# 标注 + 出预览（不合成），人工看一眼再决定
+ppc ai annotate ./txt --cast cast.yml
 
-# 标注 + 合成（结果按章节缓存，重跑不再调用 LLM）
-ppc convert ./txt ./out --cast cast.yml --annotate --merge-cut --subtitles \
+# 只预热缓存，不写预览文件
+ppc ai annotate ./txt --cast cast.yml --no-preview
+
+# 之后照常合成（标注结果按章节缓存，重跑不再调用 LLM）
+ppc convert ./txt ./out --cast cast.yml --merge-cut --subtitles \
     --strip-attribution --keep-segment-cache
 ```
 
+- 角色表可以用 `ppc ai assign` 生成，或用 `ppc ai discover` 先看候选名单再手填。
 - 失败（无 key / 网络 / JSON 非法 / 覆盖不全）只告警，**整章回退正则匹配器**，不阻断转换。
 - 标注按「章节正文 + 角色表」指纹缓存：改 cast（改名/加别名）会让旧标注自动作废并重标，
   避免已删除的角色被静默降级到 `default` 音色。
-- 标注结束会打印**角色覆盖率**并写出 `cast.coverage.json`：`前 12 个角色承担 91.4%`
-  就是「可以收手」的判据；`unlisted` 按台词数排序列出还差谁，`voice_conflicts`
-  列出音色被多个角色共用的情况。缓存命中的章节也计入，所以补完角色重跑仍能看到完整报告。
 - `cast.yml` 的 `aliases` 只喂给模型做归一（如「太白金星」→ 李长），**不改正文一个字**。
 - `--strip-attribution` 剥掉「李明说道：」这类纯归属语，旁白不再念；`mode: verb`
   额外修剪句尾言说动词并保留动作描写。

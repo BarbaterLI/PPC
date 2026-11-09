@@ -262,21 +262,12 @@ def convert(
     timeout: int | None = typer.Option(None, "--timeout", help="固定超时时间(秒)，仅 timeout_mode=fixed 时生效"),
     rate: str | None = typer.Option(None, "--rate", help="音频播放速度(如 +10%, -10%, +0%,范围 -100% 到 +100%)"),
     pitch: str | None = typer.Option(None, "--pitch", help="音调偏移(如 +20Hz, -30Hz)；cast 中各角色的 pitch 是相对此值的偏移"),
-    annotate: bool = typer.Option(
-        False, "--annotate", help="用 LLM 逐引号标注说话人（比正则更准；失败自动回退，结果按章节缓存）"
-    ),
-    annotate_only: bool = typer.Option(
-        False, "--annotate-only", help="只输出标注预览 <章节>.annotated.txt，不合成音频（便于人工校对）"
-    ),
     strip_attribution: bool = typer.Option(
         False, "--strip-attribution", help="剥掉「李明说道：」这类归属语，让旁白不再念它"
     ),
     keep_segment_cache: bool = typer.Option(
         False, "--keep-segment-cache", help="合并后保留本章段缓存（便于断点续传/排查；默认清理）"
     ),
-    annotate_model: str | None = typer.Option(None, "--annotate-model", help="标注用模型名（默认读配置 tts.annotate.model）"),
-    annotate_base_url: str | None = typer.Option(None, "--annotate-base-url", help="标注端点（OpenAI 兼容）"),
-    annotate_api_key: str | None = typer.Option(None, "--annotate-api-key", help="标注 API Key（默认读 PPC_LLM_API_KEY）"),
     recursive: bool = typer.Option(False, "--recursive", "-R", help="递归处理子目录,保持目录结构"),
     ramp_up: float | None = typer.Option(
         None, "--ramp-up", help="并发预热时间(秒),从1并发逐步增加到设定并发,规避风控(如 30 表示30秒内完成预热)"
@@ -315,19 +306,6 @@ def convert(
         None, "--merge-max-pieces", min=2, max=512, help="单批片段数安全阀（默认 64；字数/字节才是主约束）"
     ),
     subtitles: bool = typer.Option(False, "--subtitles", help="同时输出 .srt 字幕（隐含开启 --merge-cut）"),
-    llm_assign: bool = typer.Option(
-        False, "--llm-assign", help="用 OpenAI 兼容 LLM 自动分配发声人（需要 openai 库与 API Key）"
-    ),
-    llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型名（默认 gpt-4o-mini）"),
-    llm_base_url: str | None = typer.Option(None, "--llm-base-url", help="OpenAI 兼容端点（默认 https://api.openai.com/v1）"),
-    llm_api_key: str | None = typer.Option(None, "--llm-api-key", help="LLM API Key（默认读 PPC_LLM_API_KEY / OPENAI_API_KEY）"),
-    main_roles: str | None = typer.Option(
-        None, "--main-roles", help="主要角色→音色：JSON 串 / JSON·YAML 文件 / '角色=音色,角色=音色'"
-    ),
-    candidate_voices: str | None = typer.Option(
-        None, "--candidate-voices", help="候选音色池，逗号分隔（LLM 只能从中选）"
-    ),
-    save_cast: str | None = typer.Option(None, "--save-cast", help="把 LLM 分配结果写入该 cast.yml 以便复用"),
 ):
     """批量 TTS 转换
 
@@ -361,13 +339,8 @@ def convert(
             timeout_multiplier=timeout_multiplier,
             rate=rate,
             pitch=pitch,
-            annotate=annotate,
-            annotate_only=annotate_only,
             strip_attribution=strip_attribution,
             keep_segment_cache=keep_segment_cache,
-            annotate_model=annotate_model,
-            annotate_base_url=annotate_base_url,
-            annotate_api_key=annotate_api_key,
             recursive=recursive,
             ramp_up=ramp_up,
             strict=strict,
@@ -384,13 +357,6 @@ def convert(
             merge_max_bytes=merge_max_bytes,
             merge_max_pieces=merge_max_pieces,
             subtitles=subtitles,
-            llm_assign=llm_assign,
-            llm_model=llm_model,
-            llm_base_url=llm_base_url,
-            llm_api_key=llm_api_key,
-            main_roles=main_roles,
-            candidate_voices=candidate_voices,
-            save_cast=save_cast,
         )
     )
 
@@ -745,6 +711,10 @@ def dist_convert(
 app.add_typer(dist_app, name="dist")
 # 别名：文档与旧脚本中出现的 `ppc distributed ...` 同样可用（隐藏于 --help）。
 app.add_typer(dist_app, name="distributed", hidden=True)
+
+from .commands.ai import ai_app  # noqa: E402 - 命令树必须在模块导入期完成注册
+
+app.add_typer(ai_app, name="ai")
 
 register_ext_app(app)
 

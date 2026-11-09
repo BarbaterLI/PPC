@@ -1,6 +1,6 @@
-"""CLI 层：``--llm-assign`` 的接线（不联网）。
+"""AI 层：发声人分配（``ppc ai assign`` 的底层实现，不联网）。
 
-覆盖 ``convert._apply_llm_assign`` 的三件事：
+覆盖 ``ai_common.apply_llm_assign`` 的三件事：
 1. 成功时把 cast 落盘并把 ``tts.cast_file`` 指过去（引擎据此加载）；
 2. 失败时只告警、不改配置（降级为现有音色）；
 3. 输出目录不可写时退化到临时目录，别丢掉已拿到的分配结果。
@@ -8,11 +8,10 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from src.cli.commands import convert as conv
+from src.cli.commands import ai_common
+from src.cli.commands.ai_common import AiTargets
 from src.config import get_preset
 from src.text.cast import Cast
 
@@ -31,20 +30,10 @@ class _Fmt:
         self.messages.append(("detail", msg))
 
 
-def _options(tmp_path, **kw):
+def _options(tmp_path):
     txt = tmp_path / "a.txt"
     txt.write_text("李明说道：“走吧。”", encoding="utf-8")
-    base = dict(
-        input=txt,
-        output=tmp_path / "out",
-        voice=None,
-        concurrency=None,
-        preset="balanced",
-        one=True,
-        llm_assign=True,
-    )
-    base.update(kw)
-    return conv.ConvertOptions(**base)
+    return AiTargets(input=txt, one=True)
 
 
 def test_apply_llm_assign_writes_cast_and_sets_config(tmp_path, monkeypatch) -> None:
@@ -65,6 +54,7 @@ def test_apply_llm_assign_writes_cast_and_sets_config(tmp_path, monkeypatch) -> 
 
         def persist(self, cast, path) -> None:
             from pathlib import Path
+
             import yaml
 
             data = {"roles": cast.roles}
@@ -75,7 +65,7 @@ def test_apply_llm_assign_writes_cast_and_sets_config(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(llm_mod, "LLMSpeakerAssigner", FakeAssigner)
     fmt = _Fmt()
 
-    conv._apply_llm_assign(_options(tmp_path), out, cfg, fmt)
+    ai_common.apply_llm_assign(_options(tmp_path), out, cfg, fmt)
 
     assert cfg.tts.cast_file, "未把 cast 路径写进配置"
     loaded = Cast.load(cfg.tts.cast_file)
@@ -102,7 +92,7 @@ def test_apply_llm_assign_degrades_on_failure(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(llm_mod, "LLMSpeakerAssigner", BoomAssigner)
     fmt = _Fmt()
 
-    conv._apply_llm_assign(_options(tmp_path), out, cfg, fmt)
+    ai_common.apply_llm_assign(_options(tmp_path), out, cfg, fmt)
 
     assert cfg.tts.cast_file == before
     assert any(kind == "warning" and "沿用现有音色" in msg for kind, msg in fmt.messages)
@@ -119,7 +109,7 @@ def test_apply_llm_assign_skips_when_disabled(tmp_path, monkeypatch) -> None:
             raise AssertionError("禁用时不应构造分配器")
 
     monkeypatch.setattr(llm_mod, "LLMSpeakerAssigner", NeverCalled)
-    conv._apply_llm_assign(_options(tmp_path), tmp_path, cfg, _Fmt())
+    ai_common.apply_llm_assign(_options(tmp_path), tmp_path, cfg, _Fmt())
 
 
 @pytest.mark.parametrize(
@@ -131,17 +121,17 @@ def test_apply_llm_assign_skips_when_disabled(tmp_path, monkeypatch) -> None:
     ],
 )
 def test_parse_role_map_inline(raw, expected) -> None:
-    assert conv._parse_role_map(raw) == expected
+    assert ai_common.parse_role_map(raw) == expected
 
 
 def test_parse_role_map_file(tmp_path) -> None:
     path = tmp_path / "roles.yml"
     path.write_text("roles:\n  李明: v1\n", encoding="utf-8")
-    assert conv._parse_role_map(str(path)) == {"李明": "v1"}
+    assert ai_common.parse_role_map(str(path)) == {"李明": "v1"}
 
 
 def test_parse_role_map_invalid_json() -> None:
     from src.core.exceptions import CLIError
 
     with pytest.raises(CLIError):
-        conv._parse_role_map("{not json}")
+        ai_common.parse_role_map("{not json}")

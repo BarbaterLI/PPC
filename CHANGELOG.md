@@ -4,28 +4,34 @@
 
 ## [Unreleased]
 
+### 不兼容变更
+- **AI 能力从 `convert` 移出，改为 `ppc ai` 子命令组**。`ppc convert` 上的
+  `--llm-assign` / `--annotate` / `--annotate-only`，以及配套的 `--llm-model`、
+  `--llm-base-url`、`--llm-api-key`、`--annotate-model`、`--annotate-base-url`、
+  `--annotate-api-key`、`--main-roles`、`--candidate-voices`、`--save-cast`
+  全部移除——`convert` 只保留合成职责。迁移对照：
+
+  | 旧 | 新 |
+  |---|---|
+  | `convert --llm-assign` | `ppc ai assign <input>` |
+  | `convert --annotate` | `ppc ai annotate <input> --cast cast.yml` |
+  | `convert --annotate-only` | `ppc ai annotate <input> --cast cast.yml`（默认就出预览） |
+
 ### 新增
-- **`cast.yml` 长尾兜底（`pool` + `auto`）**：长篇角色动辄上百个，逐个挑音色不现实，
-  也让「cast 必须写全」成为使用门槛。现在配一份音色池后，只需写关键角色：
-  - 角色值写 `auto` → 从池中取色；显式 `auto` 按**文件出现顺序**依次取未占用的
-    音色，彼此不撞声，末尾追加角色不改变已有角色的音色。
-  - **未登记角色**（AI 标注的 `其他:名称`）按名字哈希取色，不再与所有配角共用
-    `default`。取色用 `blake2b` 而非内置 `hash()`——后者带每进程随机盐，重启即
-    换声、跨章漂移；新增测试用不同 `PYTHONHASHSEED` 子进程验证稳定性。
-  - 长尾取色只取决于名字，因此补写 cast 不会让全书音色整体漂移（这是「边听边补」
-    能成立的前提）。池容量小于角色数时必然撞声，由覆盖率报告列出。
-  - `voice_for`（分段级）与 `profile_for`（轮次级）收敛到同一解析器，避免其中
-    一条路把哨兵 `auto` 当音色名发给 TTS。不配 `pool` 时行为与旧版本逐字一致。
-- **角色覆盖率报告（`cast.coverage.json` + 终端摘要）**：回答「cast.yml 到底填够了
-  没有」——此前只有一行「未入表角色 N 个」，且发生在付费标注之后。
-  - 终端输出 `角色覆盖率 91.4%（21 章 / 1543 个引号）；前 12 个角色承担 89.2%`，
-    给出「可以收手」的判据；`unlisted` 按台词数列出还差谁。
-  - 明细 JSON 含 `quotes`（named/unlisted/narration/uncertain 四类互斥）、
-    `coverage`（overall/top10/top20）、`unlisted`、`voice_conflicts`（哪几个角色
-    共用了同一音色）。
-  - **缓存命中的章节也计入**：否则补完角色重跑时全部命中缓存，报告会显示 0 个
-    引号——恰好是最该看报告的时候没有数据。
-  - `--annotate-only` 直接读缓存的场景（未启用标注）也会补一次覆盖率输出。
+- **`ppc ai` 命令组**（`src/cli/commands/ai.py`），实现层抽到
+  `src/cli/commands/ai_common.py`，与 `convert` 共用同一套代码：
+  - `ai assign`：默认写 `<工作目录>/.cache/cast.yml`；`--save-cast` 指向已存在
+    文件时必须 `--force`，不会静默覆盖手写的 `cast.yml`。
+  - `ai annotate`：`--preview/--no-preview` 控制是否输出 `<章节>.annotated.txt`；
+    `--max-calls` 限制本次请求预算。
+  - `ai doctor`：离线检查 `openai` 依赖、assign/annotate 两套端点的模型与 Key
+    （Key 只显示前 4 位）、标注缓存目录可写性；`--network` 才发一次最小探活请求。
+  - `ai discover`：**纯本地**召回候选角色名（言说/动作动词锚点 + 以标点为左边界
+    取整段 + 段首前缀枚举，只保留一条「前缀压倒性占优」的去重规则），产出
+    `.cache/cast.draft.yml`。女娲 20 章 / 4.4 万字实测：1,278 个候选里召回 8/8
+    个真名，Top4 恰好是四个主角。
+- `src/text/cast_discover.py`：上述召回算法的实现，含「宁可留噪声不可删真名」
+  的两条实测约束（固定窗口会右对齐到动词；等计数截断会吃掉低频真名）。
 
 ## [12.0.1] - 2026-11
 

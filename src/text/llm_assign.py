@@ -180,12 +180,7 @@ class LLMSpeakerAssigner:
 
         # 候选音色为空时，用「已有 cast + 配置音色」兜底成池子
         if not voices and base_cast is not None:
-            # 只取已钉死的音色：``auto`` 是哨兵而不是音色名，混进候选池会让
-            # 模型以为 "auto" 可以选，产出无法合成的角色表。
-            from src.text.cast import AUTO_VOICE
-
-            existing = {str(v) for v in (getattr(base_cast, "roles", None) or {}).values() if v}
-            pool = set(pinned.values()) | {v for v in existing if v != AUTO_VOICE}
+            pool = set(pinned.values()) | set(getattr(base_cast, "roles", {}).values())
             if getattr(base_cast, "narrator", None):
                 pool.add(base_cast.narrator)
             if getattr(base_cast, "default", None):
@@ -265,9 +260,6 @@ class LLMSpeakerAssigner:
                 "narrator": narrator or None,
                 "default": default or None,
                 "roles": roles_out,
-                # base_cast 里写作 auto 的角色会在上面被继承下来，必须一并带上
-                # pool，否则 from_dict 的 auto 校验会直接抛错（整个分配白跑）。
-                "pool": list(getattr(base_cast, "pool", None) or []) if base_cast is not None else [],
             },
             source="llm-assign",
         )
@@ -289,11 +281,6 @@ class LLMSpeakerAssigner:
         import yaml
 
         data: dict[str, Any] = {"roles": dict(getattr(cast, "roles", {}) or {})}
-        # pool 必须一起写：roles 里可能有 auto 哨兵，缺 pool 的 cast.yml 下次
-        # 加载会被 auto 校验直接拒绝（写出去的文件自己读不回来）。
-        pool = list(getattr(cast, "pool", None) or [])
-        if pool:
-            data["pool"] = pool
         if getattr(cast, "narrator", None):
             data["narrator"] = cast.narrator
         if getattr(cast, "default", None):
