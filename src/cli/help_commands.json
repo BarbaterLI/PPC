@@ -865,7 +865,7 @@
   },
   "ai discover": {
     "category": "AI",
-    "desc": "从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地统计，不调模型）。草案中角色以注释列出，填好音色后另存为 cast.yml。",
+    "desc": "从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地统计，不调模型）。每条候选附带约 --context-chars 字的原文上下文（含台词开头），供人工核对或喂模型判断。",
     "usage": "ppc ai discover <input> [options]",
     "examples": [
       {
@@ -873,8 +873,8 @@
         "cmd": "ppc ai discover ./chapters"
       },
       {
-        "desc": "只看高频角色（出现≥3次且跨≥2章）",
-        "cmd": "ppc ai discover ./chapters --min-count 3 --min-chapters 2 --top 30"
+        "desc": "只看高频角色，上下文压到 60 字",
+        "cmd": "ppc ai discover ./chapters --min-count 3 --min-chapters 2 --top 30 --context-chars 60"
       }
     ],
     "options": [
@@ -901,6 +901,10 @@
       {
         "name": "--top",
         "desc": "草案里列出多少个候选"
+      },
+      {
+        "name": "--context-chars",
+        "desc": "每条候选附带的上下文长度（字），0=不带（默认 100）"
       }
     ],
     "see_also": [

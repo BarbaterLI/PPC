@@ -74,11 +74,29 @@ def test_ranking_puts_frequent_character_first() -> None:
     assert ranked[0].name == "张三"
 
 
-def test_evidence_is_single_line_and_bounded() -> None:
+def test_context_is_single_line_and_bounded() -> None:
     text = "风小小认真点头：“行，\n就这么办。”"
     cand = next(c for c in discover_candidates([text]) if c.name == "风小小")
-    assert "\n" not in cand.evidence
-    assert len(cand.evidence) <= 28
+    assert "\n" not in cand.context
+    assert len(cand.context) <= 100
+
+
+def test_context_spans_about_100_chars_and_contains_name() -> None:
+    """上下文要够长、且包含名字与台词开头——只给名字对模型没有信息量。"""
+    filler = "他把手里的东西放下，又看了她一眼，随后慢慢开口。" * 2
+    text = filler + "风小小认真点头：“行，就这么办。”" + filler
+    cand = next(c for c in discover_candidates([text]) if c.name == "风小小")
+    assert len(cand.context) == 100
+    assert "风小小" in cand.context
+    assert "就这么办" in cand.context
+
+
+def test_context_chars_zero_disables_context() -> None:
+    cand = next(
+        c for c in discover_candidates(["风小小说道：“走。”"], context_chars=0)
+        if c.name == "风小小"
+    )
+    assert cand.context == ""
 
 
 def test_empty_input_returns_empty() -> None:
@@ -100,7 +118,7 @@ def test_single_char_names_are_skipped() -> None:
 
 
 def test_render_draft_is_valid_yaml_with_empty_roles() -> None:
-    cands = [Candidate(name="风小小", count=3, chapters=2, evidence="风小小说道", score=4.5)]
+    cands = [Candidate(name="风小小", count=3, chapters=2, context="风小小说道：“走。”", score=4.5)]
     draft = render_draft(cands)
     assert yaml.safe_load(draft) == {"roles": {}}
     assert "风小小" in draft

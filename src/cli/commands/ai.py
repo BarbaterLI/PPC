@@ -278,6 +278,11 @@ def _probe_endpoint(name: str, cfg: object, fmt: object) -> None:
         fmt.warning(f"{name} 连通性: 失败（{exc}）")  # type: ignore[attr-defined]
 
 
+def _clip(text: str, limit: int) -> str:
+    """表格里只显示上下文开头，完整内容留在草案与 JSON 里。"""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 @ai_app.command("discover")
 def ai_discover(
     input: Path = typer.Argument(..., help="输入 .txt 文件（配合 --one）或章节目录"),
@@ -289,6 +294,9 @@ def ai_discover(
     min_count: int = typer.Option(1, "--min-count", min=1, help="候选最少出现次数"),
     min_chapters: int = typer.Option(1, "--min-chapters", min=1, help="候选最少跨章节数"),
     top: int = typer.Option(40, "--top", min=1, max=2000, help="草案里列出多少个候选"),
+    context_chars: int = typer.Option(
+        100, "--context-chars", min=0, max=400, help="每条候选附带的上下文长度（字），0=不带"
+    ),
 ) -> None:
     """从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地，不调模型）。
 
@@ -321,7 +329,10 @@ def ai_discover(
         )
 
     candidates = discover_candidates(
-        texts, min_count=min_count, min_chapters=min_chapters
+        texts,
+        min_count=min_count,
+        min_chapters=min_chapters,
+        context_chars=context_chars,
     )
     if not candidates:
         fmt.warning("未召回任何候选：确认输入是小说正文（需要「名字+言说动词」的对白结构）")
@@ -338,11 +349,11 @@ def ai_discover(
     # detail 只在 --verbose 下渲染，候选名单必须默认可见——它是本命令的全部产出
     shown = candidates[: min(top, 30)]
     fmt.print_table(
-        ["候选", "次数", "章", "证据"],
-        [[c.name, str(c.count), str(c.chapters), c.evidence] for c in shown],
+        ["候选", "次数", "章", "上下文"],
+        [[c.name, str(c.count), str(c.chapters), _clip(c.context, 40)] for c in shown],
         title=f"候选角色（前 {len(shown)} / 共 {len(candidates)}）",
         json_data=[
-            {"name": c.name, "count": c.count, "chapters": c.chapters, "evidence": c.evidence}
+            {"name": c.name, "count": c.count, "chapters": c.chapters, "context": c.context}
             for c in shown
         ],
     )

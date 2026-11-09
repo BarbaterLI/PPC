@@ -76,7 +76,9 @@ class Candidate:
     name: str
     count: int
     chapters: int
-    evidence: str
+    #: 该候选第一次出现处约 ``context_chars`` 字的原文（含台词开头），
+    #: 供人工核对或喂给模型判断「是人名还是虚词」。
+    context: str
     score: float
 
 
@@ -93,12 +95,20 @@ def left_segment(text: str, pos: int, limit: int = 12) -> str:
     return "".join(_HAN_RE.findall(text[i:pos]))
 
 
-def _snippet(text: str, pos: int, name_len: int, *, before: int = 6, after: int = 6) -> str:
-    """取一条证据片段：名字 + 锚点动词，压成单行短句。"""
-    lo = max(0, pos - name_len - before)
-    hi = min(len(text), pos + after)
-    raw = text[lo:hi].replace("\r", "").replace("\n", "").replace("　", " ").strip()
-    return raw[:28]
+def _context(text: str, pos: int, name_len: int, width: int) -> str:
+    """取候选附近的原文上下文（约 ``width`` 字），压成单行。
+
+    名字放在窗口前 1/3 处，后面留 2/3 给「动词 + 冒号 + 台词开头」——判断
+    一个词是不是人名，靠的正是「谁在说什么」，只给名字本身没有信息量。
+    """
+    if width <= 0:
+        return ""
+    start = max(0, pos - name_len - width // 3)
+    end = min(len(text), start + width)
+    if end - start < width:
+        start = max(0, end - width)
+    raw = text[start:end].replace("\r", "").replace("\n", " ").replace("　", " ")
+    return re.sub(r"\s+", " ", raw).strip()[:width]
 
 
 def _is_fragment(name: str, counts: Counter, ratio: float) -> bool:
@@ -115,11 +125,13 @@ def discover_candidates(
     fragment_ratio: float = 3.0,
     min_count: int = 1,
     min_chapters: int = 1,
+    context_chars: int = 100,
 ) -> list[Candidate]:
     """在整本书里召回候选角色名，按「次数 × 跨章覆盖」降序返回。
 
     ``chapters`` 的每个元素是一章正文（章节数用于统计跨章出现，借此区分
-    反复登场的角色与一次性的路人描写）。
+    反复登场的角色与一次性的路人描写）。``context_chars`` 控制每条候选附带
+    的上下文长度——下游要靠它判断「是人名/临时角色/虚词」，太短没有信息量。
     """
     texts = [c for c in chapters if c]
     if not texts:
@@ -127,7 +139,7 @@ def discover_candidates(
 
     counts: Counter[str] = Counter()
     seen_chapters: dict[str, set[int]] = defaultdict(set)
-    evidence: dict[str, str] = {}
+    contexts: dict[str, str] = {}
 
     for idx, text in enumerate(texts):
         spans = quote_spans(text)
@@ -146,8 +158,8 @@ def discover_candidates(
                 name = seg[:k]
                 counts[name] += 1
                 seen_chapters[name].add(idx)
-                if name not in evidence:
-                    evidence[name] = _snippet(text, pos, k)
+                if name not in contexts:
+                    contexts[name] = _context(text, pos, k, context_chars)
 
     total_chapters = len(texts)
     out: list[Candidate] = []
@@ -166,7 +178,7 @@ def discover_candidates(
                 name=name,
                 count=count,
                 chapters=chapters_hit,
-                evidence=evidence.get(name, ""),
+                context=contexts.get(name, ""),
                 score=round(score, 4),
             )
         )
@@ -201,6 +213,6 @@ def render_draft(
         "",
     ]
     lines.extend(
-        f"# {c.name}\t{c.count} 次 / {c.chapters} 章\t「{c.evidence}」" for c in shown
+        f"# {c.name}\t{c.count} 次 / {c.chapters} 章\t「{c.context}」" for c in shown
     )
     return "\n".join(lines) + "\n"
