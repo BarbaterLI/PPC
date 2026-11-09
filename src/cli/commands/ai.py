@@ -294,8 +294,14 @@ def ai_discover(
     min_count: int = typer.Option(1, "--min-count", min=1, help="候选最少出现次数"),
     min_chapters: int = typer.Option(1, "--min-chapters", min=1, help="候选最少跨章节数"),
     top: int = typer.Option(40, "--top", min=1, max=2000, help="草案里列出多少个候选"),
+    max_input_tokens: int = typer.Option(
+        60000, "--max-input-tokens", min=1000, help="单次请求的上下文 token 预算（决定每条候选能带多少原文）"
+    ),
+    max_output_tokens: int = typer.Option(
+        8000, "--max-output-tokens", min=256, help="单次请求的输出 token 预算（决定每批处理多少条）"
+    ),
     context_chars: int = typer.Option(
-        100, "--context-chars", min=0, max=400, help="每条候选附带的上下文长度（字），0=不带"
+        0, "--context-chars", min=0, max=400, help="显式覆盖上下文字数；0=由 token 预算推导"
     ),
 ) -> None:
     """从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地，不调模型）。
@@ -305,6 +311,7 @@ def ai_discover(
     它们通常只有一两句台词，交给兜底音色即可。
     """
     from ...text.cast_discover import discover_candidates, render_draft
+    from ...text.token_budget import plan_context
     from .ai_common import read_text, resolve_ai_target
 
     fmt = get_output()
@@ -328,11 +335,10 @@ def ai_discover(
             hint="确认目录下存在 .txt 章节文件，或改用 --one 指定单文件",
         )
 
+    # 先按上限抓上下文，再按预算裁剪：候选数要等扫描完才知道，
+    # 而上下文是扫描时顺手取的，两步比扫两遍便宜。
     candidates = discover_candidates(
-        texts,
-        min_count=min_count,
-        min_chapters=min_chapters,
-        context_chars=context_chars,
+        texts, min_count=min_count, min_chapters=min_chapters, context_chars=300
     )
     if not candidates:
         fmt.warning("未召回任何候选：确认输入是小说正文（需要「名字+言说动词」的对白结构）")
@@ -342,10 +348,31 @@ def ai_discover(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_draft(candidates, limit=top), encoding="utf-8")
 
+    from dataclasses import replace
+
     frequent = sum(1 for c in candidates if c.count >= 3 and c.chapters >= 2)
     fmt.info(
         f"候选 {len(candidates)} 个（{len(texts)} 章；出现 ≥3 次且跨 ≥2 章：{frequent} 个）"
     )
+    # 批次按真正要喂模型的那一批算（Tier1），不是全部候选
+    to_model = [c for c in candidates if c.count >= 3 and c.chapters >= 2] or candidates
+
+    if context_chars > 0:
+        width = context_chars
+        budget_note = f"上下文字数由 --context-chars 指定：{width}"
+    else:
+        plan = plan_context(
+            len(to_model),
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+        )
+        width = plan.context_chars
+        budget_note = (
+            f"按 token 预算推导：每条上下文 {width} 字；每批 {plan.items_per_call} 条、"
+            f"共 {plan.calls} 批（≈{plan.input_tokens_per_call // 1000}k 输入 tokens/批）"
+        )
+    candidates = [replace(c, context=c.context[:width]) for c in candidates]
+    fmt.info(budget_note)
     # detail 只在 --verbose 下渲染，候选名单必须默认可见——它是本命令的全部产出
     shown = candidates[: min(top, 30)]
     fmt.print_table(

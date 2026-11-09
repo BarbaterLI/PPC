@@ -76,7 +76,13 @@ class LLMAssignConfig(BaseModel):
     api_key: str = Field(default="", description="API Key（空则读 PPC_LLM_API_KEY / OPENAI_API_KEY）/ API key")
     model: str = Field(default="gpt-4o-mini", description="模型名 / Model name")
     temperature: float = Field(default=0.0, ge=0.0, le=2.0, description="采样温度（建议 0 保证稳定）/ Sampling temperature")
-    chunk_chars: int = Field(default=6000, ge=500, le=100000, description="单次送入 LLM 的文本块大小 / Text chunk size per LLM call")
+    chunk_chars: int = Field(default=6000, ge=500, le=100000, description="单次送入 LLM 的文本块大小（字符；max_input_tokens>0 时会被后者收紧）/ Text chunk size per LLM call")
+    max_input_tokens: int = Field(
+        default=0,
+        ge=0,
+        le=2000000,
+        description="单次请求的上下文 token 预算（0=改用 chunk_chars）；设置后按 token 推导分块 / Input token budget (0 = use chunk_chars)",
+    )
     timeout: float = Field(default=120.0, ge=5.0, le=600.0, description="单次请求超时（秒）/ Request timeout in seconds")
     persist_cast: str = Field(default="", description="把分配结果写入该 cast.yml 路径（空=仅运行时生效）/ Persist assigned cast to this path")
     candidate_voices: list[str] = Field(default_factory=list, description="候选音色池（空=沿用现有 cast/config 音色）/ Candidate voice pool")
@@ -106,7 +112,13 @@ class AnnotateConfig(BaseModel):
         default=80000,
         ge=1000,
         le=1000000,
-        description="单批输入字数上限（默认 8 万，约 12 万 token；1M 上下文模型可调大）",
+        description="单批输入字数上限（默认 8 万；max_input_tokens>0 时会被后者收紧）",
+    )
+    max_input_tokens: int = Field(
+        default=0,
+        ge=0,
+        le=2000000,
+        description="单批输入的 token 预算（0=改用 max_input_chars）；与 max_output_tokens 共同决定批大小 / Input token budget",
     )
     max_output_chars: int = Field(default=60000, ge=1000, le=400000, description="单批输出字数上限（按引号数估算，超出切批）")
     max_calls: int = Field(

@@ -103,7 +103,10 @@ def _context(text: str, pos: int, name_len: int, width: int) -> str:
     """
     if width <= 0:
         return ""
-    start = max(0, pos - name_len - width // 3)
+    # 名字前只留一小段前导（不是 width/3）：下游会按更小的宽度裁剪，
+    # 若名字落在窗口中部，一裁就看不见人了。
+    lead = min(20, max(8, width // 5))
+    start = max(0, pos - name_len - lead)
     end = min(len(text), start + width)
     if end - start < width:
         start = max(0, end - width)

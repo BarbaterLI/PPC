@@ -426,6 +426,12 @@ def apply_annotate(
 
     # 按单批输入上限切批（默认 30 万字 ≈ 1M token 上下文的安全区）
     max_batch_chars = max(1000, int(getattr(ann, "max_input_chars", 300_000)))
+    # token 预算是更靠上的约束：用户给了就以它为准（0=沿用字符上限）
+    input_budget = int(getattr(ann, "max_input_tokens", 0) or 0)
+    if input_budget > 0:
+        from ...text.token_budget import chars_for_tokens
+
+        max_batch_chars = min(max_batch_chars, max(1000, chars_for_tokens(input_budget)))
     max_out_chars = max(1000, int(getattr(ann, "max_output_chars", 60_000)))
     batches: list[list[tuple[Path, str, int]]] = []
     oversized: list[tuple[Path, str, int]] = []

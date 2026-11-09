@@ -193,6 +193,12 @@ class LLMSpeakerAssigner:
             )
 
         chunk_chars = int(getattr(cfg, "chunk_chars", 6000) or 6000)
+        # token 预算优先：设了就按预算收紧分块（0=沿用 chunk_chars）
+        input_budget = int(getattr(cfg, "max_input_tokens", 0) or 0)
+        if input_budget > 0:
+            from .token_budget import chars_for_tokens
+
+            chunk_chars = min(chunk_chars, max(500, chars_for_tokens(input_budget)))
         chunks = _split_chunks(text, chunk_chars)
         if not chunks:
             raise LLMSpeakerAssignError("待分配文本为空")

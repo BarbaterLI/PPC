@@ -865,7 +865,7 @@
   },
   "ai discover": {
     "category": "AI",
-    "desc": "从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地统计，不调模型）。每条候选附带约 --context-chars 字的原文上下文（含台词开头），供人工核对或喂模型判断。",
+    "desc": "从正文里宽松召回「可能的角色名」，生成 cast 草案（纯本地统计，不调模型）。每条候选附带的上下文长度由 --max-input-tokens / --max-output-tokens 推导，也可用 --context-chars 显式覆盖。",
     "usage": "ppc ai discover <input> [options]",
     "examples": [
       {
@@ -904,7 +904,15 @@
       },
       {
         "name": "--context-chars",
-        "desc": "每条候选附带的上下文长度（字），0=不带（默认 100）"
+        "desc": "显式覆盖上下文字数；0=由 token 预算推导"
+      },
+      {
+        "name": "--max-input-tokens",
+        "desc": "单次请求的上下文 token 预算（决定每条候选能带多少原文）"
+      },
+      {
+        "name": "--max-output-tokens",
+        "desc": "单次请求的输出 token 预算（决定每批处理多少条）"
       }
     ],
     "see_also": [

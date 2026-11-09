@@ -30,6 +30,11 @@
     取整段 + 段首前缀枚举，只保留一条「前缀压倒性占优」的去重规则），产出
     `.cache/cast.draft.yml`。女娲 20 章 / 4.4 万字实测：1,278 个候选里召回 8/8
     个真名，Top4 恰好是四个主角。
+- **统一的 token 预算**（`src/text/token_budget.py`）：所有需要模型的步骤——`ai discover`
+  每条候选的上下文长度、`ai annotate` 的单批字数、`ai assign` 的分块——都改由用户的
+  `max_input_tokens` / `max_output_tokens` 推导，不再各自硬编码字符数。推理模型必须为
+  reasoning tokens 留余量：实测 `max_tokens=16` 的一次调用里 14 个 token 花在推理上，
+  正文只剩 1 个。
 - `src/text/cast_discover.py`：上述召回算法的实现，含「宁可留噪声不可删真名」
   的两条实测约束（固定窗口会右对齐到动词；等计数截断会吃掉低频真名）。
 
